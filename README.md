@@ -1,315 +1,155 @@
-# DeathTerminal 💀
+DeathTerminal 💀
 
-**Brutalist terminal emulator with AI-powered autocomplete and cross-platform SSH tunneling**
+A brutalist, GPU-accelerated terminal with AI-native command workflows
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Zig](https://img.shields.io/badge/Zig-0.13.0-orange.svg)](https://ziglang.org/)
+Fast. Minimal. Unapologetically powerful.
 
-## Overview
+⚡ Why DeathTerminal?
 
-DeathTerminal is a high-performance, brutalist terminal emulator built with modern technology. It prioritizes raw power and functionality over visual polish, designed for developers, sysadmins, and power users who live in the terminal.
+Most terminals are either:
 
-### Key Features
+fast but dumb (like Alacritty), or
+smart but heavy (like Warp)
 
-- **🤖 AI-Powered Autocomplete**: Intelligent command completion using context-aware AI via gRPC
-- **🔐 Cross-Platform SSH Tunneling**: Seamless SSH connections and port forwarding on Windows, macOS, and Linux
-- **⚡ Vulkan-Accelerated Rendering**: GPU-powered text rendering for buttery-smooth performance
-- **🔧 Lua Scripting**: Extensive customization and automation via embedded Lua engine
-- **🎯 Brutalist Design**: Minimal, high-contrast, no-nonsense interface focused on productivity
+DeathTerminal aims for both:
 
-## Technology Stack
+low-level performance
+AI-native workflows
+zero visual fluff
+🚀 Demo
+$ docker run -
+# → AI suggests:
+docker run -it --rm ubuntu:latest /bin/bash
+$ ssh prod
+# → Auto-expands with config + port forwarding
 
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| **Core Language** | Zig | Systems programming with zero-cost abstractions |
-| **Rendering** | Vulkan | GPU-accelerated graphics and text rendering |
-| **AI Backend** | gRPC | Low-latency communication with AI autocomplete service |
-| **Scripting** | Lua 5.4 | User customization and extensibility |
+Context-aware, not just history-based.
 
-## Prerequisites
+🔥 Core Features
+🤖 AI-Native Autocomplete
+Context-aware command suggestions (not just history)
+gRPC-based engine (local or remote models)
+Works with shell state, not just text
+⚡ GPU Rendering (Vulkan)
+Powered by Vulkan
+Smooth under extreme output (logs, builds, streaming data)
+Designed for future effects + massive scrollback
+🔐 Built-in SSH + Tunneling
+Persistent SSH profiles
+Port forwarding made first-class
+Cross-platform (no config hacks)
+🔧 Lua Scripting Engine
+Powered by Lua
+Full control over config, hooks, and automation
+Plugin system (planned)
+🎯 Brutalist Design
+No animations
+No distractions
+Maximum contrast, maximum signal
+🧠 Philosophy
 
-Before building DeathTerminal, ensure you have the following installed:
+DeathTerminal is built on a few principles:
 
-### Required
-
-- **Zig**: Version 0.13.0 or later
-  - Download from [ziglang.org/download](https://ziglang.org/download/)
-  - Or use a version manager like [zigup](https://github.com/marler8997/zigup)
-
-- **Vulkan SDK**: Latest version
-  - **Linux**: Install via package manager
-    ```bash
-    # Ubuntu/Debian
-    sudo apt install vulkan-tools libvulkan-dev vulkan-validationlayers
-
-    # Fedora
-    sudo dnf install vulkan-tools vulkan-loader-devel
-
-    # Arch
-    sudo pacman -S vulkan-tools vulkan-headers vulkan-validation-layers
-    ```
-  - **macOS**: Install via [MoltenVK](https://github.com/KhronosGroup/MoltenVK)
-    ```bash
-    brew install molten-vk
-    ```
-  - **Windows**: Download from [LunarG Vulkan SDK](https://vulkan.lunarg.com/)
-
-- **Lua 5.4**:
-  - **Linux**:
-    ```bash
-    # Ubuntu/Debian
-    sudo apt install liblua5.4-dev
-
-    # Fedora
-    sudo dnf install lua-devel
-
-    # Arch
-    sudo pacman -S lua
-    ```
-  - **macOS**:
-    ```bash
-    brew install lua
-    ```
-  - **Windows**: Download from [lua.org](https://www.lua.org/download.html)
-
-## Building
-
-### Clone the Repository
-
-```bash
+Speed is non-negotiable
+The terminal is a programming environment, not just a shell
+AI should assist, not interrupt
+Every feature must justify its complexity
+🏗 Tech Stack
+Layer	Tech
+Core	Zig
+Rendering	Vulkan
+AI Backend	gRPC
+Scripting	Lua
+⚡ Quick Start
+Option 1 — Build from source
 git clone https://github.com/AndrewGrayYouNeeK/Death-terminal-.git
 cd Death-terminal-
-```
 
-### Build the Project
-
-```bash
-# Debug build
-zig build
-
-# Release build (optimized)
-zig build -Doptimize=ReleaseFast
-
-# Release with debug info
-zig build -Doptimize=ReleaseSafe
-```
-
-### Run
-
-```bash
-# Run directly
 zig build run
+Requirements
+Zig 0.13+
+Vulkan SDK
+Lua 5.4
+🧪 Current Status
 
-# Run with arguments
-zig build run -- --help
-```
+🚧 Actively in development
 
-### Install
+Done
+Project structure
+Build system
+Core module layout
+In Progress
+PTY + terminal emulation
+Input handling
+Next Up
+Vulkan renderer
+AI integration
+🧩 Architecture (Simplified)
+PTY ↔ Terminal Core ↔ Renderer (Vulkan)
+           ↓
+        AI Engine (gRPC)
+           ↓
+        Lua Scripting
+Terminal correctness comes first
+Rendering is fully decoupled
+AI is optional and async
+🧠 AI Design (More Detail)
 
-```bash
-# Install to system (requires appropriate permissions)
-zig build install --prefix ~/.local
+Unlike traditional autocomplete:
 
-# Or specify custom prefix
-zig build install --prefix /usr/local
-```
+Not just command history
+Understands:
+previous commands
+working directory
+partial input
 
-## Testing
+Supports:
 
-```bash
-# Run all tests
-zig build test
+local models (offline)
+remote inference servers
+🔐 Security
+No credential logging
+SSH handled via standard crypto libraries
+AI context is sanitized before sending
+🛣 Roadmap
+Phase 1 — Terminal Core
+PTY + process handling
+ANSI/VT100 parser
+Phase 2 — Rendering
+Vulkan text pipeline
+Glyph atlas + batching
+Phase 3 — AI
+Suggestion engine
+Context pipeline
+Phase 4 — SSH
+Connection manager
+Port forwarding UX
+Phase 5 — Scripting
+Lua API
+Plugin system
+🤝 Contributing
 
-# Run with verbose output
-zig build test --summary all
-```
+Looking for contributors interested in:
 
-## Usage
+terminal emulation
+low-level graphics
+systems programming
+AI tooling
+git checkout -b feature/your-feature
+❗ Non-Goals
+Beginner-friendly UX
+Feature bloat
+Replacing your shell
+🙏 Inspiration
+Alacritty
+Warp
+Ghostty
+📜 License
 
-### Basic Usage
+MIT
 
-```bash
-# Start DeathTerminal
-death-terminal
+💀 Final Word
 
-# Show version
-death-terminal --version
+DeathTerminal isn’t trying to be everything.
 
-# Show help
-death-terminal --help
-```
-
-### Command Line Options
-
-| Option | Description |
-|--------|-------------|
-| `-h, --help` | Print help message |
-| `-v, --version` | Print version information |
-| `--config <file>` | Use custom configuration file |
-| `--no-ai` | Disable AI autocomplete |
-| `--ssh <host>` | Connect to SSH host on startup |
-
-### Configuration
-
-DeathTerminal looks for configuration files in the following locations (in order):
-
-1. `./death-terminal.lua` (current directory)
-2. `~/.config/death-terminal/config.lua` (Linux/macOS)
-3. `%APPDATA%/death-terminal/config.lua` (Windows)
-
-Example configuration (`config.lua`):
-
-```lua
--- DeathTerminal Configuration
-
--- Terminal settings
-terminal = {
-    rows = 24,
-    cols = 80,
-    font_size = 14,
-    font_family = "FiraCode Nerd Font Mono",
-}
-
--- AI Autocomplete settings
-ai = {
-    enabled = true,
-    endpoint = "localhost:50051",
-    max_suggestions = 5,
-    context_lines = 10,
-}
-
--- SSH settings
-ssh = {
-    default_port = 22,
-    keepalive_interval = 60,
-    compression = true,
-}
-
--- Theme (brutalist design)
-theme = {
-    background = "#000000",
-    foreground = "#FFFFFF",
-    cursor = "#FF0000",
-    selection = "#333333",
-}
-
--- Keybindings
-keybindings = {
-    copy = "Ctrl+Shift+C",
-    paste = "Ctrl+Shift+V",
-    new_tab = "Ctrl+Shift+T",
-    close_tab = "Ctrl+Shift+W",
-}
-```
-
-## Architecture
-
-```
-DeathTerminal/
-├── src/
-│   ├── main.zig              # Entry point and main loop
-│   ├── renderer/
-│   │   └── vulkan_renderer.zig   # Vulkan rendering engine
-│   ├── terminal/
-│   │   └── terminal.zig          # PTY and terminal emulation
-│   ├── ai/
-│   │   └── autocomplete.zig      # AI autocomplete via gRPC
-│   ├── ssh/
-│   │   └── tunnel.zig            # SSH tunneling and connections
-│   └── scripting/
-│       └── lua_engine.zig        # Lua scripting engine
-├── build.zig                 # Build configuration
-└── README.md                 # This file
-```
-
-## Development Roadmap
-
-### Phase 1: Foundation ✅
-- [x] Project structure and build system
-- [x] Module stubs for all core components
-- [x] Basic documentation
-
-### Phase 2: Core Terminal (In Progress)
-- [ ] PTY creation and process spawning
-- [ ] Terminal state machine (ANSI/VT100 escape sequences)
-- [ ] Input handling and key mapping
-- [ ] Clipboard integration
-
-### Phase 3: Vulkan Rendering
-- [ ] Vulkan initialization and setup
-- [ ] Text rendering with glyph atlas
-- [ ] Color and styling support
-- [ ] Performance optimization
-
-### Phase 4: AI Integration
-- [ ] gRPC client implementation
-- [ ] Protocol buffers for AI communication
-- [ ] Context gathering and suggestion display
-- [ ] Local vs. remote model support
-
-### Phase 5: SSH Tunneling
-- [ ] libssh2 integration
-- [ ] Connection management
-- [ ] Port forwarding (local and remote)
-- [ ] SOCKS proxy support
-
-### Phase 6: Lua Scripting
-- [ ] Lua C API integration
-- [ ] API exposure for configuration
-- [ ] Plugin system
-- [ ] Example scripts and documentation
-
-### Phase 7: Cross-Platform Polish
-- [ ] Windows-specific features (ConPTY)
-- [ ] macOS-specific features
-- [ ] Linux optimization
-- [ ] Distribution packaging
-
-## Contributing
-
-Contributions are welcome! Please follow these guidelines:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-### Code Style
-
-- Follow Zig's standard formatting (`zig fmt`)
-- Write tests for new functionality
-- Document public APIs
-- Keep functions focused and modular
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Security
-
-DeathTerminal handles sensitive data including SSH credentials and terminal I/O. Security considerations:
-
-- All SSH connections use standard cryptographic libraries
-- Credentials are never logged or stored insecurely
-- AI autocomplete context is sanitized before transmission
-- Regular security audits and dependency updates
-
-If you discover a security vulnerability, please email security@example.com (DO NOT open a public issue).
-
-## Acknowledgments
-
-- Inspired by modern terminals: [Alacritty](https://github.com/alacritty/alacritty), [Warp](https://www.warp.dev/), [Ghostty](https://ghostty.org/)
-- Built with [Zig](https://ziglang.org/) - a modern systems programming language
-- Powered by [Vulkan](https://www.vulkan.org/) for GPU acceleration
-- Extended with [Lua](https://www.lua.org/) for scripting
-
-## Support
-
-- 📖 Documentation: [Wiki](https://github.com/AndrewGrayYouNeeK/Death-terminal-/wiki)
-- 🐛 Bug Reports: [Issues](https://github.com/AndrewGrayYouNeeK/Death-terminal-/issues)
-- 💬 Discussions: [GitHub Discussions](https://github.com/AndrewGrayYouNeeK/Death-terminal-/discussions)
-
----
-
-**Made with 💀 by the DeathTerminal team**
+It’s trying to be the terminal you don’t outgrow.
