@@ -37,15 +37,15 @@
 ## 🚧 IN PROGRESS / NOT STARTED
 
 ### Phase 1 - Terminal Core (High Priority)
-- [ ] PTY (pseudo-terminal) creation and management
-- [ ] Process spawning and lifecycle management
+- [x] PTY (pseudo-terminal) creation and management
+- [x] Process spawning and lifecycle management
 - [ ] ANSI/VT100 escape sequence parser
-- [ ] Terminal buffer management
-- [ ] Input/output handling
-- [ ] Cursor movement and control
+- [x] Terminal buffer management
+- [x] Input/output handling
+- [x] Cursor movement and control
 - [ ] Scrollback buffer implementation
-- [ ] Cross-platform PTY compatibility (Unix vs Windows)
-- [ ] Shell integration
+- [x] Cross-platform PTY compatibility (Unix vs Windows)
+- [x] Shell integration
 
 ### Phase 2 - Vulkan Rendering (High Priority)
 - [ ] Vulkan instance initialization
