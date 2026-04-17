@@ -1,0 +1,47 @@
+# Build artifacts
+zig-cache/
+zig-out/
+.zig-cache/
+
+# OS-specific
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.*.swp
+.*.swo
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+/tmp/
+
+# User configuration (keep example)
+config.lua
+*.local.lua
+
+# Dependencies
+deps/
+vendor/
+
+# Distribution
+dist/
+release/
+*.tar.gz
+*.zip
+
+# Debugging
+*.dSYM/
+*.pdb
+core
+vgcore.*
+
+# Vulkan validation layers output
+vk_validation_*.txt
