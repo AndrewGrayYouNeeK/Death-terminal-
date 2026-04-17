@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const os = std.os;
 const posix = std.posix;
+const ansi_parser = @import("ansi_parser.zig");
 
 /// PTY represents a pseudo-terminal
 pub const PTY = struct {
@@ -208,7 +209,15 @@ pub const Terminal = struct {
     buffer: []Cell,
     cursor_row: u16,
     cursor_col: u16,
+    saved_cursor_row: u16,
+    saved_cursor_col: u16,
+    current_fg: u32,
+    current_bg: u32,
+    current_bold: bool,
+    current_italic: bool,
+    current_underline: bool,
     pty: ?PTY,
+    parser: ansi_parser.Parser,
     initialized: bool,
 
     pub fn init(allocator: std.mem.Allocator) !Terminal {
@@ -245,12 +254,21 @@ pub const Terminal = struct {
             .buffer = buffer,
             .cursor_row = 0,
             .cursor_col = 0,
+            .saved_cursor_row = 0,
+            .saved_cursor_col = 0,
+            .current_fg = 0xFFFFFF,
+            .current_bg = 0x000000,
+            .current_bold = false,
+            .current_italic = false,
+            .current_underline = false,
             .pty = pty,
+            .parser = ansi_parser.Parser.init(allocator),
             .initialized = true,
         };
     }
 
     pub fn deinit(self: *Terminal) void {
+        self.parser.deinit();
         self.allocator.free(self.buffer);
         if (self.pty) |*pty| {
             pty.close();
@@ -329,6 +347,268 @@ pub const Terminal = struct {
     pub fn moveCursor(self: *Terminal, row: u16, col: u16) void {
         self.cursor_row = @min(row, self.rows - 1);
         self.cursor_col = @min(col, self.cols - 1);
+    }
+
+    /// Process PTY output and update terminal state
+    pub fn processOutput(self: *Terminal, data: []const u8) !void {
+        for (data) |byte| {
+            if (try self.parser.advance(byte)) |action| {
+                try ansi_parser.applyAction(action, self);
+            }
+        }
+    }
+
+    // ANSI command implementations
+    pub fn putChar(self: *Terminal, ch: u21) !void {
+        if (self.cursor_row >= self.rows) return;
+        if (self.cursor_col >= self.cols) {
+            try self.lineFeed();
+            self.cursor_col = 0;
+        }
+
+        const idx = self.cursor_row * self.cols + self.cursor_col;
+        self.buffer[idx] = Cell{
+            .char = ch,
+            .fg_color = self.current_fg,
+            .bg_color = self.current_bg,
+            .bold = self.current_bold,
+            .italic = self.current_italic,
+            .underline = self.current_underline,
+        };
+        self.cursor_col += 1;
+    }
+
+    pub fn clear(self: *Terminal) !void {
+        for (self.buffer) |*cell| {
+            cell.* = Cell.init();
+        }
+        self.cursor_row = 0;
+        self.cursor_col = 0;
+    }
+
+    pub fn backspace(self: *Terminal) !void {
+        if (self.cursor_col > 0) {
+            self.cursor_col -= 1;
+        }
+    }
+
+    pub fn tab(self: *Terminal) !void {
+        const next_tab = ((self.cursor_col / 8) + 1) * 8;
+        self.cursor_col = @min(next_tab, self.cols - 1);
+    }
+
+    pub fn lineFeed(self: *Terminal) !void {
+        if (self.cursor_row < self.rows - 1) {
+            self.cursor_row += 1;
+        } else {
+            // Scroll up
+            try self.scrollUp(1);
+        }
+    }
+
+    pub fn carriageReturn(self: *Terminal) !void {
+        self.cursor_col = 0;
+    }
+
+    pub fn cursorUp(self: *Terminal, n: u32) !void {
+        if (n > self.cursor_row) {
+            self.cursor_row = 0;
+        } else {
+            self.cursor_row -= @intCast(n);
+        }
+    }
+
+    pub fn cursorDown(self: *Terminal, n: u32) !void {
+        self.cursor_row = @min(self.cursor_row + @as(u16, @intCast(n)), self.rows - 1);
+    }
+
+    pub fn cursorForward(self: *Terminal, n: u32) !void {
+        self.cursor_col = @min(self.cursor_col + @as(u16, @intCast(n)), self.cols - 1);
+    }
+
+    pub fn cursorBack(self: *Terminal, n: u32) !void {
+        if (n > self.cursor_col) {
+            self.cursor_col = 0;
+        } else {
+            self.cursor_col -= @intCast(n);
+        }
+    }
+
+    pub fn eraseDisplay(self: *Terminal, mode: u32) !void {
+        switch (mode) {
+            0 => {
+                // Clear from cursor to end of screen
+                const start = self.cursor_row * self.cols + self.cursor_col;
+                for (self.buffer[start..]) |*cell| {
+                    cell.* = Cell.init();
+                }
+            },
+            1 => {
+                // Clear from beginning to cursor
+                const end = self.cursor_row * self.cols + self.cursor_col + 1;
+                for (self.buffer[0..end]) |*cell| {
+                    cell.* = Cell.init();
+                }
+            },
+            2, 3 => {
+                // Clear entire screen
+                try self.clear();
+            },
+            else => {},
+        }
+    }
+
+    pub fn eraseLine(self: *Terminal, mode: u32) !void {
+        const row_start = self.cursor_row * self.cols;
+        switch (mode) {
+            0 => {
+                // Clear from cursor to end of line
+                const start = row_start + self.cursor_col;
+                const end = row_start + self.cols;
+                for (self.buffer[start..end]) |*cell| {
+                    cell.* = Cell.init();
+                }
+            },
+            1 => {
+                // Clear from beginning of line to cursor
+                const end = row_start + self.cursor_col + 1;
+                for (self.buffer[row_start..end]) |*cell| {
+                    cell.* = Cell.init();
+                }
+            },
+            2 => {
+                // Clear entire line
+                const end = row_start + self.cols;
+                for (self.buffer[row_start..end]) |*cell| {
+                    cell.* = Cell.init();
+                }
+            },
+            else => {},
+        }
+    }
+
+    pub fn scrollUp(self: *Terminal, n: u32) !void {
+        const lines_to_scroll = @min(n, self.rows);
+        const cells_to_move = (self.rows - lines_to_scroll) * self.cols;
+        const src_start = lines_to_scroll * self.cols;
+
+        // Move lines up
+        std.mem.copyForwards(Cell, self.buffer[0..cells_to_move], self.buffer[src_start..]);
+
+        // Clear bottom lines
+        const clear_start = cells_to_move;
+        for (self.buffer[clear_start..]) |*cell| {
+            cell.* = Cell.init();
+        }
+    }
+
+    pub fn scrollDown(self: *Terminal, n: u32) !void {
+        const lines_to_scroll = @min(n, self.rows);
+        const cells_to_move = (self.rows - lines_to_scroll) * self.cols;
+        const dest_start = lines_to_scroll * self.cols;
+
+        // Move lines down
+        std.mem.copyBackwards(Cell, self.buffer[dest_start..], self.buffer[0..cells_to_move]);
+
+        // Clear top lines
+        const clear_end = lines_to_scroll * self.cols;
+        for (self.buffer[0..clear_end]) |*cell| {
+            cell.* = Cell.init();
+        }
+    }
+
+    pub fn saveCursor(self: *Terminal) !void {
+        self.saved_cursor_row = self.cursor_row;
+        self.saved_cursor_col = self.cursor_col;
+    }
+
+    pub fn restoreCursor(self: *Terminal) !void {
+        self.cursor_row = self.saved_cursor_row;
+        self.cursor_col = self.saved_cursor_col;
+    }
+
+    pub fn resetAttributes(self: *Terminal) !void {
+        self.current_fg = 0xFFFFFF;
+        self.current_bg = 0x000000;
+        self.current_bold = false;
+        self.current_italic = false;
+        self.current_underline = false;
+    }
+
+    pub fn setBold(self: *Terminal, value: bool) !void {
+        self.current_bold = value;
+    }
+
+    pub fn setItalic(self: *Terminal, value: bool) !void {
+        self.current_italic = value;
+    }
+
+    pub fn setUnderline(self: *Terminal, value: bool) !void {
+        self.current_underline = value;
+    }
+
+    pub fn setFgColor(self: *Terminal, color_index: u32) !void {
+        // Convert ANSI color index to RGB
+        const colors = [_]u32{
+            0x000000, // Black
+            0xCD0000, // Red
+            0x00CD00, // Green
+            0xCDCD00, // Yellow
+            0x0000EE, // Blue
+            0xCD00CD, // Magenta
+            0x00CDCD, // Cyan
+            0xE5E5E5, // White
+            // Bright colors
+            0x7F7F7F, // Bright Black
+            0xFF0000, // Bright Red
+            0x00FF00, // Bright Green
+            0xFFFF00, // Bright Yellow
+            0x5C5CFF, // Bright Blue
+            0xFF00FF, // Bright Magenta
+            0x00FFFF, // Bright Cyan
+            0xFFFFFF, // Bright White
+        };
+        if (color_index < colors.len) {
+            self.current_fg = colors[color_index];
+        }
+    }
+
+    pub fn setBgColor(self: *Terminal, color_index: u32) !void {
+        const colors = [_]u32{
+            0x000000, 0xCD0000, 0x00CD00, 0xCDCD00,
+            0x0000EE, 0xCD00CD, 0x00CDCD, 0xE5E5E5,
+            0x7F7F7F, 0xFF0000, 0x00FF00, 0xFFFF00,
+            0x5C5CFF, 0xFF00FF, 0x00FFFF, 0xFFFFFF,
+        };
+        if (color_index < colors.len) {
+            self.current_bg = colors[color_index];
+        }
+    }
+
+    pub fn resetFgColor(self: *Terminal) !void {
+        self.current_fg = 0xFFFFFF;
+    }
+
+    pub fn resetBgColor(self: *Terminal) !void {
+        self.current_bg = 0x000000;
+    }
+
+    pub fn setMode(self: *Terminal, params: ansi_parser.CSIParams) !void {
+        _ = self;
+        _ = params;
+        // TODO: Implement mode setting (e.g., cursor visibility, mouse tracking)
+    }
+
+    pub fn resetMode(self: *Terminal, params: ansi_parser.CSIParams) !void {
+        _ = self;
+        _ = params;
+        // TODO: Implement mode resetting
+    }
+
+    pub fn setTitle(self: *Terminal, title: []const u8) !void {
+        _ = self;
+        _ = title;
+        // TODO: Store and expose window title
     }
 };
 

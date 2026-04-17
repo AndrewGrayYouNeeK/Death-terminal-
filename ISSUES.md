@@ -39,7 +39,7 @@
 ### Phase 1 - Terminal Core (High Priority)
 - [x] PTY (pseudo-terminal) creation and management
 - [x] Process spawning and lifecycle management
-- [ ] ANSI/VT100 escape sequence parser
+- [x] ANSI/VT100 escape sequence parser
 - [x] Terminal buffer management
 - [x] Input/output handling
 - [x] Cursor movement and control
