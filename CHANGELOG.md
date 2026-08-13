@@ -8,7 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Initial project structure and build system
+- Headless terminal event loop with PTY polling and stdin forwarding
+- Scrollback buffer for terminal history (`src/terminal/scrollback.zig`)
+- Runtime configuration module with CLI and file loading (`src/config/config.zig`)
+- GitHub Actions CI workflow for build and test
+- DeathTerminal-focused `DEVELOPMENT.md` guide
+
+### Changed
+- Updated terminal core for Zig 0.13 POSIX APIs
+- Main entry point now runs the real event loop instead of a placeholder sleep
+- Fixed ANSI parser duplicate switch case and Execute action typing for Zig 0.13
+
+### Removed
+- Cross-repository `REPOSITORY_AUDIT.md` (Base44/Vercel deployment audit unrelated to this project)
+
+### Added (prior releases)
 - build.zig.zon for dependency management
 - Modular architecture with core subsystems:
   - **Terminal emulator core** - Fully functional PTY + ANSI/VT100 parser (Phase 1 complete)

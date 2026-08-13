@@ -5,6 +5,8 @@ const renderer = @import("renderer/vulkan_renderer.zig");
 const ai = @import("ai/autocomplete.zig");
 const ssh = @import("ssh/tunnel.zig");
 const lua_engine = @import("scripting/lua_engine.zig");
+const config = @import("config/config.zig");
+const event_loop = @import("app/event_loop.zig");
 
 const VERSION = "0.1.0";
 
@@ -12,9 +14,6 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
-
-    // Print banner
-    try printBanner();
 
     // Parse command line arguments
     const args = try std.process.argsAlloc(allocator);
@@ -31,6 +30,14 @@ pub fn main() !void {
         }
     }
 
+    // Print banner only for interactive runs
+    try printBanner();
+
+    var cfg = config.Config.init(allocator);
+    defer cfg.deinit();
+    cfg.tryLoadDefault();
+    try cfg.loadFromArgs(args);
+
     std.debug.print("Initializing DeathTerminal...\n", .{});
 
     // Initialize subsystems
@@ -39,7 +46,7 @@ pub fn main() !void {
     defer vulkan_renderer.deinit();
 
     std.debug.print("[2/5] Initializing terminal core...\n", .{});
-    var term = try terminal.Terminal.init(allocator);
+    var term = try terminal.Terminal.initWithSize(allocator, cfg.rows, cfg.cols, cfg.scrollback_lines);
     defer term.deinit();
 
     std.debug.print("[3/5] Initializing Lua scripting engine...\n", .{});
@@ -55,10 +62,12 @@ pub fn main() !void {
     defer ssh_manager.deinit();
 
     std.debug.print("\n✓ DeathTerminal initialized successfully\n", .{});
-    std.debug.print("Ready to accept input...\n\n", .{});
 
-    // Main event loop
-    try runMainLoop(&vulkan_renderer, &term, &lua, &autocomplete, &ssh_manager);
+    var loop = event_loop.EventLoop{
+        .allocator = allocator,
+        .cfg = &cfg,
+    };
+    try loop.run(&vulkan_renderer, &term, &lua, &autocomplete, &ssh_manager);
 }
 
 fn printBanner() !void {
@@ -94,14 +103,15 @@ fn printHelp() !void {
         \\DeathTerminal - Brutalist Terminal Emulator
         \\
         \\USAGE:
-        \\    death-terminal [OPTIONS]
+        \\    deathterminal [OPTIONS]
         \\
         \\OPTIONS:
         \\    -h, --help       Print this help message
         \\    -v, --version    Print version information
         \\    --config <file>  Use custom configuration file
         \\    --no-ai          Disable AI autocomplete
-        \\    --ssh <host>     Connect to SSH host on startup
+        \\    --headless       Run without a GUI window (default)
+        \\    --gui            Attempt GUI mode (falls back to headless for now)
         \\
         \\FEATURES:
         \\    • AI-powered autocomplete
@@ -114,33 +124,6 @@ fn printHelp() !void {
         \\
     ;
     std.debug.print("{s}\n", .{help_text});
-}
-
-fn runMainLoop(
-    vulkan_renderer: *renderer.VulkanRenderer,
-    term: *terminal.Terminal,
-    lua: *lua_engine.LuaEngine,
-    autocomplete: *ai.Autocomplete,
-    ssh_manager: *ssh.TunnelManager,
-) !void {
-    _ = vulkan_renderer;
-    _ = term;
-    _ = lua;
-    _ = autocomplete;
-    _ = ssh_manager;
-
-    // Main event loop placeholder
-    // TODO: Implement actual event loop with:
-    // - Input handling
-    // - Rendering
-    // - AI autocomplete integration
-    // - SSH tunnel management
-    // - Lua script execution
-
-    std.debug.print("Main loop started (placeholder - press Ctrl+C to exit)\n", .{});
-
-    // For now, just sleep to prevent immediate exit
-    std.time.sleep(std.time.ns_per_s * 2);
 }
 
 test "basic functionality" {

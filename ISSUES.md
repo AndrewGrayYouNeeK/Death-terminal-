@@ -43,7 +43,7 @@
 - [x] Terminal buffer management
 - [x] Input/output handling
 - [x] Cursor movement and control
-- [ ] Scrollback buffer implementation
+- [x] Scrollback buffer implementation
 - [x] Cross-platform PTY compatibility (Unix vs Windows)
 - [x] Shell integration
 
@@ -99,12 +99,12 @@
 - [ ] Example scripts and plugins
 
 ### Main Event Loop
-- [ ] Event loop architecture
-- [ ] Input event handling (keyboard, mouse)
+- [x] Event loop architecture
+- [x] Input event handling (keyboard, mouse)
 - [ ] Rendering loop integration
-- [ ] Event dispatching to subsystems
-- [ ] Graceful shutdown handling
-- [ ] Signal handling (SIGTERM, SIGINT, etc.)
+- [x] Event dispatching to subsystems
+- [x] Graceful shutdown handling
+- [x] Signal handling (SIGTERM, SIGINT, etc.)
 
 ### Testing & Quality
 - [ ] Unit tests for terminal emulation
@@ -117,10 +117,10 @@
 - [ ] Cross-platform testing (Linux, macOS, Windows)
 - [ ] Performance benchmarks
 - [ ] Memory leak detection
-- [ ] CI/CD pipeline setup
+- [x] CI/CD pipeline setup
 
 ### Configuration & UX
-- [ ] Configuration file loading (from ~/.config/death-terminal/)
+- [x] Configuration file loading (from ~/.config/death-terminal/)
 - [ ] Theme system implementation
 - [ ] Keybinding customization
 - [ ] Font selection and management
@@ -149,24 +149,26 @@
 
 ## 📊 Current Status Summary
 
-**Overall Progress**: ~25% (Foundation complete, terminal core mostly done, Vulkan renderer structure in place)
+**Overall Progress**: ~35% (Terminal core complete with scrollback, headless event loop running, Zig 0.13 compatible)
 
 **Lines of Code**:
-- terminal/terminal.zig: 645 lines (fully functional PTY + ANSI parser)
+- terminal/terminal.zig: 650+ lines (PTY + ANSI parser + scrollback)
+- terminal/scrollback.zig: scrollback history buffer
 - terminal/ansi_parser.zig: 400+ lines (complete VT100/ANSI escape sequence parser)
+- app/event_loop.zig: headless PTY event loop
+- config/config.zig: runtime configuration
 - renderer/vulkan_renderer.zig: 162 lines (structured foundation)
 - renderer/text_renderer.zig: 200+ lines (glyph atlas and text rendering structure)
 - renderer/pipeline.zig: 80+ lines (graphics pipeline structure)
 - renderer/swapchain.zig: 100+ lines (swapchain management structure)
-- main.zig: 150 lines (basic structure)
+- main.zig: CLI + subsystem wiring
 - ssh/tunnel.zig: 70 lines (stub)
 - ai/autocomplete.zig: 55 lines (stub)
 - scripting/lua_engine.zig: 48 lines (stub)
 
 **Next Immediate Steps**:
 1. ✅ Implement PTY + terminal emulation (Phase 1) - COMPLETED
-2. Implement Vulkan function loading and complete renderer initialization
-3. Add window management (X11/Wayland/Win32 surface creation)
-4. Implement actual Vulkan API calls (currently stubbed)
-5. Connect rendering to terminal output
-6. Implement main event loop with input handling
+2. ✅ Main event loop with headless rendering - COMPLETED
+3. Implement Vulkan function loading and complete renderer initialization
+4. Add window management (X11/Wayland/Win32 surface creation)
+5. Connect GPU rendering to terminal output
