@@ -97,13 +97,13 @@ pub const Parser = struct {
 
     fn handleGround(self: *Parser, byte: u8) !?Action {
         return switch (byte) {
-            0x00...0x1F => self.handleC0(byte),
-            0x20...0x7E => Action{ .Print = byte },
-            0x7F => Action.Execute,
             0x1B => {
                 self.state = .Escape;
                 return null;
             },
+            0x00...0x1A, 0x1C...0x1F => self.handleC0(byte),
+            0x20...0x7E => Action{ .Print = byte },
+            0x7F => Action{ .Execute = byte },
             else => Action{ .Print = byte }, // UTF-8 will be handled at a higher level
         };
     }

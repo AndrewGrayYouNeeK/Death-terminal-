@@ -1,14 +1,16 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const os = std.os;
 const posix = std.posix;
+const linux = std.os.linux;
 const ansi_parser = @import("ansi_parser.zig");
+const scrollback_mod = @import("scrollback.zig");
 
 /// PTY represents a pseudo-terminal
 pub const PTY = struct {
-    master_fd: os.fd_t,
-    slave_fd: os.fd_t,
-    child_pid: ?os.pid_t,
+    master_fd: posix.fd_t,
+    slave_fd: posix.fd_t,
+    child_pid: ?posix.pid_t,
+    slave_name_buf: [64]u8,
 
     /// Open a new PTY pair (master and slave)
     pub fn open() !PTY {
@@ -18,7 +20,7 @@ pub const PTY = struct {
 
         // Open PTY master using posix_openpt
         const master_fd = try openPtyMaster();
-        errdefer os.close(master_fd);
+        errdefer posix.close(master_fd);
 
         // Grant access to slave PTY
         try grantpt(master_fd);
@@ -27,27 +29,33 @@ pub const PTY = struct {
         try unlockpt(master_fd);
 
         // Get slave PTY name
-        const slave_name = try ptsname(master_fd);
+        var pty: PTY = .{
+            .master_fd = master_fd,
+            .slave_fd = -1,
+            .child_pid = null,
+            .slave_name_buf = undefined,
+        };
+
+        const slave_name = try ptsname(master_fd, &pty.slave_name_buf);
 
         // Open slave PTY
-        const slave_fd = try os.open(slave_name, os.O.RDWR | os.O.NOCTTY, 0);
-        errdefer os.close(slave_fd);
+        const slave_fd = try posix.open(slave_name, .{ .ACCMODE = .RDWR, .NOCTTY = true }, 0);
+        errdefer posix.close(slave_fd);
 
-        return PTY{
-            .master_fd = master_fd,
-            .slave_fd = slave_fd,
-            .child_pid = null,
-        };
+        pty.slave_fd = slave_fd;
+        return pty;
     }
 
     pub fn close(self: *PTY) void {
-        os.close(self.master_fd);
-        os.close(self.slave_fd);
+        posix.close(self.master_fd);
+        if (self.slave_fd >= 0) {
+            posix.close(self.slave_fd);
+        }
     }
 
     /// Set PTY window size
     pub fn setWindowSize(self: PTY, rows: u16, cols: u16) !void {
-        const ws = std.os.linux.winsize{
+        const ws = linux.winsize{
             .ws_row = rows,
             .ws_col = cols,
             .ws_xpixel = 0,
@@ -55,7 +63,7 @@ pub const PTY = struct {
         };
 
         const TIOCSWINSZ = 0x5414;
-        const result = std.os.linux.ioctl(self.master_fd, TIOCSWINSZ, @intFromPtr(&ws));
+        const result = linux.ioctl(self.master_fd, TIOCSWINSZ, @intFromPtr(&ws));
         if (result != 0) {
             return error.IoctlFailed;
         }
@@ -63,9 +71,9 @@ pub const PTY = struct {
 
     /// Spawn a shell process in the PTY
     pub fn spawnShell(self: *PTY, allocator: std.mem.Allocator) !void {
-        const shell = std.posix.getenv("SHELL") orelse "/bin/sh";
+        const shell: [*:0]const u8 = posix.getenv("SHELL") orelse "/bin/sh";
 
-        const pid = try os.fork();
+        const pid = try posix.fork();
 
         if (pid == 0) {
             // Child process
@@ -77,104 +85,85 @@ pub const PTY = struct {
             // Parent process
             self.child_pid = pid;
             // Close slave FD in parent (child will use it)
-            os.close(self.slave_fd);
+            posix.close(self.slave_fd);
             self.slave_fd = -1;
 
             _ = allocator;
         }
     }
 
-    fn setupChildProcess(self: *PTY, shell: []const u8) !void {
+    fn setupChildProcess(self: *PTY, shell: [*:0]const u8) !void {
         // Create a new session
-        _ = std.os.linux.syscall0(.setsid);
+        _ = linux.syscall0(.setsid);
 
         // Make slave the controlling terminal
         const TIOCSCTTY = 0x540E;
-        _ = std.os.linux.ioctl(self.slave_fd, TIOCSCTTY, 0);
+        _ = linux.ioctl(self.slave_fd, TIOCSCTTY, 0);
 
         // Redirect stdin, stdout, stderr to slave
-        try os.dup2(self.slave_fd, os.STDIN_FILENO);
-        try os.dup2(self.slave_fd, os.STDOUT_FILENO);
-        try os.dup2(self.slave_fd, os.STDERR_FILENO);
+        try posix.dup2(self.slave_fd, posix.STDIN_FILENO);
+        try posix.dup2(self.slave_fd, posix.STDOUT_FILENO);
+        try posix.dup2(self.slave_fd, posix.STDERR_FILENO);
 
         // Close master in child
-        os.close(self.master_fd);
+        posix.close(self.master_fd);
         if (self.slave_fd > 2) {
-            os.close(self.slave_fd);
+            posix.close(self.slave_fd);
         }
 
         // Execute shell
-        const argv = [_:null]?[*:0]const u8{shell.ptr};
+        const argv = [_:null]?[*:0]const u8{shell};
         const envp = [_:null]?[*:0]const u8{null};
-        const err = std.os.linux.execve(shell.ptr, &argv, &envp);
-        std.posix.exit(@intCast(err));
+        const err = linux.execve(shell, &argv, &envp);
+        posix.exit(@intCast(err));
     }
 
     /// Write data to PTY master
     pub fn write(self: PTY, data: []const u8) !usize {
-        return os.write(self.master_fd, data);
+        return posix.write(self.master_fd, data);
     }
 
     /// Read data from PTY master
     pub fn read(self: PTY, buffer: []u8) !usize {
-        return os.read(self.master_fd, buffer);
+        return posix.read(self.master_fd, buffer);
     }
 };
 
 // Platform-specific PTY functions
-fn openPtyMaster() !os.fd_t {
-    if (builtin.os.tag == .linux) {
-        const O_RDWR = 0o2;
-        const O_NOCTTY = 0o400;
-        const fd = std.os.linux.open("/dev/ptmx", O_RDWR | O_NOCTTY, 0);
-        if (fd < 0) {
-            return error.OpenFailed;
-        }
-        return @intCast(fd);
-    } else if (builtin.os.tag == .macos) {
-        const O_RDWR = 0x0002;
-        const O_NOCTTY = 0x20000;
-        const fd = std.os.linux.open("/dev/ptmx", O_RDWR | O_NOCTTY, 0);
-        if (fd < 0) {
-            return error.OpenFailed;
-        }
-        return @intCast(fd);
+fn openPtyMaster() !posix.fd_t {
+    if (builtin.os.tag == .linux or builtin.os.tag == .macos) {
+        return posix.open("/dev/ptmx", .{ .ACCMODE = .RDWR, .NOCTTY = true }, 0);
     }
     return error.UnsupportedPlatform;
 }
 
-fn grantpt(fd: os.fd_t) !void {
+fn grantpt(fd: posix.fd_t) !void {
     // On Linux, grantpt is typically not needed with /dev/ptmx
     // The kernel handles permissions automatically
     _ = fd;
 }
 
-fn unlockpt(fd: os.fd_t) !void {
+fn unlockpt(fd: posix.fd_t) !void {
     if (builtin.os.tag == .linux) {
         const TIOCSPTLCK = 0x40045431;
         const unlock: c_int = 0;
-        const result = std.os.linux.ioctl(fd, TIOCSPTLCK, @intFromPtr(&unlock));
+        const result = linux.ioctl(fd, TIOCSPTLCK, @intFromPtr(&unlock));
         if (result != 0) {
             return error.UnlockFailed;
         }
     }
 }
 
-fn ptsname(fd: os.fd_t) ![]const u8 {
+fn ptsname(fd: posix.fd_t, buffer: []u8) ![]const u8 {
     if (builtin.os.tag == .linux) {
         var n: u32 = 0;
         const TIOCGPTN = 0x80045430;
-        const result = std.os.linux.ioctl(fd, TIOCGPTN, @intFromPtr(&n));
+        const result = linux.ioctl(fd, TIOCGPTN, @intFromPtr(&n));
         if (result != 0) {
             return error.PtsnameFailed;
         }
 
-        var buf: [32]u8 = undefined;
-        const slave_name = try std.fmt.bufPrint(&buf, "/dev/pts/{d}", .{n});
-
-        // This is a static buffer, which is fine for immediate use
-        // In production, you'd want to allocate this
-        return slave_name;
+        return try std.fmt.bufPrint(buffer, "/dev/pts/{d}", .{n});
     }
     return error.UnsupportedPlatform;
 }
@@ -218,16 +207,23 @@ pub const Terminal = struct {
     current_underline: bool,
     pty: ?PTY,
     parser: ansi_parser.Parser,
+    scrollback: scrollback_mod.Scrollback,
     initialized: bool,
 
     pub fn init(allocator: std.mem.Allocator) !Terminal {
+        return initWithSize(allocator, 24, 80, 10_000);
+    }
+
+    pub fn initWithSize(
+        allocator: std.mem.Allocator,
+        rows: u16,
+        cols: u16,
+        scrollback_lines: usize,
+    ) !Terminal {
         std.debug.print("  → Initializing terminal core...\n", .{});
 
-        const default_rows = 24;
-        const default_cols = 80;
-
         // Allocate cell buffer
-        const buffer = try allocator.alloc(Cell, default_rows * default_cols);
+        const buffer = try allocator.alloc(Cell, rows * cols);
         errdefer allocator.free(buffer);
 
         // Initialize all cells
@@ -240,17 +236,17 @@ pub const Terminal = struct {
         errdefer pty.close();
 
         // Set window size
-        try pty.setWindowSize(default_rows, default_cols);
+        try pty.setWindowSize(rows, cols);
 
         // Spawn shell
         try pty.spawnShell(allocator);
 
-        std.debug.print("  → Terminal core initialized (80x24)\n", .{});
+        std.debug.print("  → Terminal core initialized ({d}x{d})\n", .{ cols, rows });
 
         return Terminal{
             .allocator = allocator,
-            .rows = default_rows,
-            .cols = default_cols,
+            .rows = rows,
+            .cols = cols,
             .buffer = buffer,
             .cursor_row = 0,
             .cursor_col = 0,
@@ -263,17 +259,28 @@ pub const Terminal = struct {
             .current_underline = false,
             .pty = pty,
             .parser = ansi_parser.Parser.init(allocator),
+            .scrollback = scrollback_mod.Scrollback.init(allocator, scrollback_lines),
             .initialized = true,
         };
     }
 
     pub fn deinit(self: *Terminal) void {
         self.parser.deinit();
+        self.scrollback.deinit();
         self.allocator.free(self.buffer);
         if (self.pty) |*pty| {
             pty.close();
         }
         self.initialized = false;
+    }
+
+    pub fn getPtyFd(self: *const Terminal) ?posix.fd_t {
+        if (self.pty) |pty| return pty.master_fd;
+        return null;
+    }
+
+    pub fn scrollbackLen(self: *const Terminal) usize {
+        return self.scrollback.len();
     }
 
     pub fn resize(self: *Terminal, rows: u16, cols: u16) !void {
@@ -489,16 +496,20 @@ pub const Terminal = struct {
 
     pub fn scrollUp(self: *Terminal, n: u32) !void {
         const lines_to_scroll = @min(n, self.rows);
-        const cells_to_move = (self.rows - lines_to_scroll) * self.cols;
-        const src_start = lines_to_scroll * self.cols;
+        var scrolled: u32 = 0;
+        while (scrolled < lines_to_scroll) : (scrolled += 1) {
+            const row_start: usize = 0;
+            const row_end: usize = self.cols;
+            try self.scrollback.pushLine(self.buffer[row_start..row_end]);
 
-        // Move lines up
-        std.mem.copyForwards(Cell, self.buffer[0..cells_to_move], self.buffer[src_start..]);
+            const cells_to_move = (self.rows - 1) * self.cols;
+            const src_start = self.cols;
+            std.mem.copyForwards(Cell, self.buffer[0..cells_to_move], self.buffer[src_start..]);
 
-        // Clear bottom lines
-        const clear_start = cells_to_move;
-        for (self.buffer[clear_start..]) |*cell| {
-            cell.* = Cell.init();
+            const clear_start = cells_to_move;
+            for (self.buffer[clear_start..]) |*cell| {
+                cell.* = Cell.init();
+            }
         }
     }
 
