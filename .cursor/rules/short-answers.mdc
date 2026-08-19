@@ -1,0 +1,20 @@
+---
+description: Lead with the answer; keep replies short; no hidden or lengthy thinking
+alwaysApply: true
+---
+
+# Short, Direct Answers
+
+- Put the **final answer first**. Supporting detail only if it is required to use the answer.
+- Keep replies **short**. No warm-up, recap, or filler.
+- Do not narrate "thinking", plans, or background reasoning in the user-facing reply.
+- Do not dump intermediate notes, tool traces, or internal debate.
+- Skip optional extras unless the user asked for them.
+
+```markdown
+# ❌ BAD
+I looked through the repo and considered a few options. It might be X, or maybe Y...
+
+# ✅ GOOD
+Use `zig build test`. That runs the unit tests.
+```
