@@ -113,8 +113,8 @@ pub const PTY = struct {
 
         // Execute shell
         const argv = [_:null]?[*:0]const u8{shell};
-        const envp = [_:null]?[*:0]const u8{null};
-        const err = linux.execve(shell, &argv, &envp);
+        const envp: [*:null]?[*:0]u8 = if (std.c.environ) |env| env else &[_:null]?[*:0]u8{null};
+        const err = linux.execve(shell, &argv, envp);
         posix.exit(@intCast(err));
     }
 
