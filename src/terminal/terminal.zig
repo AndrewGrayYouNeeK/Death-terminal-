@@ -112,14 +112,9 @@ pub const PTY = struct {
         }
 
         const argv = [_:null]?[*:0]const u8{shell};
-        if (std.c.environ) |envp| {
-            const err = linux.execve(shell, &argv, envp);
-            posix.exit(@intCast(err));
-        } else {
-            const envp = [_:null]?[*:0]const u8{null};
-            const err = linux.execve(shell, &argv, &envp);
-            posix.exit(@intCast(err));
-        }
+        const envp: [*:null]?[*:0]u8 = if (std.c.environ) |env| env else &[_:null]?[*:0]u8{null};
+        const err = linux.execve(shell, &argv, envp);
+        posix.exit(@intCast(err));
     }
 
     /// Write data to PTY master
