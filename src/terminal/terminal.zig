@@ -112,7 +112,8 @@ pub const PTY = struct {
         }
 
         const argv = [_:null]?[*:0]const u8{shell};
-        const envp: [*:null]?[*:0]u8 = if (std.c.environ) |env| env else &[_:null]?[*:0]u8{null};
+        // Zig 0.13: std.c.environ is [*:null]?[*:0]u8, not optional.
+        const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
         const err = linux.execve(shell, &argv, envp);
         posix.exit(@intCast(err));
     }
