@@ -6,6 +6,8 @@ const c = @cImport({
     @cInclude("vulkan/vulkan.h");
 });
 
+pub const raw = c;
+
 // Re-export Vulkan types
 pub const VkInstance = c.VkInstance;
 pub const VkPhysicalDevice = c.VkPhysicalDevice;
@@ -81,50 +83,13 @@ pub const VK_PRESENT_MODE_MAILBOX_KHR = c.VK_PRESENT_MODE_MAILBOX_KHR;
 pub const VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU = c.VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
 pub const VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU = c.VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
 
-// Function pointers - these would be loaded dynamically
-pub const PFN_vkCreateInstance = ?*const fn (
-    pCreateInfo: *const VkInstanceCreateInfo,
-    pAllocator: ?*const anyopaque,
-    pInstance: *VkInstance,
-) callconv(.C) VkResult;
-
-pub const PFN_vkDestroyInstance = ?*const fn (
-    instance: VkInstance,
-    pAllocator: ?*const anyopaque,
-) callconv(.C) void;
-
-pub const PFN_vkEnumeratePhysicalDevices = ?*const fn (
-    instance: VkInstance,
-    pPhysicalDeviceCount: *u32,
-    pPhysicalDevices: ?[*]VkPhysicalDevice,
-) callconv(.C) VkResult;
-
-pub const PFN_vkGetPhysicalDeviceProperties = ?*const fn (
-    physicalDevice: VkPhysicalDevice,
-    pProperties: *VkPhysicalDeviceProperties,
-) callconv(.C) void;
-
-pub const PFN_vkGetPhysicalDeviceQueueFamilyProperties = ?*const fn (
-    physicalDevice: VkPhysicalDevice,
-    pQueueFamilyPropertyCount: *u32,
-    pQueueFamilyProperties: ?[*]VkQueueFamilyProperties,
-) callconv(.C) void;
-
-pub const PFN_vkCreateDevice = ?*const fn (
-    physicalDevice: VkPhysicalDevice,
-    pCreateInfo: *const VkDeviceCreateInfo,
-    pAllocator: ?*const anyopaque,
-    pDevice: *VkDevice,
-) callconv(.C) VkResult;
-
-pub const PFN_vkDestroyDevice = ?*const fn (
-    device: VkDevice,
-    pAllocator: ?*const anyopaque,
-) callconv(.C) void;
-
-pub const PFN_vkGetDeviceQueue = ?*const fn (
-    device: VkDevice,
-    queueFamilyIndex: u32,
-    queueIndex: u32,
-    pQueue: *VkQueue,
-) callconv(.C) void;
+pub const PFN_vkVoidFunction = c.PFN_vkVoidFunction;
+pub const PFN_vkGetInstanceProcAddr = c.PFN_vkGetInstanceProcAddr;
+pub const PFN_vkCreateInstance = c.PFN_vkCreateInstance;
+pub const PFN_vkDestroyInstance = c.PFN_vkDestroyInstance;
+pub const PFN_vkEnumeratePhysicalDevices = c.PFN_vkEnumeratePhysicalDevices;
+pub const PFN_vkGetPhysicalDeviceProperties = c.PFN_vkGetPhysicalDeviceProperties;
+pub const PFN_vkGetPhysicalDeviceQueueFamilyProperties = c.PFN_vkGetPhysicalDeviceQueueFamilyProperties;
+pub const PFN_vkCreateDevice = c.PFN_vkCreateDevice;
+pub const PFN_vkDestroyDevice = c.PFN_vkDestroyDevice;
+pub const PFN_vkGetDeviceQueue = c.PFN_vkGetDeviceQueue;

@@ -23,7 +23,7 @@ PTY ↔ Terminal Core ↔ Renderer (Vulkan)
 | Terminal core | `src/terminal/` | PTY, ANSI parser, cell buffer — functional |
 | Scrollback | `src/terminal/scrollback.zig` | In progress |
 | Event loop | `src/app/event_loop.zig` | In progress |
-| Vulkan renderer | `src/renderer/` | Structural stubs, needs function loading |
+| Vulkan renderer | `src/renderer/` | Loader + instance/device; no window/swapchain yet |
 | AI autocomplete | `src/ai/` | gRPC stub |
 | SSH tunneling | `src/ssh/` | Stub |
 | Lua scripting | `src/scripting/` | Stub |
@@ -53,7 +53,8 @@ zig build test     # Test
 
 ### Phase 2 — Rendering
 - [x] Vulkan module structure
-- [ ] Vulkan function loading
+- [x] Vulkan function loading
+- [x] Instance + optional logical device
 - [ ] Window/surface creation
 - [ ] Text rendering pipeline
 

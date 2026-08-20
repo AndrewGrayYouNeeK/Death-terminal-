@@ -48,8 +48,8 @@
 - [x] Shell integration
 
 ### Phase 2 - Vulkan Rendering (High Priority)
-- [x] Vulkan instance initialization (structure complete, needs function loading)
-- [x] Physical device selection and logical device creation (structure complete, needs function loading)
+- [x] Vulkan instance initialization (loader + vkCreateInstance)
+- [x] Physical device selection and logical device creation (creates a device when a GPU is present)
 - [x] Swapchain setup (structure complete, needs function loading)
 - [x] Graphics pipeline creation (structure complete, needs shader compilation)
 - [x] Text rendering pipeline (structure complete, needs vertex generation)
@@ -169,6 +169,6 @@
 **Next Immediate Steps**:
 1. ✅ Implement PTY + terminal emulation (Phase 1) - COMPLETED
 2. ✅ Main event loop with headless rendering - COMPLETED
-3. Implement Vulkan function loading and complete renderer initialization
+3. ✅ Vulkan function loading + instance/device init - COMPLETED
 4. Add window management (X11/Wayland/Win32 surface creation)
 5. Connect GPU rendering to terminal output

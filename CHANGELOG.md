@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Real Vulkan loader (`vkGetInstanceProcAddr`) with instance creation and optional device selection
 - Headless terminal event loop with PTY polling and stdin forwarding
 - Scrollback buffer for terminal history (`src/terminal/scrollback.zig`)
 - Runtime configuration module with CLI and file loading (`src/config/config.zig`)
