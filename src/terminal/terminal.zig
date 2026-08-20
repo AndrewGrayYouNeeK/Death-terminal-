@@ -111,9 +111,9 @@ pub const PTY = struct {
             posix.close(self.slave_fd);
         }
 
-        // Execute shell
         const argv = [_:null]?[*:0]const u8{shell};
-        const envp: [*:null]?[*:0]u8 = if (std.c.environ) |env| env else &[_:null]?[*:0]u8{null};
+        // Zig 0.13: std.c.environ is [*:null]?[*:0]u8, not optional.
+        const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
         const err = linux.execve(shell, &argv, envp);
         posix.exit(@intCast(err));
     }
@@ -209,39 +209,28 @@ pub const Terminal = struct {
     parser: ansi_parser.Parser,
     scrollback: scrollback_mod.Scrollback,
     initialized: bool,
+    title: []u8,
+    cursor_visible: bool,
 
     pub fn init(allocator: std.mem.Allocator) !Terminal {
         return initWithSize(allocator, 24, 80, 10_000);
     }
 
-    pub fn initWithSize(
+    pub fn initBuffer(
         allocator: std.mem.Allocator,
         rows: u16,
         cols: u16,
         scrollback_lines: usize,
     ) !Terminal {
-        std.debug.print("  → Initializing terminal core...\n", .{});
-
-        // Allocate cell buffer
         const buffer = try allocator.alloc(Cell, rows * cols);
         errdefer allocator.free(buffer);
 
-        // Initialize all cells
         for (buffer) |*cell| {
             cell.* = Cell.init();
         }
 
-        // Open PTY
-        var pty = try PTY.open();
-        errdefer pty.close();
-
-        // Set window size
-        try pty.setWindowSize(rows, cols);
-
-        // Spawn shell
-        try pty.spawnShell(allocator);
-
-        std.debug.print("  → Terminal core initialized ({d}x{d})\n", .{ cols, rows });
+        const title = try allocator.dupe(u8, "DeathTerminal");
+        errdefer allocator.free(title);
 
         return Terminal{
             .allocator = allocator,
@@ -257,17 +246,41 @@ pub const Terminal = struct {
             .current_bold = false,
             .current_italic = false,
             .current_underline = false,
-            .pty = pty,
+            .pty = null,
             .parser = ansi_parser.Parser.init(allocator),
             .scrollback = scrollback_mod.Scrollback.init(allocator, scrollback_lines),
             .initialized = true,
+            .title = title,
+            .cursor_visible = true,
         };
+    }
+
+    pub fn initWithSize(
+        allocator: std.mem.Allocator,
+        rows: u16,
+        cols: u16,
+        scrollback_lines: usize,
+    ) !Terminal {
+        std.debug.print("  → Initializing terminal core...\n", .{});
+
+        var term = try initBuffer(allocator, rows, cols, scrollback_lines);
+        errdefer term.deinit();
+
+        var pty = try PTY.open();
+        errdefer pty.close();
+        try pty.setWindowSize(rows, cols);
+        try pty.spawnShell(allocator);
+        term.pty = pty;
+
+        std.debug.print("  → Terminal core initialized ({d}x{d})\n", .{ cols, rows });
+        return term;
     }
 
     pub fn deinit(self: *Terminal) void {
         self.parser.deinit();
         self.scrollback.deinit();
         self.allocator.free(self.buffer);
+        self.allocator.free(self.title);
         if (self.pty) |*pty| {
             pty.close();
         }
@@ -605,21 +618,39 @@ pub const Terminal = struct {
     }
 
     pub fn setMode(self: *Terminal, params: ansi_parser.CSIParams) !void {
-        _ = self;
-        _ = params;
-        // TODO: Implement mode setting (e.g., cursor visibility, mouse tracking)
+        if (params.intermediate == '?' and params.getParam(0, 0) == 25) {
+            self.cursor_visible = true;
+        }
     }
 
     pub fn resetMode(self: *Terminal, params: ansi_parser.CSIParams) !void {
-        _ = self;
-        _ = params;
-        // TODO: Implement mode resetting
+        if (params.intermediate == '?' and params.getParam(0, 0) == 25) {
+            self.cursor_visible = false;
+        }
     }
 
     pub fn setTitle(self: *Terminal, title: []const u8) !void {
-        _ = self;
-        _ = title;
-        // TODO: Store and expose window title
+        self.allocator.free(self.title);
+        self.title = try self.allocator.dupe(u8, title);
+    }
+
+    pub fn visibleText(self: *const Terminal, allocator: std.mem.Allocator) ![]u8 {
+        var list = std.ArrayList(u8).init(allocator);
+        errdefer list.deinit();
+        var row: u16 = 0;
+        while (row < self.rows) : (row += 1) {
+            var col: u16 = 0;
+            while (col < self.cols) : (col += 1) {
+                const ch = self.buffer[row * self.cols + col].char;
+                if (ch < 128) {
+                    try list.append(@intCast(ch));
+                } else {
+                    try list.append('?');
+                }
+            }
+            if (row + 1 < self.rows) try list.append('\n');
+        }
+        return list.toOwnedSlice();
     }
 };
 
@@ -639,6 +670,23 @@ test "Terminal init" {
     try testing.expect(!cell.bold);
     try testing.expect(!cell.italic);
     try testing.expect(!cell.underline);
+}
+
+test "buffer emulation and title" {
+    const testing = std.testing;
+    var term = try Terminal.initBuffer(testing.allocator, 24, 80, 8);
+    defer term.deinit();
+
+    try term.processOutput("hello\r\nworld");
+    try testing.expectEqual(@as(u21, 'h'), term.getCell(0, 0).?.char);
+    try testing.expectEqual(@as(u21, 'w'), term.getCell(1, 0).?.char);
+
+    try term.processOutput("\x1b]0;ssh prod\x07");
+    try testing.expectEqualStrings("ssh prod", term.title);
+
+    try term.processOutput("\x1b[2J\x1b[H");
+    try testing.expectEqual(@as(u16, 0), term.cursor_row);
+    try testing.expectEqual(@as(u21, ' '), term.getCell(0, 0).?.char);
 }
 
 test "Cell manipulation" {

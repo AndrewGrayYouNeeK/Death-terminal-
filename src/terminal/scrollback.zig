@@ -50,6 +50,32 @@ pub const Scrollback = struct {
         }
         self.lines.clearRetainingCapacity();
     }
+
+    pub fn lineAsAscii(self: *const Scrollback, index: usize, dest: []u8) usize {
+        const line = self.getLine(index) orelse return 0;
+        const n = @min(dest.len, line.len);
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            dest[i] = if (line[i].char < 128) @intCast(line[i].char) else '?';
+        }
+        return n;
+    }
+
+    /// Return oldest-first indices of lines containing `query`.
+    pub fn search(self: *const Scrollback, query: []const u8, allocator: std.mem.Allocator) ![]usize {
+        var hits = std.ArrayList(usize).init(allocator);
+        errdefer hits.deinit();
+        if (query.len == 0) return hits.toOwnedSlice();
+
+        var buf: [512]u8 = undefined;
+        for (self.lines.items, 0..) |_, i| {
+            const n = self.lineAsAscii(i, &buf);
+            if (std.mem.indexOf(u8, buf[0..n], query) != null) {
+                try hits.append(i);
+            }
+        }
+        return hits.toOwnedSlice();
+    }
 };
 
 test "Scrollback push and trim" {
@@ -72,4 +98,12 @@ test "Scrollback push and trim" {
     try testing.expectEqual(@as(usize, 2), scrollback.len());
     try testing.expectEqual(@as(u21, 'B'), scrollback.getLine(0).?[0].char);
     try testing.expectEqual(@as(u21, 'C'), scrollback.getLine(1).?[0].char);
+
+    var line_c = [_]u8{0} ** 8;
+    _ = scrollback.lineAsAscii(1, &line_c);
+    try testing.expectEqual(@as(u8, 'C'), line_c[0]);
+
+    const hits = try scrollback.search("C", testing.allocator);
+    defer testing.allocator.free(hits);
+    try testing.expectEqual(@as(usize, 1), hits.len);
 }

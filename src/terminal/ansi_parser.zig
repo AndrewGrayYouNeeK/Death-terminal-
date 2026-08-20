@@ -61,6 +61,7 @@ pub const Parser = struct {
     params: CSIParams,
     osc_buffer: std.ArrayList(u8),
     current_param: u32,
+    saw_digit: bool,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) Parser {
@@ -69,6 +70,7 @@ pub const Parser = struct {
             .params = CSIParams.init(),
             .osc_buffer = std.ArrayList(u8).init(allocator),
             .current_param = 0,
+            .saw_digit = false,
             .allocator = allocator,
         };
     }
@@ -81,6 +83,7 @@ pub const Parser = struct {
         self.state = .Ground;
         self.params = CSIParams.init();
         self.current_param = 0;
+        self.saw_digit = false;
         self.osc_buffer.clearRetainingCapacity();
     }
 
@@ -126,6 +129,7 @@ pub const Parser = struct {
                 self.state = .CSI;
                 self.params = CSIParams.init();
                 self.current_param = 0;
+                self.saw_digit = false;
                 return null;
             },
             ']' => {
@@ -166,17 +170,20 @@ pub const Parser = struct {
         switch (byte) {
             '0'...'9' => {
                 self.current_param = self.current_param * 10 + (byte - '0');
+                self.saw_digit = true;
                 return null;
             },
             ';' => {
                 self.params.addParam(self.current_param);
                 self.current_param = 0;
+                self.saw_digit = false;
                 return null;
             },
             ':' => {
                 // Sub-parameter separator (not commonly used)
                 self.params.addParam(self.current_param);
                 self.current_param = 0;
+                self.saw_digit = false;
                 return null;
             },
             ' '...'/' => {
@@ -185,9 +192,12 @@ pub const Parser = struct {
                 return null;
             },
             '@'...'~' => {
-                // Final byte
-                self.params.addParam(self.current_param);
+                // Final byte. Empty CSI (ESC[H) has no params so callers use defaults.
+                if (self.saw_digit or self.params.param_count > 0) {
+                    self.params.addParam(self.current_param);
+                }
                 self.current_param = 0;
+                self.saw_digit = false;
 
                 const action = Action{
                     .CSI = .{
@@ -206,6 +216,7 @@ pub const Parser = struct {
                 self.state = .Ground;
                 self.params = CSIParams.init();
                 self.current_param = 0;
+                self.saw_digit = false;
                 return null;
             },
         }
@@ -390,14 +401,30 @@ fn applySGR(params: CSIParams, terminal: anytype) !void {
             24 => try terminal.setUnderline(false),
             30...37 => try terminal.setFgColor(param - 30),
             38 => {
-                // Extended foreground color
-                // TODO: Handle 256-color and RGB
+                if (i + 2 < params.param_count and params.params[i + 1] == 5) {
+                    try terminal.setFgColor(params.params[i + 2] % 16);
+                    i += 2;
+                } else if (i + 4 < params.param_count and params.params[i + 1] == 2) {
+                    const r = params.params[i + 2];
+                    const g = params.params[i + 3];
+                    const b = params.params[i + 4];
+                    terminal.current_fg = (r << 16) | (g << 8) | b;
+                    i += 4;
+                }
             },
             39 => try terminal.resetFgColor(),
             40...47 => try terminal.setBgColor(param - 40),
             48 => {
-                // Extended background color
-                // TODO: Handle 256-color and RGB
+                if (i + 2 < params.param_count and params.params[i + 1] == 5) {
+                    try terminal.setBgColor(params.params[i + 2] % 16);
+                    i += 2;
+                } else if (i + 4 < params.param_count and params.params[i + 1] == 2) {
+                    const r = params.params[i + 2];
+                    const g = params.params[i + 3];
+                    const b = params.params[i + 4];
+                    terminal.current_bg = (r << 16) | (g << 8) | b;
+                    i += 4;
+                }
             },
             49 => try terminal.resetBgColor(),
             90...97 => try terminal.setFgColor(param - 90 + 8), // Bright colors
@@ -456,6 +483,18 @@ test "Parser CSI" {
         try testing.expectEqual(@as(u32, 1), a.CSI.params.getParam(0, 0));
         try testing.expectEqual(@as(u32, 2), a.CSI.params.getParam(1, 0));
     }
+}
+
+test "Parser empty CUP uses no params" {
+    const testing = std.testing;
+    var parser = Parser.init(testing.allocator);
+    defer parser.deinit();
+
+    _ = try parser.advance(0x1B);
+    _ = try parser.advance('[');
+    const action = try parser.advance('H');
+    try testing.expect(action != null);
+    try testing.expectEqual(@as(u8, 0), action.?.CSI.params.param_count);
 }
 
 test "Parser control characters" {
