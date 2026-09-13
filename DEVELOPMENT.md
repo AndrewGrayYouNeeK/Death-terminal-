@@ -21,10 +21,10 @@ PTY ↔ Terminal Core ↔ Renderer (Vulkan)
 | Module | Path | Status |
 |--------|------|--------|
 | Terminal core | `src/terminal/` | PTY, ANSI parser, cell buffer — functional |
-| Scrollback | `src/terminal/scrollback.zig` | In progress |
-| Event loop | `src/app/event_loop.zig` | In progress |
-| Vulkan renderer | `src/renderer/` | Loader + instance/device; software present until swapchain |
-| Window | `src/platform/window.zig` | X11 map + XPutImage + keys |
+| Scrollback | `src/terminal/scrollback.zig` | Functional |
+| Event loop | `src/app/event_loop.zig` | Headless + X11 GUI |
+| Vulkan renderer | `src/renderer/` | SPIR-V text pipeline; blit/XPutImage fallback |
+| Window | `src/platform/window.zig` | X11 map + keys + resize |
 | AI autocomplete | `src/ai/` | gRPC stub |
 | SSH tunneling | `src/ssh/` | Stub |
 | Lua scripting | `src/scripting/` | Stub |
@@ -50,7 +50,7 @@ zig build test     # Test
 - [x] PTY creation and shell spawning
 - [x] ANSI/VT100 escape sequence parser
 - [x] Cell buffer and cursor control
-- [ ] Scrollback buffer
+- [x] Scrollback buffer
 - [x] Cross-platform PTY (Unix)
 
 ### Phase 2 — Rendering
@@ -59,13 +59,14 @@ zig build test     # Test
 - [x] Instance + optional logical device
 - [x] Window/surface creation (X11)
 - [x] Swapchain blit present (software framebuffer → GPU)
-- [ ] Text rendering pipeline
+- [x] Text rendering pipeline (SPIR-V glyphs)
 
 ### Phase 3 — Application Layer
-- [ ] Main event loop with PTY polling
-- [ ] Signal handling (SIGINT, SIGTERM)
-- [ ] Configuration file loading
-- [ ] Headless terminal mode (no window)
+- [x] Main event loop with PTY polling
+- [x] Signal handling (SIGINT, SIGTERM)
+- [x] Configuration file loading
+- [x] Headless terminal mode (no window)
+- [x] Window resize (swapchain recreate + PTY winsize)
 
 ### Phase 4 — AI Integration
 - [ ] gRPC client

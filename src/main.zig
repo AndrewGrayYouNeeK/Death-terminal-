@@ -137,6 +137,7 @@ test {
     _ = @import("renderer/pipeline.zig");
     _ = @import("renderer/text_renderer.zig");
     _ = @import("renderer/gpu_present.zig");
+    _ = @import("renderer/text_pipeline.zig");
     _ = @import("renderer/software.zig");
     _ = @import("platform/window.zig");
     _ = @import("app/event_loop.zig");

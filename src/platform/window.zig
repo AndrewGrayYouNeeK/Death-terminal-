@@ -11,6 +11,7 @@ const x11 = if (builtin.os.tag == .linux) @cImport({
 pub const Event = union(enum) {
     none,
     close,
+    redraw,
     resize: struct { width: u32, height: u32 },
     input: []const u8,
 };
@@ -239,7 +240,7 @@ fn pollX11(self: *Window) Event {
         return .none;
     }
     if (ev.type == x11.Expose) {
-        return .{ .resize = .{ .width = self.width, .height = self.height } };
+        return .redraw;
     }
     if (ev.type == x11.KeyPress) {
         var buf: [8]u8 = undefined;

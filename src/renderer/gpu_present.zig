@@ -63,6 +63,8 @@ pub const GpuPresent = struct {
     staging_size: usize = 0,
     acquire_fence: vk.VkFence = null,
     allocator: std.mem.Allocator = undefined,
+    can_blit: bool = false,
+    can_draw: bool = false,
 
     vkCreateXlibSurfaceKHR: ?CreateXlibSurfaceFn = null,
     vkDestroySurfaceKHR: ?DestroySurfaceFn = null,
@@ -141,11 +143,71 @@ pub const GpuPresent = struct {
         try self.createSwapchain(h, width, height);
         try self.createCommands(h);
         self.enabled = true;
-        std.debug.print("    → Vulkan swapchain present enabled ({d}x{d})\n", .{ self.extent.width, self.extent.height });
+        std.debug.print("    → Vulkan swapchain present enabled ({d}x{d}) draw={} blit={}\n", .{
+            self.extent.width,
+            self.extent.height,
+            self.can_draw,
+            self.can_blit,
+        });
+    }
+
+    pub fn recreate(self: *GpuPresent, h: Handles, width: u32, height: u32) !void {
+        if (!self.enabled) return error.NotEnabled;
+        if (h.queue != null) {
+            if (self.vkQueueWaitIdle) |wait| _ = wait(h.queue);
+        }
+        self.destroySwapchain(h);
+        try self.createSwapchain(h, width, height);
+        try self.createCommands(h);
+    }
+
+    pub fn beginPresent(self: *GpuPresent, h: Handles) !u32 {
+        if (!self.enabled) return error.NotEnabled;
+        var index: u32 = 0;
+        const acquire = self.vkAcquireNextImageKHR orelse return error.MissingAcquire;
+        const wait_fences = self.vkWaitForFences orelse return error.MissingWaitFence;
+        const reset_fences = self.vkResetFences orelse return error.MissingResetFence;
+        _ = reset_fences(h.device, 1, @ptrCast(&self.acquire_fence));
+        const acq = acquire(h.device, self.swapchain, std.math.maxInt(u64), null, self.acquire_fence, &index);
+        if (acq != vk.VK_SUCCESS and acq != vk.raw.VK_SUBOPTIMAL_KHR) return error.AcquireFailed;
+        _ = wait_fences(h.device, 1, @ptrCast(&self.acquire_fence), vk.VK_TRUE, std.math.maxInt(u64));
+        if (index >= self.images.len) return error.BadImageIndex;
+
+        const cmd = self.command_buffer orelse return error.NoCommandBuffer;
+        if (self.vkResetCommandBuffer) |reset| _ = reset(cmd, 0);
+        var begin_info = std.mem.zeroes(vk.raw.VkCommandBufferBeginInfo);
+        begin_info.sType = vk.raw.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin_info.flags = vk.raw.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        const begin = self.vkBeginCommandBuffer orelse return error.MissingBegin;
+        if (begin(cmd, &begin_info) != vk.VK_SUCCESS) return error.BeginFailed;
+        return index;
+    }
+
+    pub fn submitPresent(self: *GpuPresent, h: Handles, index: u32) !void {
+        const cmd = self.command_buffer orelse return error.NoCommandBuffer;
+        const end = self.vkEndCommandBuffer orelse return error.MissingEnd;
+        if (end(cmd) != vk.VK_SUCCESS) return error.EndFailed;
+
+        var submit = std.mem.zeroes(vk.raw.VkSubmitInfo);
+        submit.sType = vk.raw.VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = @ptrCast(&cmd);
+        const qsubmit = self.vkQueueSubmit orelse return error.MissingSubmit;
+        if (qsubmit(h.queue, 1, @ptrCast(&submit), null) != vk.VK_SUCCESS) return error.SubmitFailed;
+        if (self.vkQueueWaitIdle) |wait| _ = wait(h.queue);
+
+        var present_info = std.mem.zeroes(vk.raw.VkPresentInfoKHR);
+        present_info.sType = vk.raw.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        present_info.swapchainCount = 1;
+        present_info.pSwapchains = @ptrCast(&self.swapchain);
+        present_info.pImageIndices = &index;
+        const qpresent = self.vkQueuePresentKHR orelse return error.MissingPresent;
+        const pres = qpresent(h.queue, &present_info);
+        if (pres != vk.VK_SUCCESS and pres != vk.raw.VK_SUBOPTIMAL_KHR) return error.PresentFailed;
     }
 
     pub fn present(self: *GpuPresent, h: Handles, pixels: []const u32, width: u32, height: u32) bool {
-        if (!self.enabled) return false;
+        if (!self.enabled or !self.can_blit) return false;
         self.presentFrame(h, pixels, width, height) catch return false;
         return true;
     }
@@ -209,7 +271,16 @@ pub const GpuPresent = struct {
         const formats_fn = self.vkGetPhysicalDeviceSurfaceFormatsKHR orelse return error.MissingFormats;
         var caps = std.mem.zeroes(vk.VkSurfaceCapabilitiesKHR);
         if (caps_fn(h.physical_device, self.surface, &caps) != vk.VK_SUCCESS) return error.SurfaceCapsFailed;
-        if (caps.supportedUsageFlags & vk.raw.VK_IMAGE_USAGE_TRANSFER_DST_BIT == 0) return error.NoTransferDst;
+        var usage: u32 = 0;
+        if (caps.supportedUsageFlags & vk.raw.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT != 0) {
+            usage |= vk.raw.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        }
+        if (caps.supportedUsageFlags & vk.raw.VK_IMAGE_USAGE_TRANSFER_DST_BIT != 0) {
+            usage |= vk.raw.VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        }
+        if (usage == 0) return error.NoSwapchainUsage;
+        self.can_draw = (usage & vk.raw.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0;
+        self.can_blit = (usage & vk.raw.VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0;
 
         var format_count: u32 = 0;
         if (formats_fn(h.physical_device, self.surface, &format_count, null) != vk.VK_SUCCESS or format_count == 0) return error.NoSurfaceFormats;
@@ -243,7 +314,7 @@ pub const GpuPresent = struct {
         sci.imageColorSpace = chosen.colorSpace;
         sci.imageExtent = extent;
         sci.imageArrayLayers = 1;
-        sci.imageUsage = vk.raw.VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        sci.imageUsage = usage;
         sci.imageSharingMode = vk.raw.VK_SHARING_MODE_EXCLUSIVE;
         sci.preTransform = caps.currentTransform;
         sci.compositeAlpha = vk.raw.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
@@ -374,26 +445,8 @@ pub const GpuPresent = struct {
         if (copy_w == 0 or copy_h == 0) return error.ZeroCopy;
 
         try self.uploadStaging(h, pixels, width, height, copy_w, copy_h);
-
-        var index: u32 = 0;
-        const acquire = self.vkAcquireNextImageKHR orelse return error.MissingAcquire;
-        const wait_fences = self.vkWaitForFences orelse return error.MissingWaitFence;
-        const reset_fences = self.vkResetFences orelse return error.MissingResetFence;
-        _ = reset_fences(h.device, 1, @ptrCast(&self.acquire_fence));
-        const acq = acquire(h.device, self.swapchain, std.math.maxInt(u64), null, self.acquire_fence, &index);
-        if (acq != vk.VK_SUCCESS and acq != vk.raw.VK_SUBOPTIMAL_KHR) return error.AcquireFailed;
-        _ = wait_fences(h.device, 1, @ptrCast(&self.acquire_fence), vk.VK_TRUE, std.math.maxInt(u64));
-        if (index >= self.images.len) return error.BadImageIndex;
-
+        const index = try self.beginPresent(h);
         const cmd = self.command_buffer orelse return error.NoCommandBuffer;
-        if (self.vkResetCommandBuffer) |reset| _ = reset(cmd, 0);
-
-        var begin_info = std.mem.zeroes(vk.raw.VkCommandBufferBeginInfo);
-        begin_info.sType = vk.raw.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        begin_info.flags = vk.raw.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        const begin = self.vkBeginCommandBuffer orelse return error.MissingBegin;
-        if (begin(cmd, &begin_info) != vk.VK_SUCCESS) return error.BeginFailed;
-
         const image = self.images[index];
         const barrier_fn = self.vkCmdPipelineBarrier orelse return error.MissingBarrier;
         var to_dst = imageBarrier(image, vk.raw.VK_IMAGE_LAYOUT_UNDEFINED, vk.raw.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, vk.raw.VK_ACCESS_TRANSFER_WRITE_BIT);
@@ -408,26 +461,7 @@ pub const GpuPresent = struct {
 
         var to_present = imageBarrier(image, vk.raw.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.raw.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, vk.raw.VK_ACCESS_TRANSFER_WRITE_BIT, vk.raw.VK_ACCESS_MEMORY_READ_BIT);
         barrier_fn(cmd, vk.raw.VK_PIPELINE_STAGE_TRANSFER_BIT, vk.raw.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, null, 0, null, 1, @ptrCast(&to_present));
-
-        const end = self.vkEndCommandBuffer orelse return error.MissingEnd;
-        if (end(cmd) != vk.VK_SUCCESS) return error.EndFailed;
-
-        var submit = std.mem.zeroes(vk.raw.VkSubmitInfo);
-        submit.sType = vk.raw.VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit.commandBufferCount = 1;
-        submit.pCommandBuffers = @ptrCast(&cmd);
-        const qsubmit = self.vkQueueSubmit orelse return error.MissingSubmit;
-        if (qsubmit(h.queue, 1, @ptrCast(&submit), null) != vk.VK_SUCCESS) return error.SubmitFailed;
-        if (self.vkQueueWaitIdle) |wait| _ = wait(h.queue);
-
-        var present_info = std.mem.zeroes(vk.raw.VkPresentInfoKHR);
-        present_info.sType = vk.raw.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-        present_info.swapchainCount = 1;
-        present_info.pSwapchains = @ptrCast(&self.swapchain);
-        present_info.pImageIndices = &index;
-        const qpresent = self.vkQueuePresentKHR orelse return error.MissingPresent;
-        const pres = qpresent(h.queue, &present_info);
-        if (pres != vk.VK_SUCCESS and pres != vk.raw.VK_SUBOPTIMAL_KHR) return error.PresentFailed;
+        try self.submitPresent(h, index);
     }
 
     fn uploadStaging(self: *GpuPresent, h: Handles, pixels: []const u32, src_w: u32, src_h: u32, copy_w: u32, copy_h: u32) !void {
