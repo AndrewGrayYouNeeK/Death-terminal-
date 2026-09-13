@@ -14,6 +14,9 @@ pub fn build(b: *std.Build) void {
     // Link system libraries
     exe.linkLibC();
     exe.linkSystemLibrary("vulkan");
+    if (target.result.os.tag == .linux) {
+        exe.linkSystemLibrary("X11");
+    }
 
     b.installArtifact(exe);
 
@@ -29,6 +32,9 @@ pub fn build(b: *std.Build) void {
     });
     unit_tests.linkLibC();
     unit_tests.linkSystemLibrary("vulkan");
+    if (target.result.os.tag == .linux) {
+        unit_tests.linkSystemLibrary("X11");
+    }
 
     const test_step = b.step("test", "Run unit tests");
     const run_unit_tests = b.addRunArtifact(unit_tests);

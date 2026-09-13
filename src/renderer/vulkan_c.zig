@@ -1,7 +1,14 @@
 // Vulkan C API bindings for Zig
 // This provides minimal Vulkan bindings needed for text rendering
 
-const c = @cImport({
+const builtin = @import("builtin");
+
+const c = if (builtin.os.tag == .linux) @cImport({
+    @cDefine("VK_NO_PROTOTYPES", "1");
+    @cDefine("VK_USE_PLATFORM_XLIB_KHR", "1");
+    @cInclude("X11/Xlib.h");
+    @cInclude("vulkan/vulkan.h");
+}) else @cImport({
     @cDefine("VK_NO_PROTOTYPES", "1");
     @cInclude("vulkan/vulkan.h");
 });

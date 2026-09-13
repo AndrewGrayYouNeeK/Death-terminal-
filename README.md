@@ -80,11 +80,10 @@ Build system
 Core module layout
 PTY + terminal emulation
 Vulkan loader + instance/device init
+X11 window + software present
 In Progress
-Window/surface creation
-Text rendering pipeline
+GPU text pipeline / swapchain
 Next Up
-GPU text output
 AI integration
 🧩 Architecture (Simplified)
 PTY ↔ Terminal Core ↔ Renderer (Vulkan)

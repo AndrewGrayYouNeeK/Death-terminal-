@@ -50,12 +50,12 @@
 ### Phase 2 - Vulkan Rendering (High Priority)
 - [x] Vulkan instance initialization (loader + vkCreateInstance)
 - [x] Physical device selection and logical device creation (creates a device when a GPU is present)
-- [x] Swapchain setup (structure complete, needs function loading)
+- [x] Swapchain setup (X11 surface + transfer blit present)
 - [x] Graphics pipeline creation (structure complete, needs shader compilation)
 - [x] Text rendering pipeline (structure complete, needs vertex generation)
 - [x] Glyph atlas generation and caching (structure complete, needs font rendering)
 - [x] GPU buffer management (structure in place)
-- [ ] Window creation and management
+- [x] Window creation and management
 - [ ] High-DPI display support
 - [ ] Window resize handling
 - [ ] Frame synchronization
@@ -149,7 +149,7 @@
 
 ## 📊 Current Status Summary
 
-**Overall Progress**: ~35% (Terminal core complete with scrollback, headless event loop running, Zig 0.13 compatible)
+**Overall Progress**: ~45% (terminal core + X11 GUI + Vulkan swapchain blit present)
 
 **Lines of Code**:
 - terminal/terminal.zig: 650+ lines (PTY + ANSI parser + scrollback)
@@ -171,5 +171,5 @@
 1. ✅ Implement PTY + terminal emulation (Phase 1) - COMPLETED
 2. ✅ Main event loop with headless rendering - COMPLETED
 3. ✅ Vulkan function loading + instance/device init - COMPLETED
-4. Add window management (X11/Wayland/Win32 surface creation)
-5. Connect GPU rendering to terminal output
+4. ✅ Window management (X11 present + keys) - COMPLETED
+5. ✅ Connect GPU rendering to terminal output (swapchain blit) - COMPLETED
