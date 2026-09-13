@@ -10,6 +10,10 @@ pub const Config = struct {
     ai_endpoint: []const u8,
     scrollback_lines: usize,
     headless: bool,
+    scale: f32,
+    backend: Backend,
+
+    pub const Backend = enum { auto, x11, wayland, win32 };
 
     pub fn init(allocator: std.mem.Allocator) Config {
         return Config{
@@ -20,6 +24,8 @@ pub const Config = struct {
             .ai_endpoint = allocator.dupe(u8, "localhost:50051") catch @panic("config: out of memory"),
             .scrollback_lines = 10_000,
             .headless = true,
+            .scale = 0,
+            .backend = .auto,
         };
     }
 
@@ -37,6 +43,18 @@ pub const Config = struct {
                 self.headless = true;
             } else if (std.mem.eql(u8, arg, "--gui")) {
                 self.headless = false;
+            } else if (std.mem.eql(u8, arg, "--scale")) {
+                if (i + 1 >= args.len) return error.MissingScale;
+                i += 1;
+                self.scale = try std.fmt.parseFloat(f32, args[i]);
+            } else if (std.mem.startsWith(u8, arg, "--scale=")) {
+                self.scale = try std.fmt.parseFloat(f32, arg["--scale=".len..]);
+            } else if (std.mem.eql(u8, arg, "--backend")) {
+                if (i + 1 >= args.len) return error.MissingBackend;
+                i += 1;
+                self.backend = try parseBackend(args[i]);
+            } else if (std.mem.startsWith(u8, arg, "--backend=")) {
+                self.backend = try parseBackend(arg["--backend=".len..]);
             } else if (std.mem.eql(u8, arg, "--config")) {
                 if (i + 1 >= args.len) return error.MissingConfigPath;
                 i += 1;
@@ -85,6 +103,14 @@ pub const Config = struct {
         self.loadFromFile(path) catch {};
     }
 
+    fn parseBackend(name: []const u8) !Backend {
+        if (std.mem.eql(u8, name, "auto")) return .auto;
+        if (std.mem.eql(u8, name, "x11")) return .x11;
+        if (std.mem.eql(u8, name, "wayland")) return .wayland;
+        if (std.mem.eql(u8, name, "win32")) return .win32;
+        return error.UnknownBackend;
+    }
+
     fn parseU16(value: []const u8) !u16 {
         const trimmed = std.mem.trim(u8, value, " \t\"");
         return try std.fmt.parseInt(u16, trimmed, 10);
@@ -118,4 +144,14 @@ test "Config arg parsing" {
     try config.loadFromArgs(&args);
     try testing.expect(!config.ai_enabled);
     try testing.expect(!config.headless);
+}
+
+test "Config scale and backend args" {
+    const testing = std.testing;
+    var config = Config.init(testing.allocator);
+    defer config.deinit();
+    const args = [_][]const u8{ "deathterminal", "--gui", "--scale", "2", "--backend", "x11" };
+    try config.loadFromArgs(&args);
+    try testing.expectEqual(@as(f32, 2.0), config.scale);
+    try testing.expectEqual(Config.Backend.x11, config.backend);
 }

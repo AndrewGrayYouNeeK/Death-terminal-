@@ -10,6 +10,7 @@ const ssh = @import("../ssh/tunnel.zig");
 const lua_engine = @import("../scripting/lua_engine.zig");
 const config = @import("../config/config.zig");
 const window_mod = @import("../platform/window.zig");
+const dpi = @import("../platform/dpi.zig");
 
 const POLL_TIMEOUT_MS: i32 = 16;
 const READ_BUFFER_SIZE: usize = 4096;
@@ -59,21 +60,39 @@ pub const EventLoop = struct {
         term: *terminal.Terminal,
         autocomplete: *ai.Autocomplete,
     ) !void {
-        var soft = try software.SoftwareRenderer.init(self.allocator, term.cols, term.rows);
+        var scale: f32 = if (self.cfg.scale >= 1.0)
+            dpi.normalize(self.cfg.scale)
+        else
+            dpi.detectEnvScale();
+
+        var soft = try software.SoftwareRenderer.init(self.allocator, term.cols, term.rows, scale);
         defer soft.deinit();
 
-        var window = try window_mod.Window.open(self.allocator, "DeathTerminal", soft.width, soft.height);
+        var window = try window_mod.Window.open(self.allocator, .{
+            .title = "DeathTerminal",
+            .width = soft.width,
+            .height = soft.height,
+            .scale = self.cfg.scale,
+            .backend = self.cfg.backend,
+        });
         defer window.deinit();
         if (!window.isLive()) return error.NoWindowBackend;
+        if (window.scale != scale) {
+            scale = window.scale;
+            try soft.resize(term.cols, term.rows, scale);
+        }
         defer vulkan_renderer.detachPresent();
-        _ = vulkan_renderer.attachX11(window.x11DisplayPtr(), window.x11WindowId(), window.width, window.height);
+        attachPresent(vulkan_renderer, &window);
 
         const pty_fd = term.getPtyFd() orelse return error.NoPty;
         try setNonBlocking(pty_fd);
         try installSignalHandlers();
 
         var read_buf: [READ_BUFFER_SIZE]u8 = undefined;
-        std.debug.print("GUI terminal active. Close the window or Ctrl+C to exit.\n", .{});
+        std.debug.print("GUI terminal active ({s}, scale={d:.2}). Close the window or Ctrl+C to exit.\n", .{
+            @tagName(window.backend),
+            window.scale,
+        });
         try presentGui(term, vulkan_renderer, &soft, &window);
 
         while (!shutdown_requested.load(.seq_cst)) {
@@ -93,11 +112,12 @@ pub const EventLoop = struct {
                         break;
                     },
                     .resize => |sz| {
-                        const cols: u16 = @intCast(@max(@as(u32, 1), sz.width / software.CELL_W));
-                        const rows: u16 = @intCast(@max(@as(u32, 1), sz.height / software.CELL_H));
+                        const cell = software.cellPx(window.scale);
+                        const cols: u16 = @intCast(@max(@as(u32, 1), sz.width / cell.w));
+                        const rows: u16 = @intCast(@max(@as(u32, 1), sz.height / cell.h));
                         if (cols != term.cols or rows != term.rows) {
                             try term.resize(rows, cols);
-                            try soft.resize(cols, rows);
+                            try soft.resize(cols, rows, window.scale);
                         }
                         try vulkan_renderer.resize(sz.width, sz.height);
                         need_present = true;
@@ -255,6 +275,15 @@ fn disableRawMode() !void {
     try posix.tcsetattr(posix.STDIN_FILENO, posix.TCSA.NOW, termios);
 }
 
+fn attachPresent(vulkan_renderer: *renderer.VulkanRenderer, window: *window_mod.Window) void {
+    switch (window.backend) {
+        .x11 => _ = vulkan_renderer.attachX11(window.x11DisplayPtr(), window.x11WindowId(), window.width, window.height),
+        .wayland => _ = vulkan_renderer.attachWayland(window.waylandDisplayPtr(), window.waylandSurfacePtr(), window.width, window.height),
+        .win32 => _ = vulkan_renderer.attachWin32(window.win32InstancePtr(), window.win32HwndPtr(), window.width, window.height),
+        .none => {},
+    }
+}
+
 fn presentGui(
     term: *terminal.Terminal,
     vulkan_renderer: *renderer.VulkanRenderer,
@@ -269,6 +298,7 @@ fn presentGui(
         term.cursor_row,
         term.cursor_col,
         term.cursor_visible,
+        window.scale,
     )) {
         soft.dirty = false;
         return;

@@ -19,7 +19,7 @@ jobs:
           echo "$PWD/zig-linux-x86_64-0.13.0" >> $GITHUB_PATH
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers libx11-dev
+        run: sudo apt-get update && sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers libx11-dev libwayland-dev wayland-protocols libxkbcommon-dev
 
       - name: Build
         run: zig build

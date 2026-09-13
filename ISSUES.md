@@ -50,13 +50,13 @@
 ### Phase 2 - Vulkan Rendering (High Priority)
 - [x] Vulkan instance initialization (loader + vkCreateInstance)
 - [x] Physical device selection and logical device creation (creates a device when a GPU is present)
-- [x] Swapchain setup (X11 surface + graphics present)
+- [x] Swapchain setup (X11/Wayland/Win32 surface + graphics present)
 - [x] Graphics pipeline creation (SPIR-V vertex/fragment text shaders)
 - [x] Text rendering pipeline (glyph atlas + instanced quads)
 - [x] Glyph atlas generation and caching (embedded 8x8 ASCII atlas)
 - [x] GPU buffer management (structure in place)
 - [x] Window creation and management
-- [ ] High-DPI display support
+- [x] High-DPI display support
 - [x] Window resize handling
 - [ ] Frame synchronization
 - [ ] Performance optimization (batching, minimal state changes)
@@ -149,7 +149,7 @@
 
 ## 📊 Current Status Summary
 
-**Overall Progress**: ~50% (terminal core + X11 GUI + GPU SPIR-V text pipeline)
+**Overall Progress**: ~55% (terminal core + Wayland/X11/Win32 GUI + HiDPI + GPU SPIR-V text pipeline)
 
 **Lines of Code**:
 - terminal/terminal.zig: 650+ lines (PTY + ANSI parser + scrollback)
@@ -173,8 +173,8 @@
 1. ✅ Implement PTY + terminal emulation (Phase 1) - COMPLETED
 2. ✅ Main event loop with headless rendering - COMPLETED
 3. ✅ Vulkan function loading + instance/device init - COMPLETED
-4. ✅ Window management (X11 present + keys) - COMPLETED
+4. ✅ Window management (X11/Wayland/Win32 present + keys) - COMPLETED
 5. ✅ Connect GPU rendering to terminal output (swapchain blit) - COMPLETED
 6. ✅ SPIR-V text pipeline (glyph atlas + instanced draw) - COMPLETED
-7. Wayland / Win32 window backends
+7. ✅ HiDPI cell scaling (`--scale`, DPI, compositor buffer scale)
 8. Phase 3 AI integration

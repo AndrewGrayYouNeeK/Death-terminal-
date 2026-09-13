@@ -1,8 +1,18 @@
 const std = @import("std");
 const Cell = @import("../terminal/terminal.zig").Cell;
 
+const dpi = @import("../platform/dpi.zig");
+
 pub const CELL_W: u32 = 8;
 pub const CELL_H: u32 = 16;
+
+pub fn cellPx(scale: f32) struct { w: u32, h: u32 } {
+    const s = dpi.normalize(scale);
+    return .{
+        .w = @max(1, @as(u32, @intFromFloat(@round(@as(f32, CELL_W) * s)))),
+        .h = @max(1, @as(u32, @intFromFloat(@round(@as(f32, CELL_H) * s)))),
+    };
+}
 
 /// 8x8 glyphs for ASCII 32..126. Each row is a bitfield; LSB is the leftmost pixel.
 const FONT8: [95][8]u8 = .{
@@ -153,10 +163,14 @@ pub const SoftwareRenderer = struct {
     width: u32,
     height: u32,
     dirty: bool,
+    scale: f32,
+    cell_w: u32,
+    cell_h: u32,
 
-    pub fn init(allocator: std.mem.Allocator, cols: u16, rows: u16) !SoftwareRenderer {
-        const width = @as(u32, cols) * CELL_W;
-        const height = @as(u32, rows) * CELL_H;
+    pub fn init(allocator: std.mem.Allocator, cols: u16, rows: u16, scale: f32) !SoftwareRenderer {
+        const cell = cellPx(scale);
+        const width = @as(u32, cols) * cell.w;
+        const height = @as(u32, rows) * cell.h;
         const pixels = try allocator.alloc(u32, width * height);
         @memset(pixels, 0xFF000000);
         return .{
@@ -165,6 +179,9 @@ pub const SoftwareRenderer = struct {
             .width = width,
             .height = height,
             .dirty = true,
+            .scale = dpi.normalize(scale),
+            .cell_w = cell.w,
+            .cell_h = cell.h,
         };
     }
 
@@ -173,9 +190,13 @@ pub const SoftwareRenderer = struct {
         self.pixels = &.{};
     }
 
-    pub fn resize(self: *SoftwareRenderer, cols: u16, rows: u16) !void {
-        const width = @as(u32, cols) * CELL_W;
-        const height = @as(u32, rows) * CELL_H;
+    pub fn resize(self: *SoftwareRenderer, cols: u16, rows: u16, scale: f32) !void {
+        const cell = cellPx(scale);
+        const width = @as(u32, cols) * cell.w;
+        const height = @as(u32, rows) * cell.h;
+        self.scale = dpi.normalize(scale);
+        self.cell_w = cell.w;
+        self.cell_h = cell.h;
         if (width == self.width and height == self.height) return;
         const pixels = try self.allocator.alloc(u32, width * height);
         self.allocator.free(self.pixels);
@@ -210,8 +231,10 @@ pub const SoftwareRenderer = struct {
 };
 
 fn blit(self: *SoftwareRenderer, col: u16, row: u16, cell: Cell, invert: bool) void {
-    const ox = @as(u32, col) * CELL_W;
-    const oy = @as(u32, row) * CELL_H;
+    const cw = self.cell_w;
+    const ch = self.cell_h;
+    const ox = @as(u32, col) * cw;
+    const oy = @as(u32, row) * ch;
     var fg = (cell.fg_color & 0x00FFFFFF) | 0xFF000000;
     var bg = (cell.bg_color & 0x00FFFFFF) | 0xFF000000;
     if (invert) {
@@ -221,11 +244,13 @@ fn blit(self: *SoftwareRenderer, col: u16, row: u16, cell: Cell, invert: bool) v
     }
     const bits = glyphBits(cell.char);
     var gy: u32 = 0;
-    while (gy < CELL_H) : (gy += 1) {
-        const row_bits = bits[gy / 2];
+    while (gy < ch) : (gy += 1) {
+        const src_y = gy * GLYPH_PX / ch;
+        const row_bits = bits[src_y];
         var gx: u32 = 0;
-        while (gx < CELL_W) : (gx += 1) {
-            const on = (row_bits & (@as(u8, 1) << @intCast(gx))) != 0;
+        while (gx < cw) : (gx += 1) {
+            const src_x = gx * GLYPH_PX / cw;
+            const on = (row_bits & (@as(u8, 1) << @intCast(src_x))) != 0;
             const px = ox + gx;
             const py = oy + gy;
             if (px >= self.width or py >= self.height) continue;
@@ -235,10 +260,24 @@ fn blit(self: *SoftwareRenderer, col: u16, row: u16, cell: Cell, invert: bool) v
 }
 
 test "software renderer allocates framebuffer" {
-    var r = try SoftwareRenderer.init(std.testing.allocator, 4, 2);
+    var r = try SoftwareRenderer.init(std.testing.allocator, 4, 2, 1.0);
     defer r.deinit();
     try std.testing.expectEqual(@as(u32, 32), r.width);
     try std.testing.expectEqual(@as(u32, 32), r.height);
+}
+
+test "software renderer honors scale 2" {
+    var r = try SoftwareRenderer.init(std.testing.allocator, 4, 2, 2.0);
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 64), r.width);
+    try std.testing.expectEqual(@as(u32, 64), r.height);
+    try std.testing.expectEqual(@as(u32, 16), r.cell_w);
+    try std.testing.expectEqual(@as(u32, 32), r.cell_h);
+}
+
+test "cellPx scales integer sizes" {
+    try std.testing.expectEqual(@as(u32, 16), cellPx(2.0).w);
+    try std.testing.expectEqual(@as(u32, 32), cellPx(2.0).h);
 }
 
 test "atlas packs ASCII coverage" {
@@ -261,7 +300,7 @@ test "atlas packs ASCII coverage" {
 }
 
 test "software renderer draws ASCII glyph" {
-    var r = try SoftwareRenderer.init(std.testing.allocator, 2, 1);
+    var r = try SoftwareRenderer.init(std.testing.allocator, 2, 1, 1.0);
     defer r.deinit();
     var cells = [_]Cell{ Cell.init(), Cell.init() };
     cells[0].char = 'A';
