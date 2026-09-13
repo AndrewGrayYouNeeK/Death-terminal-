@@ -126,6 +126,23 @@ fn printHelp() !void {
     std.debug.print("{s}\n", .{help_text});
 }
 
+test {
+    _ = @import("terminal/terminal.zig");
+    _ = @import("terminal/ansi_parser.zig");
+    _ = @import("terminal/scrollback.zig");
+    _ = @import("renderer/vulkan_renderer.zig");
+    _ = @import("renderer/loader.zig");
+    _ = @import("renderer/vulkan_c.zig");
+    _ = @import("renderer/swapchain.zig");
+    _ = @import("renderer/pipeline.zig");
+    _ = @import("renderer/text_renderer.zig");
+    _ = @import("app/event_loop.zig");
+    _ = @import("config/config.zig");
+    _ = @import("ai/autocomplete.zig");
+    _ = @import("ssh/tunnel.zig");
+    _ = @import("scripting/lua_engine.zig");
+}
+
 test "basic functionality" {
     const testing = std.testing;
     try testing.expect(true);

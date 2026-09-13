@@ -23,7 +23,7 @@ pub const Swapchain = struct {
         _ = physical_device;
         _ = surface;
 
-        var swap = Swapchain{
+        const swap = Swapchain{
             .allocator = allocator,
             .swapchain = null,
             .images = std.ArrayList(vk.VkImage).init(allocator),

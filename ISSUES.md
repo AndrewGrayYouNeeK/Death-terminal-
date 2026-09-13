@@ -48,8 +48,8 @@
 - [x] Shell integration
 
 ### Phase 2 - Vulkan Rendering (High Priority)
-- [x] Vulkan instance initialization (structure complete, needs function loading)
-- [x] Physical device selection and logical device creation (structure complete, needs function loading)
+- [x] Vulkan instance initialization (loader + vkCreateInstance)
+- [x] Physical device selection and logical device creation (creates a device when a GPU is present)
 - [x] Swapchain setup (structure complete, needs function loading)
 - [x] Graphics pipeline creation (structure complete, needs shader compilation)
 - [x] Text rendering pipeline (structure complete, needs vertex generation)
@@ -101,7 +101,7 @@
 ### Main Event Loop
 - [x] Event loop architecture
 - [x] Input event handling (keyboard, mouse)
-- [ ] Rendering loop integration
+- [x] Rendering loop integration (headless; GPU present still TODO)
 - [x] Event dispatching to subsystems
 - [x] Graceful shutdown handling
 - [x] Signal handling (SIGTERM, SIGINT, etc.)
@@ -157,7 +157,8 @@
 - terminal/ansi_parser.zig: 400+ lines (complete VT100/ANSI escape sequence parser)
 - app/event_loop.zig: headless PTY event loop
 - config/config.zig: runtime configuration
-- renderer/vulkan_renderer.zig: 162 lines (structured foundation)
+- renderer/vulkan_renderer.zig: loader-backed instance/device init
+- renderer/loader.zig: DynLib Vulkan loader (`vkGetInstanceProcAddr`)
 - renderer/text_renderer.zig: 200+ lines (glyph atlas and text rendering structure)
 - renderer/pipeline.zig: 80+ lines (graphics pipeline structure)
 - renderer/swapchain.zig: 100+ lines (swapchain management structure)
@@ -169,6 +170,6 @@
 **Next Immediate Steps**:
 1. ✅ Implement PTY + terminal emulation (Phase 1) - COMPLETED
 2. ✅ Main event loop with headless rendering - COMPLETED
-3. Implement Vulkan function loading and complete renderer initialization
+3. ✅ Vulkan function loading + instance/device init - COMPLETED
 4. Add window management (X11/Wayland/Win32 surface creation)
 5. Connect GPU rendering to terminal output

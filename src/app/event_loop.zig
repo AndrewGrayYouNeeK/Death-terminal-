@@ -62,8 +62,7 @@ pub const EventLoop = struct {
 
         var stdin_raw = false;
         if (builtin.os.tag != .windows) {
-            try enableRawMode();
-            stdin_raw = true;
+            stdin_raw = try enableRawMode();
         }
         defer if (stdin_raw) disableRawMode() catch {};
 
@@ -147,24 +146,31 @@ fn installSignalHandlers() !void {
     try posix.sigaction(posix.SIG.TERM, &action, null);
 }
 
-fn enableRawMode() !void {
-    var termios = try posix.tcgetattr(posix.STDIN_FILENO);
+fn enableRawMode() !bool {
+    var termios = posix.tcgetattr(posix.STDIN_FILENO) catch |err| switch (err) {
+        error.NotATerminal => return false,
+        else => return err,
+    };
     termios.lflag.ICANON = false;
     termios.lflag.ECHO = false;
     termios.cc[@intFromEnum(posix.V.MIN)] = 0;
     termios.cc[@intFromEnum(posix.V.TIME)] = 1;
     try posix.tcsetattr(posix.STDIN_FILENO, posix.TCSA.NOW, termios);
+    return true;
 }
 
 fn disableRawMode() !void {
-    var termios = try posix.tcgetattr(posix.STDIN_FILENO);
+    var termios = posix.tcgetattr(posix.STDIN_FILENO) catch |err| switch (err) {
+        error.NotATerminal => return,
+        else => return err,
+    };
     termios.lflag.ICANON = true;
     termios.lflag.ECHO = true;
     try posix.tcsetattr(posix.STDIN_FILENO, posix.TCSA.NOW, termios);
 }
 
 fn renderHeadless(term: *terminal.Terminal, vulkan_renderer: *renderer.VulkanRenderer) !void {
-    _ = vulkan_renderer;
+    try vulkan_renderer.render();
 
     var out: [8192]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&out);

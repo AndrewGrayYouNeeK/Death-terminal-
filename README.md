@@ -78,11 +78,13 @@ Done
 Project structure
 Build system
 Core module layout
-In Progress
 PTY + terminal emulation
-Input handling
+Vulkan loader + instance/device init
+In Progress
+Window/surface creation
+Text rendering pipeline
 Next Up
-Vulkan renderer
+GPU text output
 AI integration
 🧩 Architecture (Simplified)
 PTY ↔ Terminal Core ↔ Renderer (Vulkan)
