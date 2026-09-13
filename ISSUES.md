@@ -55,7 +55,7 @@
 - [x] Text rendering pipeline (structure complete, needs vertex generation)
 - [x] Glyph atlas generation and caching (structure complete, needs font rendering)
 - [x] GPU buffer management (structure in place)
-- [ ] Window creation and management
+- [x] Window creation and management
 - [ ] High-DPI display support
 - [ ] Window resize handling
 - [ ] Frame synchronization
@@ -171,5 +171,5 @@
 1. ✅ Implement PTY + terminal emulation (Phase 1) - COMPLETED
 2. ✅ Main event loop with headless rendering - COMPLETED
 3. ✅ Vulkan function loading + instance/device init - COMPLETED
-4. Add window management (X11/Wayland/Win32 surface creation)
-5. Connect GPU rendering to terminal output
+4. ✅ Window management (X11 present + keys) - COMPLETED
+5. Connect GPU rendering to terminal output (swapchain / SPIR-V)

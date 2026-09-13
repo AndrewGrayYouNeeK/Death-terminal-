@@ -191,6 +191,11 @@ pub const Parser = struct {
                 self.params.intermediate = byte;
                 return null;
             },
+            '?', '>', '=' => {
+                // DEC private / ANSI mode markers (CSI ? 2004 h, CSI > ...)
+                self.params.intermediate = byte;
+                return null;
+            },
             '@'...'~' => {
                 // Final byte. Empty CSI (ESC[H) has no params so callers use defaults.
                 if (self.saw_digit or self.params.param_count > 0) {
@@ -495,6 +500,25 @@ test "Parser empty CUP uses no params" {
     const action = try parser.advance('H');
     try testing.expect(action != null);
     try testing.expectEqual(@as(u8, 0), action.?.CSI.params.param_count);
+}
+
+test "Parser CSI private mode DECSET" {
+    const testing = std.testing;
+    var parser = Parser.init(testing.allocator);
+    defer parser.deinit();
+
+    _ = try parser.advance(0x1B);
+    _ = try parser.advance('[');
+    _ = try parser.advance('?');
+    _ = try parser.advance('2');
+    _ = try parser.advance('0');
+    _ = try parser.advance('0');
+    _ = try parser.advance('4');
+    const action = try parser.advance('h');
+    try testing.expect(action != null);
+    try testing.expectEqual(@as(u8, 'h'), action.?.CSI.final_byte);
+    try testing.expectEqual(@as(u8, '?'), action.?.CSI.params.intermediate.?);
+    try testing.expectEqual(@as(u32, 2004), action.?.CSI.params.getParam(0, 0));
 }
 
 test "Parser control characters" {

@@ -111,7 +111,7 @@ fn printHelp() !void {
         \\    --config <file>  Use custom configuration file
         \\    --no-ai          Disable AI autocomplete
         \\    --headless       Run without a GUI window (default)
-        \\    --gui            Attempt GUI mode (falls back to headless for now)
+        \\    --gui            Open an X11 window (falls back to headless)
         \\
         \\FEATURES:
         \\    • AI-powered autocomplete
@@ -136,6 +136,8 @@ test {
     _ = @import("renderer/swapchain.zig");
     _ = @import("renderer/pipeline.zig");
     _ = @import("renderer/text_renderer.zig");
+    _ = @import("renderer/software.zig");
+    _ = @import("platform/window.zig");
     _ = @import("app/event_loop.zig");
     _ = @import("config/config.zig");
     _ = @import("ai/autocomplete.zig");
