@@ -80,9 +80,9 @@ Build system
 Core module layout
 PTY + terminal emulation
 Vulkan loader + instance/device init
-X11 window + software present
+X11 window + GPU text pipeline
 In Progress
-GPU text pipeline / swapchain
+Window HiDPI / Wayland
 Next Up
 AI integration
 🧩 Architecture (Simplified)

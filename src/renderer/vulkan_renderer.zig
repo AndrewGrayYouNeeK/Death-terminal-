@@ -2,6 +2,8 @@ const std = @import("std");
 const vk = @import("vulkan_c.zig");
 const loader_mod = @import("loader.zig");
 const gpu_present = @import("gpu_present.zig");
+const text_pipeline = @import("text_pipeline.zig");
+const Cell = @import("../terminal/terminal.zig").Cell;
 
 const Loader = loader_mod.Loader;
 
@@ -19,6 +21,7 @@ pub const VulkanRenderer = struct {
     has_instance: bool,
     has_device: bool,
     gpu: gpu_present.GpuPresent,
+    text: text_pipeline.TextPipeline,
 
     vkCreateInstance: ?loader_mod.CreateInstanceFn,
     vkDestroyInstance: ?loader_mod.DestroyInstanceFn,
@@ -47,6 +50,7 @@ pub const VulkanRenderer = struct {
             .has_instance = false,
             .has_device = false,
             .gpu = .{},
+            .text = .{},
             .vkCreateInstance = null,
             .vkDestroyInstance = null,
             .vkEnumeratePhysicalDevices = null,
@@ -334,20 +338,51 @@ pub const VulkanRenderer = struct {
             std.debug.print("    → Vulkan present not available ({s}); using XPutImage\n", .{@errorName(err)});
             return false;
         };
+        if (self.gpu.enabled and self.gpu.can_draw) {
+            if (self.gpu.command_buffer) |cmd| {
+                self.text.init(h, self.gpu.format, cmd) catch |err| {
+                    std.debug.print("    → GPU text pipeline unavailable ({s}); using blit\n", .{@errorName(err)});
+                };
+                if (self.text.enabled) {
+                    self.text.bindSwapchain(h, self.gpu.images, self.gpu.format, self.gpu.extent) catch |err| {
+                        std.debug.print("    → GPU text framebuffers failed ({s})\n", .{@errorName(err)});
+                        self.text.deinit(h);
+                    };
+                }
+            }
+        }
         return self.gpu.enabled;
     }
 
     pub fn detachPresent(self: *VulkanRenderer) void {
-        if (self.gpu.enabled or self.gpu.surface != null) {
-            if (self.presentHandles()) |h| {
-                self.gpu.deinit(h);
-            }
+        if (self.presentHandles()) |h| {
+            if (self.text.enabled or self.text.atlas_image != null) self.text.deinit(h);
+            if (self.gpu.enabled or self.gpu.surface != null) self.gpu.deinit(h);
         }
     }
 
     pub fn presentPixels(self: *VulkanRenderer, pixels: []const u32, width: u32, height: u32) bool {
         const h = self.presentHandles() orelse return false;
         return self.gpu.present(h, pixels, width, height);
+    }
+
+    pub fn presentCells(
+        self: *VulkanRenderer,
+        cells: []const Cell,
+        rows: u16,
+        cols: u16,
+        cursor_row: u16,
+        cursor_col: u16,
+        cursor_visible: bool,
+    ) bool {
+        if (!self.text.enabled or !self.gpu.enabled) return false;
+        const h = self.presentHandles() orelse return false;
+        const count = self.text.packAndUpload(h, cells, rows, cols, cursor_row, cursor_col, cursor_visible) catch return false;
+        const index = self.gpu.beginPresent(h) catch return false;
+        const cmd = self.gpu.command_buffer orelse return false;
+        self.text.record(cmd, index, count) catch return false;
+        self.gpu.submitPresent(h, index) catch return false;
+        return true;
     }
 
     fn presentHandles(self: *VulkanRenderer) ?gpu_present.Handles {
@@ -391,14 +426,24 @@ pub const VulkanRenderer = struct {
         return false;
     }
 
-    /// Handle window resize.
+    /// Recreate the swapchain and GPU text framebuffers after a window resize.
     pub fn resize(self: *VulkanRenderer, width: u32, height: u32) !void {
         if (!self.initialized) return error.NotInitialized;
-        _ = width;
-        _ = height;
+        if (!self.gpu.enabled) return;
+        const h = self.presentHandles() orelse return;
+        self.text.unbindSwapchain(h);
+        self.gpu.recreate(h, width, height) catch |err| {
+            std.debug.print("    → swapchain recreate failed ({s})\n", .{@errorName(err)});
+            return;
+        };
+        if (self.text.enabled) {
+            self.text.bindSwapchain(h, self.gpu.images, self.gpu.format, self.gpu.extent) catch |err| {
+                std.debug.print("    → GPU text framebuffer recreate failed ({s})\n", .{@errorName(err)});
+            };
+        }
     }
 
-    /// Render terminal text buffer. GPU upload is stubbed until the text pipeline exists.
+    /// Render terminal text buffer. GPU cells are drawn via `presentCells`.
     pub fn renderText(
         self: *VulkanRenderer,
         text_buffer: []const u8,

@@ -297,39 +297,35 @@ pub const Terminal = struct {
     }
 
     pub fn resize(self: *Terminal, rows: u16, cols: u16) !void {
-        // Resize PTY
+        const new_rows = @max(rows, 1);
+        const new_cols = @max(cols, 1);
+
         if (self.pty) |pty| {
-            try pty.setWindowSize(rows, cols);
+            try pty.setWindowSize(new_rows, new_cols);
         }
 
-        // Reallocate buffer
-        const new_buffer = try self.allocator.alloc(Cell, rows * cols);
+        const new_buffer = try self.allocator.alloc(Cell, new_rows * new_cols);
+        for (new_buffer) |*cell| cell.* = Cell.init();
 
-        // Copy old content (as much as fits)
-        const min_rows = @min(self.rows, rows);
-        const min_cols = @min(self.cols, cols);
+        const min_rows = @min(self.rows, new_rows);
+        const min_cols = @min(self.cols, new_cols);
 
         var row: u16 = 0;
         while (row < min_rows) : (row += 1) {
             var col: u16 = 0;
             while (col < min_cols) : (col += 1) {
                 const old_idx = row * self.cols + col;
-                const new_idx = row * cols + col;
+                const new_idx = row * new_cols + col;
                 new_buffer[new_idx] = self.buffer[old_idx];
-            }
-        }
-
-        // Initialize remaining cells
-        for (new_buffer) |*cell| {
-            if (cell.char == 0) {
-                cell.* = Cell.init();
             }
         }
 
         self.allocator.free(self.buffer);
         self.buffer = new_buffer;
-        self.rows = rows;
-        self.cols = cols;
+        self.rows = new_rows;
+        self.cols = new_cols;
+        self.cursor_row = @min(self.cursor_row, new_rows - 1);
+        self.cursor_col = @min(self.cursor_col, new_cols - 1);
     }
 
     pub fn write(self: *Terminal, data: []const u8) !void {
@@ -687,6 +683,23 @@ test "buffer emulation and title" {
     try term.processOutput("\x1b[2J\x1b[H");
     try testing.expectEqual(@as(u16, 0), term.cursor_row);
     try testing.expectEqual(@as(u21, ' '), term.getCell(0, 0).?.char);
+}
+
+test "buffer resize copies cells and clamps cursor" {
+    const testing = std.testing;
+    var term = try Terminal.initBuffer(testing.allocator, 4, 8, 4);
+    defer term.deinit();
+
+    term.getCell(0, 0).?.char = 'A';
+    term.cursor_row = 3;
+    term.cursor_col = 7;
+    try term.resize(2, 4);
+
+    try testing.expectEqual(@as(u16, 2), term.rows);
+    try testing.expectEqual(@as(u16, 4), term.cols);
+    try testing.expectEqual(@as(u21, 'A'), term.getCell(0, 0).?.char);
+    try testing.expectEqual(@as(u16, 1), term.cursor_row);
+    try testing.expectEqual(@as(u16, 3), term.cursor_col);
 }
 
 test "Cell manipulation" {

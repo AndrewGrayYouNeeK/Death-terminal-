@@ -103,9 +103,47 @@ const FONT8: [95][8]u8 = .{
     .{ 0x6E, 0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
 };
 
-fn glyph8(cp: u21) [8]u8 {
+pub const ATLAS_COLS: u32 = 16;
+pub const ATLAS_ROWS: u32 = 8;
+pub const GLYPH_PX: u32 = 8;
+
+pub fn glyphBits(cp: u21) [8]u8 {
     if (cp >= 32 and cp <= 126) return FONT8[cp - 32];
     return .{ 0x7E, 0x42, 0x42, 0x42, 0x42, 0x42, 0x7E, 0x00 };
+}
+
+pub fn atlasIndex(cp: u21) u32 {
+    if (cp >= 32 and cp <= 126) return cp - 32;
+    return 95;
+}
+
+pub fn atlasPixelSize() struct { w: u32, h: u32 } {
+    return .{ .w = ATLAS_COLS * GLYPH_PX, .h = ATLAS_ROWS * GLYPH_PX };
+}
+
+/// Pack 8x8 coverage glyphs into an R8 atlas (255 = on).
+pub fn writeAtlasR8(out: []u8) void {
+    const size = atlasPixelSize();
+    const n = @as(usize, size.w) * @as(usize, size.h);
+    std.debug.assert(out.len >= n);
+    @memset(out[0..n], 0);
+    var i: u32 = 0;
+    while (i < 96) : (i += 1) {
+        const cp: u21 = if (i < 95) @as(u21, 32 + @as(u8, @intCast(i))) else 0;
+        const bits = glyphBits(cp);
+        const gx = i % ATLAS_COLS;
+        const gy = i / ATLAS_COLS;
+        var row: u32 = 0;
+        while (row < GLYPH_PX) : (row += 1) {
+            var col: u32 = 0;
+            while (col < GLYPH_PX) : (col += 1) {
+                const on = (bits[row] & (@as(u8, 1) << @intCast(col))) != 0;
+                const x = gx * GLYPH_PX + col;
+                const y = gy * GLYPH_PX + row;
+                out[y * size.w + x] = if (on) 255 else 0;
+            }
+        }
+    }
 }
 
 /// CPU rasterizer: terminal cells → packed 0xAARRGGBB framebuffer.
@@ -133,6 +171,19 @@ pub const SoftwareRenderer = struct {
     pub fn deinit(self: *SoftwareRenderer) void {
         self.allocator.free(self.pixels);
         self.pixels = &.{};
+    }
+
+    pub fn resize(self: *SoftwareRenderer, cols: u16, rows: u16) !void {
+        const width = @as(u32, cols) * CELL_W;
+        const height = @as(u32, rows) * CELL_H;
+        if (width == self.width and height == self.height) return;
+        const pixels = try self.allocator.alloc(u32, width * height);
+        self.allocator.free(self.pixels);
+        self.pixels = pixels;
+        self.width = width;
+        self.height = height;
+        self.dirty = true;
+        @memset(self.pixels, 0xFF000000);
     }
 
     pub fn renderGrid(
@@ -168,7 +219,7 @@ fn blit(self: *SoftwareRenderer, col: u16, row: u16, cell: Cell, invert: bool) v
         fg = bg;
         bg = tmp;
     }
-    const bits = glyph8(cell.char);
+    const bits = glyphBits(cell.char);
     var gy: u32 = 0;
     while (gy < CELL_H) : (gy += 1) {
         const row_bits = bits[gy / 2];
@@ -188,6 +239,25 @@ test "software renderer allocates framebuffer" {
     defer r.deinit();
     try std.testing.expectEqual(@as(u32, 32), r.width);
     try std.testing.expectEqual(@as(u32, 32), r.height);
+}
+
+test "atlas packs ASCII coverage" {
+    var atlas: [128 * 64]u8 = undefined;
+    writeAtlasR8(&atlas);
+    const idx = atlasIndex('A');
+    const gx = idx % ATLAS_COLS;
+    const gy = idx / ATLAS_COLS;
+    var lit: usize = 0;
+    var row: u32 = 0;
+    while (row < GLYPH_PX) : (row += 1) {
+        var col: u32 = 0;
+        while (col < GLYPH_PX) : (col += 1) {
+            const x = gx * GLYPH_PX + col;
+            const y = gy * GLYPH_PX + row;
+            if (atlas[y * (ATLAS_COLS * GLYPH_PX) + x] != 0) lit += 1;
+        }
+    }
+    try std.testing.expect(lit > 8);
 }
 
 test "software renderer draws ASCII glyph" {

@@ -1,87 +1,47 @@
 const std = @import("std");
 const vk = @import("vulkan_c.zig");
 
-/// Pipeline manages the graphics pipeline for text rendering
-pub const Pipeline = struct {
-    allocator: std.mem.Allocator,
-    pipeline: ?vk.VkPipeline,
-    pipeline_layout: ?vk.VkPipelineLayout,
-    render_pass: ?vk.VkRenderPass,
-    descriptor_set_layout: ?vk.VkDescriptorSetLayout,
+pub const vert_spv = @embedFile("shaders/text.vert.spv");
+pub const frag_spv = @embedFile("shaders/text.frag.spv");
 
-    pub fn init(
-        allocator: std.mem.Allocator,
-        device: vk.VkDevice,
-        format: vk.VkFormat,
-    ) !Pipeline {
-        _ = device;
-        _ = format;
+pub const CreateShaderModuleFn = *const fn (vk.VkDevice, *const vk.raw.VkShaderModuleCreateInfo, ?*const anyopaque, *vk.VkShaderModule) callconv(.C) vk.VkResult;
+pub const DestroyShaderModuleFn = *const fn (vk.VkDevice, vk.VkShaderModule, ?*const anyopaque) callconv(.C) void;
 
-        const pipe = Pipeline{
-            .allocator = allocator,
-            .pipeline = null,
-            .pipeline_layout = null,
-            .render_pass = null,
-            .descriptor_set_layout = null,
-        };
-
-        // TODO: Implement pipeline creation:
-        // 1. Create descriptor set layout (for glyph atlas texture)
-        // 2. Create render pass
-        // 3. Load vertex and fragment shaders
-        // 4. Create pipeline layout
-        // 5. Create graphics pipeline with:
-        //    - Vertex input for position and texture coords
-        //    - Alpha blending for text rendering
-        //    - Dynamic viewport and scissor
-
-        std.debug.print("    → Graphics pipeline creation (stubbed)\n", .{});
-
-        return pipe;
-    }
-
-    pub fn deinit(self: *Pipeline, device: vk.VkDevice) void {
-        _ = device;
-
-        // TODO: Destroy pipeline, layout, render pass, descriptor set layout
-
-        self.* = .{
-            .allocator = self.allocator,
-            .pipeline = null,
-            .pipeline_layout = null,
-            .render_pass = null,
-            .descriptor_set_layout = null,
-        };
-    }
-
-    pub fn bind(self: *Pipeline, command_buffer: vk.VkCommandBuffer) void {
-        _ = self;
-        _ = command_buffer;
-
-        // TODO: Call vkCmdBindPipeline
-    }
-};
-
-/// Shader module wrapper
+/// Shader module wrapper around precompiled SPIR-V.
 pub const ShaderModule = struct {
-    module: ?vk.VkShaderModule,
+    module: vk.VkShaderModule = null,
 
-    pub fn init(device: vk.VkDevice, spirv_code: []const u8) !ShaderModule {
-        _ = device;
-        _ = spirv_code;
+    pub fn init(device: vk.VkDevice, create_fn: CreateShaderModuleFn, spirv: []const u8, allocator: std.mem.Allocator) !ShaderModule {
+        if (spirv.len < 4 or spirv.len % 4 != 0) return error.InvalidSpirv;
+        const words = try allocator.alloc(u32, spirv.len / 4);
+        defer allocator.free(words);
+        @memcpy(std.mem.sliceAsBytes(words), spirv);
 
-        // TODO: Create shader module from SPIR-V bytecode
-        std.debug.print("    → Shader module creation (stubbed)\n", .{});
+        var info = std.mem.zeroes(vk.raw.VkShaderModuleCreateInfo);
+        info.sType = vk.raw.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        info.codeSize = spirv.len;
+        info.pCode = words.ptr;
 
-        return ShaderModule{
-            .module = null,
-        };
+        var module: vk.VkShaderModule = null;
+        if (create_fn(device, &info, null, &module) != vk.VK_SUCCESS or module == null) {
+            return error.CreateShaderModuleFailed;
+        }
+        return .{ .module = module };
     }
 
-    pub fn deinit(self: *ShaderModule, device: vk.VkDevice) void {
-        _ = self;
-        _ = device;
-
-        // TODO: Destroy shader module
+    pub fn deinit(self: *ShaderModule, device: vk.VkDevice, destroy_fn: ?DestroyShaderModuleFn) void {
+        if (self.module != null) {
+            if (destroy_fn) |d| d(device, self.module, null);
+            self.module = null;
+        }
     }
 };
+
+test "embedded SPIR-V has the magic number" {
+    try std.testing.expect(vert_spv.len >= 4);
+    try std.testing.expect(frag_spv.len >= 4);
+    try std.testing.expectEqual(@as(u8, 0x03), vert_spv[0]);
+    try std.testing.expectEqual(@as(u8, 0x02), vert_spv[1]);
+    try std.testing.expectEqual(@as(u8, 0x23), vert_spv[2]);
+    try std.testing.expectEqual(@as(u8, 0x07), vert_spv[3]);
+}

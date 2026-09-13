@@ -92,7 +92,17 @@ pub const EventLoop = struct {
                         shutdown_requested.store(true, .seq_cst);
                         break;
                     },
-                    .resize => need_present = true,
+                    .resize => |sz| {
+                        const cols: u16 = @intCast(@max(@as(u32, 1), sz.width / software.CELL_W));
+                        const rows: u16 = @intCast(@max(@as(u32, 1), sz.height / software.CELL_H));
+                        if (cols != term.cols or rows != term.rows) {
+                            try term.resize(rows, cols);
+                            try soft.resize(cols, rows);
+                        }
+                        try vulkan_renderer.resize(sz.width, sz.height);
+                        need_present = true;
+                    },
+                    .redraw => need_present = true,
                     .input => |bytes| {
                         if (bytes.len == 1 and bytes[0] == 0x03) {
                             shutdown_requested.store(true, .seq_cst);
@@ -119,7 +129,7 @@ pub const EventLoop = struct {
                 need_present = true;
             }
 
-            if (need_present or soft.dirty) {
+            if (need_present) {
                 try presentGui(term, vulkan_renderer, &soft, &window);
             }
         }
@@ -252,6 +262,17 @@ fn presentGui(
     window: *window_mod.Window,
 ) !void {
     try vulkan_renderer.render();
+    if (vulkan_renderer.presentCells(
+        term.buffer,
+        term.rows,
+        term.cols,
+        term.cursor_row,
+        term.cursor_col,
+        term.cursor_visible,
+    )) {
+        soft.dirty = false;
+        return;
+    }
     soft.renderGrid(term.buffer, term.rows, term.cols, term.cursor_row, term.cursor_col, term.cursor_visible);
     if (!vulkan_renderer.presentPixels(soft.pixels, soft.width, soft.height)) {
         window.presentRgba(soft.pixels, soft.width, soft.height);

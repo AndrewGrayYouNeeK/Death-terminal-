@@ -8,9 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- SPIR-V GPU text pipeline: glyph atlas, instanced cell quads, `vkCmdDrawIndexed`
+- Window resize recreates the swapchain and resizes the PTY grid
 - Real Vulkan loader (`vkGetInstanceProcAddr`) with instance creation and optional device selection
 - X11 window backend with `XPutImage` present and keyboard-to-PTY translation
-- Software cell rasterizer (`src/renderer/software.zig`) for GUI frames until the GPU text pipeline exists
+- Software cell rasterizer (`src/renderer/software.zig`) used as a blit/XPutImage fallback
 - Vulkan swapchain present: copies the software framebuffer to the GPU and `vkQueuePresentKHR`s it
 - Headless terminal event loop with PTY polling and stdin forwarding
 - Scrollback buffer for terminal history (`src/terminal/scrollback.zig`)

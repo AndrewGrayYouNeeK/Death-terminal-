@@ -50,14 +50,14 @@
 ### Phase 2 - Vulkan Rendering (High Priority)
 - [x] Vulkan instance initialization (loader + vkCreateInstance)
 - [x] Physical device selection and logical device creation (creates a device when a GPU is present)
-- [x] Swapchain setup (X11 surface + transfer blit present)
-- [x] Graphics pipeline creation (structure complete, needs shader compilation)
-- [x] Text rendering pipeline (structure complete, needs vertex generation)
-- [x] Glyph atlas generation and caching (structure complete, needs font rendering)
+- [x] Swapchain setup (X11 surface + graphics present)
+- [x] Graphics pipeline creation (SPIR-V vertex/fragment text shaders)
+- [x] Text rendering pipeline (glyph atlas + instanced quads)
+- [x] Glyph atlas generation and caching (embedded 8x8 ASCII atlas)
 - [x] GPU buffer management (structure in place)
 - [x] Window creation and management
 - [ ] High-DPI display support
-- [ ] Window resize handling
+- [x] Window resize handling
 - [ ] Frame synchronization
 - [ ] Performance optimization (batching, minimal state changes)
 
@@ -101,7 +101,7 @@
 ### Main Event Loop
 - [x] Event loop architecture
 - [x] Input event handling (keyboard, mouse)
-- [x] Rendering loop integration (headless; GPU present still TODO)
+- [x] Rendering loop integration (GPU text pipeline with blit/XPutImage fallback)
 - [x] Event dispatching to subsystems
 - [x] Graceful shutdown handling
 - [x] Signal handling (SIGTERM, SIGINT, etc.)
@@ -149,19 +149,21 @@
 
 ## 📊 Current Status Summary
 
-**Overall Progress**: ~45% (terminal core + X11 GUI + Vulkan swapchain blit present)
+**Overall Progress**: ~50% (terminal core + X11 GUI + GPU SPIR-V text pipeline)
 
 **Lines of Code**:
 - terminal/terminal.zig: 650+ lines (PTY + ANSI parser + scrollback)
 - terminal/scrollback.zig: scrollback history buffer
 - terminal/ansi_parser.zig: 400+ lines (complete VT100/ANSI escape sequence parser)
-- app/event_loop.zig: headless PTY event loop
+- app/event_loop.zig: headless + GUI PTY event loop
 - config/config.zig: runtime configuration
 - renderer/vulkan_renderer.zig: loader-backed instance/device init
 - renderer/loader.zig: DynLib Vulkan loader (`vkGetInstanceProcAddr`)
-- renderer/text_renderer.zig: 200+ lines (glyph atlas and text rendering structure)
-- renderer/pipeline.zig: 80+ lines (graphics pipeline structure)
-- renderer/swapchain.zig: 100+ lines (swapchain management structure)
+- renderer/text_pipeline.zig: SPIR-V glyph pipeline
+- renderer/text_renderer.zig: cell instance packing
+- renderer/pipeline.zig: shader module + embedded SPIR-V
+- renderer/gpu_present.zig: swapchain acquire/present
+- renderer/software.zig: CPU rasterizer fallback
 - main.zig: CLI + subsystem wiring
 - ssh/tunnel.zig: 70 lines (stub)
 - ai/autocomplete.zig: 55 lines (stub)
@@ -173,3 +175,6 @@
 3. ✅ Vulkan function loading + instance/device init - COMPLETED
 4. ✅ Window management (X11 present + keys) - COMPLETED
 5. ✅ Connect GPU rendering to terminal output (swapchain blit) - COMPLETED
+6. ✅ SPIR-V text pipeline (glyph atlas + instanced draw) - COMPLETED
+7. Wayland / Win32 window backends
+8. Phase 3 AI integration
