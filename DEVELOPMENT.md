@@ -58,6 +58,7 @@ zig build test     # Test
 - [x] Vulkan function loading
 - [x] Instance + optional logical device
 - [x] Window/surface creation (X11)
+- [x] Swapchain blit present (software framebuffer → GPU)
 - [ ] Text rendering pipeline
 
 ### Phase 3 — Application Layer

@@ -65,6 +65,8 @@ pub const EventLoop = struct {
         var window = try window_mod.Window.open(self.allocator, "DeathTerminal", soft.width, soft.height);
         defer window.deinit();
         if (!window.isLive()) return error.NoWindowBackend;
+        defer vulkan_renderer.detachPresent();
+        _ = vulkan_renderer.attachX11(window.x11DisplayPtr(), window.x11WindowId(), window.width, window.height);
 
         const pty_fd = term.getPtyFd() orelse return error.NoPty;
         try setNonBlocking(pty_fd);
@@ -251,7 +253,9 @@ fn presentGui(
 ) !void {
     try vulkan_renderer.render();
     soft.renderGrid(term.buffer, term.rows, term.cols, term.cursor_row, term.cursor_col, term.cursor_visible);
-    window.presentRgba(soft.pixels, soft.width, soft.height);
+    if (!vulkan_renderer.presentPixels(soft.pixels, soft.width, soft.height)) {
+        window.presentRgba(soft.pixels, soft.width, soft.height);
+    }
     soft.dirty = false;
 }
 

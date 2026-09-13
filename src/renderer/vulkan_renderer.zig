@@ -1,11 +1,12 @@
 const std = @import("std");
 const vk = @import("vulkan_c.zig");
 const loader_mod = @import("loader.zig");
+const gpu_present = @import("gpu_present.zig");
 
 const Loader = loader_mod.Loader;
 
 /// VulkanRenderer handles GPU-accelerated rendering via the Vulkan loader.
-/// Instance/device creation is real; presentation stays stubbed until a window exists.
+/// Instance/device creation is real; swapchain present is attached when a window exists.
 pub const VulkanRenderer = struct {
     allocator: std.mem.Allocator,
     loader: ?Loader,
@@ -17,6 +18,7 @@ pub const VulkanRenderer = struct {
     initialized: bool,
     has_instance: bool,
     has_device: bool,
+    gpu: gpu_present.GpuPresent,
 
     vkCreateInstance: ?loader_mod.CreateInstanceFn,
     vkDestroyInstance: ?loader_mod.DestroyInstanceFn,
@@ -27,6 +29,8 @@ pub const VulkanRenderer = struct {
     vkDestroyDevice: ?loader_mod.DestroyDeviceFn,
     vkGetDeviceQueue: ?loader_mod.GetDeviceQueueFn,
     vkGetDeviceProcAddr: ?loader_mod.GetDeviceProcAddrFn,
+    vkEnumerateInstanceExtensionProperties: ?loader_mod.EnumerateInstanceExtensionPropertiesFn,
+    vkEnumerateDeviceExtensionProperties: ?loader_mod.EnumerateDeviceExtensionPropertiesFn,
 
     pub fn init(allocator: std.mem.Allocator) !VulkanRenderer {
         std.debug.print("  → Initializing Vulkan renderer...\n", .{});
@@ -42,6 +46,7 @@ pub const VulkanRenderer = struct {
             .initialized = false,
             .has_instance = false,
             .has_device = false,
+            .gpu = .{},
             .vkCreateInstance = null,
             .vkDestroyInstance = null,
             .vkEnumeratePhysicalDevices = null,
@@ -51,6 +56,8 @@ pub const VulkanRenderer = struct {
             .vkDestroyDevice = null,
             .vkGetDeviceQueue = null,
             .vkGetDeviceProcAddr = null,
+            .vkEnumerateInstanceExtensionProperties = null,
+            .vkEnumerateDeviceExtensionProperties = null,
         };
 
         renderer.loadLibrary() catch {
@@ -90,6 +97,7 @@ pub const VulkanRenderer = struct {
     pub fn deinit(self: *VulkanRenderer) void {
         if (!self.initialized) return;
 
+        self.detachPresent();
         self.destroyDevice();
         self.destroyInstance();
         if (self.loader) |*loader| {
@@ -113,6 +121,8 @@ pub const VulkanRenderer = struct {
         self.vkGetPhysicalDeviceQueueFamilyProperties = opened.load(null_instance, loader_mod.GetPhysicalDeviceQueueFamilyPropertiesFn, "vkGetPhysicalDeviceQueueFamilyProperties");
         self.vkCreateDevice = opened.load(null_instance, loader_mod.CreateDeviceFn, "vkCreateDevice");
         self.vkGetDeviceProcAddr = opened.load(null_instance, loader_mod.GetDeviceProcAddrFn, "vkGetDeviceProcAddr");
+        self.vkEnumerateInstanceExtensionProperties = opened.load(null_instance, loader_mod.EnumerateInstanceExtensionPropertiesFn, "vkEnumerateInstanceExtensionProperties");
+        self.vkEnumerateDeviceExtensionProperties = opened.load(null_instance, loader_mod.EnumerateDeviceExtensionPropertiesFn, "vkEnumerateDeviceExtensionProperties");
 
         self.loader = opened;
     }
@@ -133,6 +143,22 @@ pub const VulkanRenderer = struct {
         create_info.sType = vk.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
         create_info.pApplicationInfo = &app_info;
 
+        var ext_names: [2][*:0]const u8 = undefined;
+        var ext_count: u32 = 0;
+        if (self.hasInstanceExtension("VK_KHR_surface")) {
+            ext_names[ext_count] = "VK_KHR_surface";
+            ext_count += 1;
+        }
+        if (self.hasInstanceExtension("VK_KHR_xlib_surface")) {
+            ext_names[ext_count] = "VK_KHR_xlib_surface";
+            ext_count += 1;
+        }
+        if (ext_count > 0) {
+            create_info.enabledExtensionCount = ext_count;
+            create_info.ppEnabledExtensionNames = @ptrCast(&ext_names);
+            std.debug.print("    → Instance WSI extensions: {d}\n", .{ext_count});
+        }
+
         var instance: vk.VkInstance = null;
         const result = create_fn(&create_info, null, &instance);
         if (result != vk.VK_SUCCESS or instance == null) {
@@ -149,6 +175,7 @@ pub const VulkanRenderer = struct {
         self.vkGetPhysicalDeviceQueueFamilyProperties = loader.load(instance, loader_mod.GetPhysicalDeviceQueueFamilyPropertiesFn, "vkGetPhysicalDeviceQueueFamilyProperties") orelse self.vkGetPhysicalDeviceQueueFamilyProperties;
         self.vkCreateDevice = loader.load(instance, loader_mod.CreateDeviceFn, "vkCreateDevice") orelse self.vkCreateDevice;
         self.vkGetDeviceProcAddr = loader.load(instance, loader_mod.GetDeviceProcAddrFn, "vkGetDeviceProcAddr") orelse self.vkGetDeviceProcAddr;
+        self.vkEnumerateDeviceExtensionProperties = loader.load(instance, loader_mod.EnumerateDeviceExtensionPropertiesFn, "vkEnumerateDeviceExtensionProperties") orelse self.vkEnumerateDeviceExtensionProperties;
 
         std.debug.print("    → Vulkan instance created\n", .{});
     }
@@ -245,6 +272,13 @@ pub const VulkanRenderer = struct {
         create_info.pQueueCreateInfos = &queue_info;
         create_info.pEnabledFeatures = &features;
 
+        const swapchain_ext: [*:0]const u8 = "VK_KHR_swapchain";
+        if (self.hasDeviceExtension("VK_KHR_swapchain")) {
+            create_info.enabledExtensionCount = 1;
+            create_info.ppEnabledExtensionNames = @ptrCast(&swapchain_ext);
+            std.debug.print("    → Device extension VK_KHR_swapchain enabled\n", .{});
+        }
+
         var device: vk.VkDevice = null;
         const result = create_fn(physical, &create_info, null, &device);
         if (result != vk.VK_SUCCESS or device == null) return error.CreateDeviceFailed;
@@ -291,6 +325,70 @@ pub const VulkanRenderer = struct {
     /// Render a frame. Presentation is stubbed until a window/swapchain exists.
     pub fn render(self: *VulkanRenderer) !void {
         if (!self.initialized) return error.NotInitialized;
+    }
+
+    pub fn attachX11(self: *VulkanRenderer, display: ?*anyopaque, window: usize, width: u32, height: u32) bool {
+        if (!self.has_device or self.loader == null) return false;
+        const h = self.presentHandles() orelse return false;
+        self.gpu.attachX11(h, display, window, width, height) catch |err| {
+            std.debug.print("    → Vulkan present not available ({s}); using XPutImage\n", .{@errorName(err)});
+            return false;
+        };
+        return self.gpu.enabled;
+    }
+
+    pub fn detachPresent(self: *VulkanRenderer) void {
+        if (self.gpu.enabled or self.gpu.surface != null) {
+            if (self.presentHandles()) |h| {
+                self.gpu.deinit(h);
+            }
+        }
+    }
+
+    pub fn presentPixels(self: *VulkanRenderer, pixels: []const u32, width: u32, height: u32) bool {
+        const h = self.presentHandles() orelse return false;
+        return self.gpu.present(h, pixels, width, height);
+    }
+
+    fn presentHandles(self: *VulkanRenderer) ?gpu_present.Handles {
+        const loader = self.loader orelse return null;
+        if (self.instance == null or self.device == null or self.graphics_queue == null) return null;
+        return .{
+            .allocator = self.allocator,
+            .loader = loader,
+            .instance = self.instance,
+            .physical_device = self.physical_device,
+            .device = self.device,
+            .queue = self.graphics_queue,
+            .queue_family = self.graphics_queue_family,
+        };
+    }
+
+    fn hasInstanceExtension(self: *VulkanRenderer, name: []const u8) bool {
+        const enumerate = self.vkEnumerateInstanceExtensionProperties orelse return false;
+        var count: u32 = 0;
+        if (enumerate(null, &count, null) != vk.VK_SUCCESS or count == 0) return false;
+        const props = self.allocator.alloc(vk.raw.VkExtensionProperties, count) catch return false;
+        defer self.allocator.free(props);
+        if (enumerate(null, &count, props.ptr) != vk.VK_SUCCESS) return false;
+        for (props[0..count]) |p| {
+            if (std.mem.eql(u8, std.mem.sliceTo(&p.extensionName, 0), name)) return true;
+        }
+        return false;
+    }
+
+    fn hasDeviceExtension(self: *VulkanRenderer, name: []const u8) bool {
+        const enumerate = self.vkEnumerateDeviceExtensionProperties orelse return false;
+        if (self.physical_device == null) return false;
+        var count: u32 = 0;
+        if (enumerate(self.physical_device, null, &count, null) != vk.VK_SUCCESS or count == 0) return false;
+        const props = self.allocator.alloc(vk.raw.VkExtensionProperties, count) catch return false;
+        defer self.allocator.free(props);
+        if (enumerate(self.physical_device, null, &count, props.ptr) != vk.VK_SUCCESS) return false;
+        for (props[0..count]) |p| {
+            if (std.mem.eql(u8, std.mem.sliceTo(&p.extensionName, 0), name)) return true;
+        }
+        return false;
     }
 
     /// Handle window resize.

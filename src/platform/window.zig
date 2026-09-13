@@ -94,6 +94,14 @@ pub const Window = struct {
         presentX11(self, pixels, width, height);
     }
 
+    pub fn x11DisplayPtr(self: *const Window) ?*anyopaque {
+        return if (builtin.os.tag == .linux) @ptrCast(self.display) else null;
+    }
+
+    pub fn x11WindowId(self: *const Window) usize {
+        return if (builtin.os.tag == .linux) self.window else 0;
+    }
+
     pub fn encodeSpecial(seq: []const u8) []const u8 {
         return seq;
     }

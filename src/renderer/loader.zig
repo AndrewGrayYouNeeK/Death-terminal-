@@ -12,6 +12,8 @@ pub const GetPhysicalDeviceQueueFamilyPropertiesFn = *const fn (vk.VkPhysicalDev
 pub const CreateDeviceFn = *const fn (vk.VkPhysicalDevice, [*c]const vk.VkDeviceCreateInfo, ?*const anyopaque, *vk.VkDevice) callconv(.C) vk.VkResult;
 pub const DestroyDeviceFn = *const fn (vk.VkDevice, ?*const anyopaque) callconv(.C) void;
 pub const GetDeviceQueueFn = *const fn (vk.VkDevice, u32, u32, *vk.VkQueue) callconv(.C) void;
+pub const EnumerateInstanceExtensionPropertiesFn = *const fn (?[*:0]const u8, *u32, ?[*]vk.raw.VkExtensionProperties) callconv(.C) vk.VkResult;
+pub const EnumerateDeviceExtensionPropertiesFn = *const fn (vk.VkPhysicalDevice, ?[*:0]const u8, *u32, ?[*]vk.raw.VkExtensionProperties) callconv(.C) vk.VkResult;
 
 fn libNames() []const []const u8 {
     return switch (builtin.os.tag) {
