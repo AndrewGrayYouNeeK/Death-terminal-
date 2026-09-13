@@ -33,7 +33,7 @@ pub const GlyphAtlas = struct {
         _ = device;
         _ = physical_device;
 
-        var atlas = GlyphAtlas{
+        const atlas = GlyphAtlas{
             .allocator = allocator,
             .atlas_image = null,
             .atlas_memory = null,
@@ -131,7 +131,7 @@ pub const TextRenderer = struct {
         _ = device;
         _ = physical_device;
 
-        var renderer = TextRenderer{
+        const renderer = TextRenderer{
             .allocator = allocator,
             .vertex_buffer = null,
             .vertex_memory = null,

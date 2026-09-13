@@ -17,16 +17,14 @@ pub const Config = struct {
             .rows = 24,
             .cols = 80,
             .ai_enabled = true,
-            .ai_endpoint = allocator.dupe(u8, "localhost:50051") catch "localhost:50051",
+            .ai_endpoint = allocator.dupe(u8, "localhost:50051") catch @panic("config: out of memory"),
             .scrollback_lines = 10_000,
             .headless = true,
         };
     }
 
     pub fn deinit(self: *Config) void {
-        if (!std.mem.eql(u8, self.ai_endpoint, "localhost:50051")) {
-            self.allocator.free(self.ai_endpoint);
-        }
+        self.allocator.free(self.ai_endpoint);
     }
 
     pub fn loadFromArgs(self: *Config, args: []const []const u8) !void {

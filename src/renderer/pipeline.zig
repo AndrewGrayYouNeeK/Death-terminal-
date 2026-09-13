@@ -17,7 +17,7 @@ pub const Pipeline = struct {
         _ = device;
         _ = format;
 
-        var pipe = Pipeline{
+        const pipe = Pipeline{
             .allocator = allocator,
             .pipeline = null,
             .pipeline_layout = null,
