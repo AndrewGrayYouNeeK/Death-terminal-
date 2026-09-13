@@ -9,11 +9,13 @@ DeathTerminal is a Zig-based, GPU-accelerated terminal emulator with AI-native w
 ## Architecture
 
 ```
-PTY ↔ Terminal Core ↔ Renderer (Vulkan)
-           ↓
-        AI Engine (gRPC)
-           ↓
-        Lua Scripting
+PTY ↔ Terminal Core ↔ Software rasterizer  →  X11 window (optional)
+                         ↕
+                  Vulkan loader/instance (when libvulkan is present)
+                         ↓
+                      AI Engine (local fallback + future gRPC)
+                         ↓
+                      Lua Scripting
 ```
 
 ## Module Status
@@ -21,49 +23,59 @@ PTY ↔ Terminal Core ↔ Renderer (Vulkan)
 | Module | Path | Status |
 |--------|------|--------|
 | Terminal core | `src/terminal/` | PTY, ANSI parser, cell buffer — functional |
-| Scrollback | `src/terminal/scrollback.zig` | In progress |
-| Event loop | `src/app/event_loop.zig` | In progress |
-| Vulkan renderer | `src/renderer/` | Structural stubs, needs function loading |
-| AI autocomplete | `src/ai/` | gRPC stub |
+| Scrollback | `src/terminal/scrollback.zig` | Functional + search |
+| Event loop | `src/app/event_loop.zig` | Headless + GUI (X11) |
+| Software renderer | `src/renderer/software.zig` | 8×16 glyph rasterizer |
+| Window | `src/platform/window.zig` | X11 via `libX11.so.6` |
+| Vulkan loader | `src/renderer/vk_loader.zig` | Dynamic `libvulkan` load + instance |
+| Vulkan renderer | `src/renderer/` | Instance + device pick; present still software |
+| AI autocomplete | `src/ai/` | Local prefix match; gRPC stub |
 | SSH tunneling | `src/ssh/` | Stub |
 | Lua scripting | `src/scripting/` | Stub |
-| Configuration | `src/config/` | Basic file loading |
+| Configuration | `src/config/` | CLI + file loading |
 
 ## Build Requirements
 
 - Zig 0.13+
-- Vulkan SDK (`libvulkan-dev` on Linux)
+- Vulkan SDK / `libvulkan-dev` (link-time; runtime falls back if missing)
 - Lua 5.4 (for future scripting integration)
+- `libX11` for `--gui` on Linux
 
 ```bash
-zig build          # Build
-zig build run      # Run
-zig build test     # Test
-./dev.sh run       # Dev helper
+zig build
+zig build run -- --headless
+zig build run -- --gui
+zig build test
+./dev.sh run
 ```
 
 ## Development Phases
 
-### Phase 1 — Terminal Core (mostly complete)
+### Phase 1 — Terminal Core (complete)
 - [x] PTY creation and shell spawning
 - [x] ANSI/VT100 escape sequence parser
 - [x] Cell buffer and cursor control
-- [ ] Scrollback buffer
+- [x] Scrollback buffer
 - [x] Cross-platform PTY (Unix)
 
-### Phase 2 — Rendering
+### Phase 2 — Rendering (in progress)
 - [x] Vulkan module structure
-- [ ] Vulkan function loading
-- [ ] Window/surface creation
-- [ ] Text rendering pipeline
+- [x] Vulkan function loading (`vk_loader.zig`)
+- [x] Vulkan instance creation when possible
+- [x] Software text pipeline (cells → RGBA)
+- [x] X11 window + present
+- [ ] Swapchain + GPU text shaders
+- [ ] Wayland / Win32 / Cocoa surfaces
 
-### Phase 3 — Application Layer
-- [ ] Main event loop with PTY polling
-- [ ] Signal handling (SIGINT, SIGTERM)
-- [ ] Configuration file loading
-- [ ] Headless terminal mode (no window)
+### Phase 3 — Application Layer (partial)
+- [x] Main event loop with PTY polling
+- [x] Signal handling
+- [x] Configuration file loading
+- [x] Headless terminal mode
+- [x] GUI mode (X11)
 
 ### Phase 4 — AI Integration
+- [x] Local command prefix fallback
 - [ ] gRPC client
 - [ ] Context gathering and sanitization
 - [ ] Suggestion UI
