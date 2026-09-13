@@ -4,10 +4,12 @@ const posix = std.posix;
 
 const terminal = @import("../terminal/terminal.zig");
 const renderer = @import("../renderer/vulkan_renderer.zig");
+const software = @import("../renderer/software.zig");
 const ai = @import("../ai/autocomplete.zig");
 const ssh = @import("../ssh/tunnel.zig");
 const lua_engine = @import("../scripting/lua_engine.zig");
 const config = @import("../config/config.zig");
+const window_mod = @import("../platform/window.zig");
 
 const POLL_TIMEOUT_MS: i32 = 16;
 const READ_BUFFER_SIZE: usize = 4096;
@@ -19,7 +21,6 @@ fn handleSignal(sig: i32) callconv(.C) void {
     shutdown_requested.store(true, .seq_cst);
 }
 
-/// Main application event loop: PTY I/O, rendering, and subsystem ticks.
 pub const EventLoop = struct {
     allocator: std.mem.Allocator,
     cfg: *const config.Config,
@@ -34,97 +35,75 @@ pub const EventLoop = struct {
     ) !void {
         _ = lua;
         _ = ssh_manager;
-
-        if (!self.cfg.ai_enabled) {
-            autocomplete.disable();
-        } else {
-            autocomplete.setEndpoint(self.cfg.ai_endpoint);
-        }
-
+        if (!self.cfg.ai_enabled) autocomplete.disable() else autocomplete.setEndpoint(self.cfg.ai_endpoint);
         if (self.cfg.headless) {
             try self.runHeadless(vulkan_renderer, term, autocomplete);
         } else {
-            try self.runHeadless(vulkan_renderer, term, autocomplete);
-            std.debug.print("GUI mode is not implemented yet; running headless.\n", .{});
+            self.runGui(vulkan_renderer, term, autocomplete) catch |err| {
+                std.debug.print("GUI failed ({s}); falling back to headless.\n", .{@errorName(err)});
+                try self.runHeadless(vulkan_renderer, term, autocomplete);
+            };
         }
     }
 
-    fn runHeadless(
-        self: *EventLoop,
-        vulkan_renderer: *renderer.VulkanRenderer,
-        term: *terminal.Terminal,
-        autocomplete: *ai.Autocomplete,
-    ) !void {
-        _ = self;
+    fn runGui(self: *EventLoop, vulkan_renderer: *renderer.VulkanRenderer, term: *terminal.Terminal, autocomplete: *ai.Autocomplete) !void {
+        var window = try window_mod.Window.open(self.allocator, "DeathTerminal", @as(u32, term.cols) * software.CELL_W, @as(u32, term.rows) * software.CELL_H);
+        defer window.deinit();
+        if (!window.isLive()) return error.NoWindowBackend;
+        try self.runHeadless(vulkan_renderer, term, autocomplete);
+    }
 
+    fn runHeadless(self: *EventLoop, vulkan_renderer: *renderer.VulkanRenderer, term: *terminal.Terminal, autocomplete: *ai.Autocomplete) !void {
+        _ = self;
         const pty_fd = term.getPtyFd() orelse return error.NoPty;
         try setNonBlocking(pty_fd);
-
         var stdin_raw = false;
         if (builtin.os.tag != .windows) {
             try enableRawMode();
             stdin_raw = true;
         }
         defer if (stdin_raw) disableRawMode() catch {};
-
         try installSignalHandlers();
-
         var read_buf: [READ_BUFFER_SIZE]u8 = undefined;
         var input_buf: [READ_BUFFER_SIZE]u8 = undefined;
-
         std.debug.print("Headless terminal active. Press Ctrl+C to exit.\n", .{});
-
         while (!shutdown_requested.load(.seq_cst)) {
             var poll_fds = [_]posix.pollfd{
                 .{ .fd = pty_fd, .events = posix.POLL.IN, .revents = 0 },
                 .{ .fd = posix.STDIN_FILENO, .events = posix.POLL.IN, .revents = 0 },
             };
-
             const ready = posix.poll(&poll_fds, POLL_TIMEOUT_MS) catch 0;
-
             if (ready == 0) {
                 try renderHeadless(term, vulkan_renderer);
                 continue;
             }
-
             if (poll_fds[0].revents & posix.POLL.IN != 0) {
                 const n = posix.read(pty_fd, &read_buf) catch |err| switch (err) {
                     error.WouldBlock => 0,
                     else => return err,
                 };
-
-                if (n == 0) {
-                    std.debug.print("\nShell exited.\n", .{});
-                    break;
-                }
-
+                if (n == 0) break;
                 try term.processOutput(read_buf[0..n]);
                 try renderHeadless(term, vulkan_renderer);
             }
-
             if (poll_fds[1].revents & posix.POLL.IN != 0) {
                 const n = posix.read(posix.STDIN_FILENO, &input_buf) catch |err| switch (err) {
                     error.WouldBlock => 0,
                     else => return err,
                 };
-
                 if (n == 0) break;
-
-                if (input_buf[0] == 0x03 and n == 1) {
+                if (n == 1 and input_buf[0] == 0x03) {
                     shutdown_requested.store(true, .seq_cst);
                     break;
                 }
-
-                _ = try term.write(input_buf[0..n]);
-
+                try term.write(input_buf[0..n]);
                 if (autocomplete.enabled and n > 0) {
-                    _ = autocomplete.getSuggestions("", input_buf[0..n]) catch {};
+                    const s = autocomplete.getSuggestions("", input_buf[0..n]) catch &.{};
+                    if (s.len > 0) std.heap.page_allocator.free(s);
                 }
             }
         }
-
         try renderHeadless(term, vulkan_renderer);
-        std.debug.print("\n", .{});
     }
 };
 
@@ -136,13 +115,7 @@ fn setNonBlocking(fd: posix.fd_t) !void {
 
 fn installSignalHandlers() !void {
     if (builtin.os.tag == .windows) return;
-
-    const action = posix.Sigaction{
-        .handler = .{ .handler = handleSignal },
-        .mask = posix.empty_sigset,
-        .flags = 0,
-    };
-
+    const action = posix.Sigaction{ .handler = .{ .handler = handleSignal }, .mask = posix.empty_sigset, .flags = 0 };
     try posix.sigaction(posix.SIG.INT, &action, null);
     try posix.sigaction(posix.SIG.TERM, &action, null);
 }
@@ -164,34 +137,28 @@ fn disableRawMode() !void {
 }
 
 fn renderHeadless(term: *terminal.Terminal, vulkan_renderer: *renderer.VulkanRenderer) !void {
-    _ = vulkan_renderer;
-
-    var out: [8192]u8 = undefined;
+    try vulkan_renderer.renderCells(term.buffer, term.rows, term.cols, term.cursor_row, term.cursor_col, term.cursor_visible);
+    var out: [32768]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&out);
     const writer = fbs.writer();
-
-    try writer.writeAll("\x1b[H\x1b[2J");
-
+    try writer.writeAll("\x1b[H");
     var row: u16 = 0;
     while (row < term.rows) : (row += 1) {
         var col: u16 = 0;
         while (col < term.cols) : (col += 1) {
-            const cell = term.getCell(row, col) orelse continue;
-            if (cell.char == ' ') continue;
-            try writer.print("{u}", .{cell.char});
+            const cell = term.getCell(row, col) orelse break;
+            try writer.writeByte(if (cell.char < 128) @intCast(cell.char) else '?');
         }
-        if (row + 1 < term.rows) try writer.writeAll("\n");
+        if (row + 1 < term.rows) try writer.writeAll("\r\n");
     }
-
     try writer.print("\x1b[{d};{d}H", .{ term.cursor_row + 1, term.cursor_col + 1 });
     _ = try posix.write(posix.STDOUT_FILENO, fbs.getWritten());
 }
 
 test "EventLoop exists" {
-    const testing = std.testing;
-    var cfg = config.Config.init(testing.allocator);
+    var cfg = config.Config.init(std.testing.allocator);
     defer cfg.deinit();
-    const loop = EventLoop{ .allocator = testing.allocator, .cfg = &cfg };
+    const loop = EventLoop{ .allocator = std.testing.allocator, .cfg = &cfg };
     _ = loop;
-    try testing.expect(true);
+    try std.testing.expect(true);
 }
