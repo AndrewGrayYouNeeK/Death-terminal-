@@ -81,6 +81,9 @@ sudo apt install -y \
     vulkan-tools \
     libvulkan-dev \
     vulkan-validationlayers \
+    libx11-dev \
+    libwayland-dev \
+    libxkbcommon-dev \
     liblua5.4-dev
 
 # Install Zig (if not already installed)
@@ -95,6 +98,9 @@ sudo dnf install -y \
     vulkan-tools \
     vulkan-loader-devel \
     vulkan-validation-layers \
+    libX11-devel \
+    wayland-devel \
+    libxkbcommon-devel \
     lua-devel
 
 # Install Zig from official site
@@ -108,6 +114,9 @@ sudo pacman -S \
     vulkan-tools \
     vulkan-headers \
     vulkan-validation-layers \
+    libx11 \
+    wayland \
+    libxkbcommon \
     lua
 
 # Install Zig

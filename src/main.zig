@@ -111,7 +111,9 @@ fn printHelp() !void {
         \\    --config <file>  Use custom configuration file
         \\    --no-ai          Disable AI autocomplete
         \\    --headless       Run without a GUI window (default)
-        \\    --gui            Open an X11 window (falls back to headless)
+        \\    --gui            Open a native window (Wayland/X11/Win32; falls back to headless)
+        \\    --scale <n>      UI scale 1–4 (default: auto from DPI / compositor / env)
+        \\    --backend <name>  Window backend: auto | x11 | wayland | win32
         \\
         \\FEATURES:
         \\    • AI-powered autocomplete
@@ -140,6 +142,9 @@ test {
     _ = @import("renderer/text_pipeline.zig");
     _ = @import("renderer/software.zig");
     _ = @import("platform/window.zig");
+    _ = @import("platform/dpi.zig");
+    _ = @import("platform/wayland_backend.zig");
+    _ = @import("platform/win32_backend.zig");
     _ = @import("app/event_loop.zig");
     _ = @import("config/config.zig");
     _ = @import("ai/autocomplete.zig");

@@ -265,6 +265,8 @@ pub const TextPipeline = struct {
         cursor_row: u16,
         cursor_col: u16,
         cursor_visible: bool,
+        cell_w: f32,
+        cell_h: f32,
     ) !u32 {
         if (!self.enabled or self.extent.width == 0) return error.NotBound;
         const count = text.packInstances(
@@ -277,6 +279,8 @@ pub const TextPipeline = struct {
             cursor_visible,
             @floatFromInt(self.extent.width),
             @floatFromInt(self.extent.height),
+            cell_w,
+            cell_h,
         );
         if (count == 0) return 0;
 

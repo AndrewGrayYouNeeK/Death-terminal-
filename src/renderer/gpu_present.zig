@@ -3,7 +3,9 @@ const builtin = @import("builtin");
 const vk = @import("vulkan_c.zig");
 const loader_mod = @import("loader.zig");
 
-const CreateXlibSurfaceFn = *const fn (vk.VkInstance, *const vk.raw.VkXlibSurfaceCreateInfoKHR, ?*const anyopaque, *vk.VkSurfaceKHR) callconv(.C) vk.VkResult;
+const CreateXlibSurfaceFn = if (builtin.os.tag == .linux) *const fn (vk.VkInstance, *const vk.raw.VkXlibSurfaceCreateInfoKHR, ?*const anyopaque, *vk.VkSurfaceKHR) callconv(.C) vk.VkResult else *const fn () callconv(.C) void;
+const CreateWaylandSurfaceFn = if (builtin.os.tag == .linux) *const fn (vk.VkInstance, *const vk.raw.VkWaylandSurfaceCreateInfoKHR, ?*const anyopaque, *vk.VkSurfaceKHR) callconv(.C) vk.VkResult else *const fn () callconv(.C) void;
+const CreateWin32SurfaceFn = if (builtin.os.tag == .windows) *const fn (vk.VkInstance, *const vk.raw.VkWin32SurfaceCreateInfoKHR, ?*const anyopaque, *vk.VkSurfaceKHR) callconv(.C) vk.VkResult else *const fn () callconv(.C) void;
 const DestroySurfaceFn = *const fn (vk.VkInstance, vk.VkSurfaceKHR, ?*const anyopaque) callconv(.C) void;
 const GetSurfaceSupportFn = *const fn (vk.VkPhysicalDevice, u32, vk.VkSurfaceKHR, *vk.raw.VkBool32) callconv(.C) vk.VkResult;
 const GetSurfaceCapsFn = *const fn (vk.VkPhysicalDevice, vk.VkSurfaceKHR, *vk.VkSurfaceCapabilitiesKHR) callconv(.C) vk.VkResult;
@@ -67,6 +69,8 @@ pub const GpuPresent = struct {
     can_draw: bool = false,
 
     vkCreateXlibSurfaceKHR: ?CreateXlibSurfaceFn = null,
+    vkCreateWaylandSurfaceKHR: ?CreateWaylandSurfaceFn = null,
+    vkCreateWin32SurfaceKHR: ?CreateWin32SurfaceFn = null,
     vkDestroySurfaceKHR: ?DestroySurfaceFn = null,
     vkGetPhysicalDeviceSurfaceSupportKHR: ?GetSurfaceSupportFn = null,
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR: ?GetSurfaceCapsFn = null,
@@ -114,29 +118,84 @@ pub const GpuPresent = struct {
     }
 
     pub fn attachX11(self: *GpuPresent, h: Handles, display: ?*anyopaque, window: usize, width: u32, height: u32) !void {
-        if (builtin.os.tag != .linux) return error.UnsupportedPlatform;
-        if (display == null or window == 0) return error.NoNativeWindow;
-        if (h.device == null or h.instance == null) return error.NoDevice;
+        if (builtin.os.tag == .linux) {
+            if (display == null or window == 0) return error.NoNativeWindow;
+            try self.beginAttach(h);
+            errdefer self.deinit(h);
 
-        self.allocator = h.allocator;
-        self.loadProcs(h) catch return error.MissingPresentProcs;
-        errdefer self.deinit(h);
+            var info = std.mem.zeroes(vk.raw.VkXlibSurfaceCreateInfoKHR);
+            info.sType = vk.raw.VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
+            info.dpy = @ptrCast(display);
+            info.window = @intCast(window);
 
-        var info = std.mem.zeroes(vk.raw.VkXlibSurfaceCreateInfoKHR);
-        info.sType = vk.raw.VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
-        info.dpy = @ptrCast(display);
-        info.window = @intCast(window);
-
-        const create_surface = self.vkCreateXlibSurfaceKHR orelse return error.MissingCreateSurface;
-        var surface: vk.VkSurfaceKHR = null;
-        if (create_surface(h.instance, &info, null, &surface) != vk.VK_SUCCESS or surface == null) {
-            return error.CreateSurfaceFailed;
+            const create_surface = self.vkCreateXlibSurfaceKHR orelse return error.MissingCreateSurface;
+            var surface: vk.VkSurfaceKHR = null;
+            if (create_surface(h.instance, &info, null, &surface) != vk.VK_SUCCESS or surface == null) {
+                return error.CreateSurfaceFailed;
+            }
+            self.surface = surface;
+            try self.finishAttach(h, width, height);
+        } else {
+            return error.UnsupportedPlatform;
         }
-        self.surface = surface;
+    }
 
+    pub fn attachWayland(self: *GpuPresent, h: Handles, display: ?*anyopaque, surface: ?*anyopaque, width: u32, height: u32) !void {
+        if (builtin.os.tag == .linux) {
+            if (display == null or surface == null) return error.NoNativeWindow;
+            try self.beginAttach(h);
+            errdefer self.deinit(h);
+
+            var info = std.mem.zeroes(vk.raw.VkWaylandSurfaceCreateInfoKHR);
+            info.sType = vk.raw.VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
+            info.display = @ptrCast(display);
+            info.surface = @ptrCast(surface);
+
+            const create_surface = self.vkCreateWaylandSurfaceKHR orelse return error.MissingCreateSurface;
+            var vk_surface: vk.VkSurfaceKHR = null;
+            if (create_surface(h.instance, &info, null, &vk_surface) != vk.VK_SUCCESS or vk_surface == null) {
+                return error.CreateSurfaceFailed;
+            }
+            self.surface = vk_surface;
+            try self.finishAttach(h, width, height);
+        } else {
+            return error.UnsupportedPlatform;
+        }
+    }
+
+    pub fn attachWin32(self: *GpuPresent, h: Handles, hinstance: ?*anyopaque, hwnd: ?*anyopaque, width: u32, height: u32) !void {
+        if (builtin.os.tag == .windows) {
+            if (hinstance == null or hwnd == null) return error.NoNativeWindow;
+            try self.beginAttach(h);
+            errdefer self.deinit(h);
+
+            var info = std.mem.zeroes(vk.raw.VkWin32SurfaceCreateInfoKHR);
+            info.sType = vk.raw.VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+            info.hinstance = @ptrCast(hinstance);
+            info.hwnd = @ptrCast(hwnd);
+
+            const create_surface = self.vkCreateWin32SurfaceKHR orelse return error.MissingCreateSurface;
+            var vk_surface: vk.VkSurfaceKHR = null;
+            if (create_surface(h.instance, &info, null, &vk_surface) != vk.VK_SUCCESS or vk_surface == null) {
+                return error.CreateSurfaceFailed;
+            }
+            self.surface = vk_surface;
+            try self.finishAttach(h, width, height);
+        } else {
+            return error.UnsupportedPlatform;
+        }
+    }
+
+    fn beginAttach(self: *GpuPresent, h: Handles) !void {
+        if (h.device == null or h.instance == null) return error.NoDevice;
+        self.allocator = h.allocator;
+        try self.loadProcs(h);
+    }
+
+    fn finishAttach(self: *GpuPresent, h: Handles, width: u32, height: u32) !void {
         var supported: vk.raw.VkBool32 = vk.VK_FALSE;
         const support = self.vkGetPhysicalDeviceSurfaceSupportKHR orelse return error.MissingSurfaceSupport;
-        if (support(h.physical_device, h.queue_family, surface, &supported) != vk.VK_SUCCESS or supported == vk.VK_FALSE) {
+        if (support(h.physical_device, h.queue_family, self.surface, &supported) != vk.VK_SUCCESS or supported == vk.VK_FALSE) {
             return error.QueueCannotPresent;
         }
 
@@ -218,7 +277,13 @@ pub const GpuPresent = struct {
         const dev = h.device;
         const gdp = l.load(inst, loader_mod.GetDeviceProcAddrFn, "vkGetDeviceProcAddr");
 
-        self.vkCreateXlibSurfaceKHR = l.load(inst, CreateXlibSurfaceFn, "vkCreateXlibSurfaceKHR");
+        if (builtin.os.tag == .linux) {
+            self.vkCreateXlibSurfaceKHR = l.load(inst, CreateXlibSurfaceFn, "vkCreateXlibSurfaceKHR");
+            self.vkCreateWaylandSurfaceKHR = l.load(inst, CreateWaylandSurfaceFn, "vkCreateWaylandSurfaceKHR");
+        }
+        if (builtin.os.tag == .windows) {
+            self.vkCreateWin32SurfaceKHR = l.load(inst, CreateWin32SurfaceFn, "vkCreateWin32SurfaceKHR");
+        }
         self.vkDestroySurfaceKHR = l.load(inst, DestroySurfaceFn, "vkDestroySurfaceKHR");
         self.vkGetPhysicalDeviceSurfaceSupportKHR = l.load(inst, GetSurfaceSupportFn, "vkGetPhysicalDeviceSurfaceSupportKHR");
         self.vkGetPhysicalDeviceSurfaceCapabilitiesKHR = l.load(inst, GetSurfaceCapsFn, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
@@ -256,9 +321,14 @@ pub const GpuPresent = struct {
             self.vkResetFences = loader_mod.Loader.loadDevice(get_dev, dev, ResetFencesFn, "vkResetFences");
         }
 
-        if (self.vkCreateXlibSurfaceKHR == null or self.vkCreateSwapchainKHR == null or self.vkQueuePresentKHR == null) {
-            std.debug.print("    → present procs xlib={} swap={} present={}\n", .{
+        const has_surface = self.vkCreateXlibSurfaceKHR != null or
+            self.vkCreateWaylandSurfaceKHR != null or
+            self.vkCreateWin32SurfaceKHR != null;
+        if (!has_surface or self.vkCreateSwapchainKHR == null or self.vkQueuePresentKHR == null) {
+            std.debug.print("    → present procs xlib={} wayland={} win32={} swap={} present={}\n", .{
                 self.vkCreateXlibSurfaceKHR != null,
+                self.vkCreateWaylandSurfaceKHR != null,
+                self.vkCreateWin32SurfaceKHR != null,
                 self.vkCreateSwapchainKHR != null,
                 self.vkQueuePresentKHR != null,
             });

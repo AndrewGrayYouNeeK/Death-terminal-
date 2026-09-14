@@ -3,6 +3,7 @@ const vk = @import("vulkan_c.zig");
 const loader_mod = @import("loader.zig");
 const gpu_present = @import("gpu_present.zig");
 const text_pipeline = @import("text_pipeline.zig");
+const software = @import("software.zig");
 const Cell = @import("../terminal/terminal.zig").Cell;
 
 const Loader = loader_mod.Loader;
@@ -147,7 +148,7 @@ pub const VulkanRenderer = struct {
         create_info.sType = vk.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
         create_info.pApplicationInfo = &app_info;
 
-        var ext_names: [2][*:0]const u8 = undefined;
+        var ext_names: [4][*:0]const u8 = undefined;
         var ext_count: u32 = 0;
         if (self.hasInstanceExtension("VK_KHR_surface")) {
             ext_names[ext_count] = "VK_KHR_surface";
@@ -155,6 +156,14 @@ pub const VulkanRenderer = struct {
         }
         if (self.hasInstanceExtension("VK_KHR_xlib_surface")) {
             ext_names[ext_count] = "VK_KHR_xlib_surface";
+            ext_count += 1;
+        }
+        if (self.hasInstanceExtension("VK_KHR_wayland_surface")) {
+            ext_names[ext_count] = "VK_KHR_wayland_surface";
+            ext_count += 1;
+        }
+        if (self.hasInstanceExtension("VK_KHR_win32_surface")) {
+            ext_names[ext_count] = "VK_KHR_win32_surface";
             ext_count += 1;
         }
         if (ext_count > 0) {
@@ -335,9 +344,34 @@ pub const VulkanRenderer = struct {
         if (!self.has_device or self.loader == null) return false;
         const h = self.presentHandles() orelse return false;
         self.gpu.attachX11(h, display, window, width, height) catch |err| {
-            std.debug.print("    → Vulkan present not available ({s}); using XPutImage\n", .{@errorName(err)});
+            std.debug.print("    → Vulkan present not available ({s}); using native blit\n", .{@errorName(err)});
             return false;
         };
+        return self.finishTextPipeline();
+    }
+
+    pub fn attachWayland(self: *VulkanRenderer, display: ?*anyopaque, surface: ?*anyopaque, width: u32, height: u32) bool {
+        if (!self.has_device or self.loader == null) return false;
+        const h = self.presentHandles() orelse return false;
+        self.gpu.attachWayland(h, display, surface, width, height) catch |err| {
+            std.debug.print("    → Vulkan Wayland present not available ({s}); using SHM blit\n", .{@errorName(err)});
+            return false;
+        };
+        return self.finishTextPipeline();
+    }
+
+    pub fn attachWin32(self: *VulkanRenderer, hinstance: ?*anyopaque, hwnd: ?*anyopaque, width: u32, height: u32) bool {
+        if (!self.has_device or self.loader == null) return false;
+        const h = self.presentHandles() orelse return false;
+        self.gpu.attachWin32(h, hinstance, hwnd, width, height) catch |err| {
+            std.debug.print("    → Vulkan Win32 present not available ({s}); using GDI blit\n", .{@errorName(err)});
+            return false;
+        };
+        return self.finishTextPipeline();
+    }
+
+    fn finishTextPipeline(self: *VulkanRenderer) bool {
+        const h = self.presentHandles() orelse return self.gpu.enabled;
         if (self.gpu.enabled and self.gpu.can_draw) {
             if (self.gpu.command_buffer) |cmd| {
                 self.text.init(h, self.gpu.format, cmd) catch |err| {
@@ -374,10 +408,22 @@ pub const VulkanRenderer = struct {
         cursor_row: u16,
         cursor_col: u16,
         cursor_visible: bool,
+        scale: f32,
     ) bool {
         if (!self.text.enabled or !self.gpu.enabled) return false;
         const h = self.presentHandles() orelse return false;
-        const count = self.text.packAndUpload(h, cells, rows, cols, cursor_row, cursor_col, cursor_visible) catch return false;
+        const cell = software.cellPx(scale);
+        const count = self.text.packAndUpload(
+            h,
+            cells,
+            rows,
+            cols,
+            cursor_row,
+            cursor_col,
+            cursor_visible,
+            @floatFromInt(cell.w),
+            @floatFromInt(cell.h),
+        ) catch return false;
         const index = self.gpu.beginPresent(h) catch return false;
         const cmd = self.gpu.command_buffer orelse return false;
         self.text.record(cmd, index, count) catch return false;

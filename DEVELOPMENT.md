@@ -22,9 +22,9 @@ PTY ↔ Terminal Core ↔ Renderer (Vulkan)
 |--------|------|--------|
 | Terminal core | `src/terminal/` | PTY, ANSI parser, cell buffer — functional |
 | Scrollback | `src/terminal/scrollback.zig` | Functional |
-| Event loop | `src/app/event_loop.zig` | Headless + X11 GUI |
-| Vulkan renderer | `src/renderer/` | SPIR-V text pipeline; blit/XPutImage fallback |
-| Window | `src/platform/window.zig` | X11 map + keys + resize |
+| Event loop | `src/app/event_loop.zig` | Headless + native GUI |
+| Vulkan renderer | `src/renderer/` | SPIR-V text pipeline; blit/native fallback |
+| Window | `src/platform/window.zig` | Wayland, X11, Win32 + HiDPI scale |
 | AI autocomplete | `src/ai/` | gRPC stub |
 | SSH tunneling | `src/ssh/` | Stub |
 | Lua scripting | `src/scripting/` | Stub |
@@ -35,6 +35,7 @@ PTY ↔ Terminal Core ↔ Renderer (Vulkan)
 - Zig 0.13+
 - Vulkan SDK (`libvulkan-dev` on Linux)
 - Mesa Vulkan ICD (`mesa-vulkan-drivers`) for instance/device tests without a GPU
+- X11 (`libx11-dev`) and/or Wayland (`libwayland-dev`, `libxkbcommon-dev`)
 - Lua 5.4 (for future scripting integration)
 
 ```bash
@@ -57,9 +58,10 @@ zig build test     # Test
 - [x] Vulkan module structure
 - [x] Vulkan function loading
 - [x] Instance + optional logical device
-- [x] Window/surface creation (X11)
+- [x] Window/surface creation (X11, Wayland, Win32)
 - [x] Swapchain blit present (software framebuffer → GPU)
 - [x] Text rendering pipeline (SPIR-V glyphs)
+- [x] HiDPI cell scaling
 
 ### Phase 3 — Application Layer
 - [x] Main event loop with PTY polling
@@ -67,6 +69,7 @@ zig build test     # Test
 - [x] Configuration file loading
 - [x] Headless terminal mode (no window)
 - [x] Window resize (swapchain recreate + PTY winsize)
+- [x] Native GUI backends (Wayland / X11 / Win32)
 
 ### Phase 4 — AI Integration
 - [ ] gRPC client

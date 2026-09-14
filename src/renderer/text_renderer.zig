@@ -58,10 +58,10 @@ pub fn packInstances(
     cursor_visible: bool,
     fb_w: f32,
     fb_h: f32,
+    cell_w: f32,
+    cell_h: f32,
 ) u32 {
     if (fb_w <= 0 or fb_h <= 0 or rows == 0 or cols == 0) return 0;
-    const cell_w = @as(f32, @floatFromInt(software.CELL_W));
-    const cell_h = @as(f32, @floatFromInt(software.CELL_H));
     const size = [2]f32{ 2.0 * cell_w / fb_w, 2.0 * cell_h / fb_h };
 
     var count: u32 = 0;
@@ -103,7 +103,7 @@ test "packInstances writes one instance per cell" {
     cells[0].char = 'A';
     cells[0].fg_color = 0xFFFFFF;
     var out: [4]Instance = undefined;
-    const n = packInstances(&out, &cells, 1, 2, 0, 1, true, 16, 16);
+    const n = packInstances(&out, &cells, 1, 2, 0, 1, true, 16, 16, 8, 16);
     try std.testing.expectEqual(@as(u32, 2), n);
     try std.testing.expect(out[0].fg[0] > 0.9);
     try std.testing.expect(out[1].bg[0] > 0.9); // cursor inverts cell 1

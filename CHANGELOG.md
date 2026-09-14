@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Wayland window backend (`xdg-shell` + xkbcommon) with Vulkan `VK_KHR_wayland_surface` and SHM fallback
+- Win32 window backend with Vulkan `VK_KHR_win32_surface` and GDI fallback
+- HiDPI cell scaling via `--scale`, `DT_SCALE`/`GDK_SCALE`/`QT_SCALE_FACTOR`, Xft.dpi, Wayland output scale, and Win32 DPI
+- `--backend auto|x11|wayland|win32` to force a window backend
 - SPIR-V GPU text pipeline: glyph atlas, instanced cell quads, `vkCmdDrawIndexed`
 - Window resize recreates the swapchain and resizes the PTY grid
 - Real Vulkan loader (`vkGetInstanceProcAddr`) with instance creation and optional device selection
