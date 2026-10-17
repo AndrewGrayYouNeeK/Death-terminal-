@@ -29,14 +29,30 @@ pub fn main() !void {
             return;
         }
     }
+    for (args[1..]) |a| {
+        if (std.mem.eql(u8, a, "--print-default-config")) {
+            try std.io.getStdOut().writeAll(@import("default_config").text);
+            return;
+        }
+    }
 
     // Print banner only for interactive runs
     try printBanner();
 
-    var cfg = config.Config.init(allocator);
+    // Config: defaults, then config.lua (or legacy config.txt), then flags.
+    const config_arg = config.configArg(args);
+    const load_opts = config.LoadOptions{ .lua_unsafe = hasFlag(args, "--lua-unsafe") };
+    var diags = config.Diagnostics.init(allocator);
+    defer diags.deinit();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const src = config.locate(&path_buf, config_arg);
+    var cfg = try config.load(allocator, src, args, load_opts, &diags);
     defer cfg.deinit();
-    cfg.tryLoadDefault();
-    try cfg.loadFromArgs(args);
+    if (src) |s| std.debug.print("Config: {s}{s}\n", .{ s.path, if (load_opts.lua_unsafe) " (unsafe Lua)" else "" });
+    diags.print();
+    if (diags.hasErrors()) std.debug.print("config: {d} error(s); using the defaults\n", .{diags.errorCount()});
+    var watch_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const watch_path: ?[]const u8 = if (src) |s| s.path else config.userConfigPath(&watch_buf);
 
     std.debug.print("Initializing DeathTerminal...\n", .{});
 
@@ -46,7 +62,12 @@ pub fn main() !void {
     defer vulkan_renderer.deinit();
 
     std.debug.print("[2/5] Initializing terminal core...\n", .{});
-    var term = try terminal.Terminal.initWithSize(allocator, cfg.rows, cfg.cols, cfg.scrollback_lines);
+    var term = try terminal.Terminal.initWithShell(allocator, cfg.rows, cfg.cols, cfg.scrollback_lines, .{
+        .program = cfg.shell_program,
+        .args = cfg.shell_args.items,
+        .env = cfg.shell_env.items,
+        .cwd = cfg.shell_cwd,
+    });
     defer term.deinit();
 
     std.debug.print("[3/5] Initializing Lua scripting engine...\n", .{});
@@ -70,8 +91,18 @@ pub fn main() !void {
     var loop = event_loop.EventLoop{
         .allocator = allocator,
         .cfg = &cfg,
+        .args = args,
+        .config_arg = config_arg,
+        .load_opts = load_opts,
+        .watch_path = watch_path,
+        .startup_diags = &diags,
     };
     try loop.run(&vulkan_renderer, &term, &lua, &autocomplete, &ssh_manager);
+}
+
+fn hasFlag(args: []const []const u8, flag: []const u8) bool {
+    for (args[1..]) |a| if (std.mem.eql(u8, a, flag)) return true;
+    return false;
 }
 
 fn printBanner() !void {
@@ -112,7 +143,10 @@ fn printHelp() !void {
         \\OPTIONS:
         \\    -h, --help       Print this help message
         \\    -v, --version    Print version information
-        \\    --config <file>  Use custom configuration file
+        \\    --config <file>  Config file (.lua, or legacy key = value .txt). Default:
+        \\                     $XDG_CONFIG_HOME/death-terminal/config.lua (~/.config/...)
+        \\    --print-default-config  Print a documented config.lua with every default
+        \\    --lua-unsafe     Give config.lua the full Lua library (io, os.execute, require)
         \\    --no-ai          Disable AI autocomplete
         \\    --headless       Run without a GUI window (default)
         \\    --gui            Open a native window (Wayland/X11/Win32; falls back to headless)
@@ -122,6 +156,9 @@ fn printHelp() !void {
         \\    --font-family <name>    Font family via fontconfig (default: bundled JetBrains Mono)
         \\    --font-size <pt>        Font size in points (default: 11; Ctrl+= / Ctrl+- / Ctrl+0 zoom)
         \\    --line-height <n>       Cell height multiplier (default: 1.0)
+        \\
+        \\    Command-line flags override config.lua. Saving config.lua (or Ctrl+Shift+R)
+        \\    reloads it live; see docs/CONFIG.md.
         \\
         \\FEATURES:
         \\    • AI-powered autocomplete
@@ -170,7 +207,12 @@ test {
     _ = @import("platform/wayland_backend.zig");
     _ = @import("platform/win32_backend.zig");
     _ = @import("app/event_loop.zig");
+    _ = @import("app/config_watch.zig");
     _ = @import("config/config.zig");
+    _ = @import("config/themes.zig");
+    _ = @import("config/lua_config.zig");
+    _ = @import("config/lua_config_test.zig");
+    _ = @import("scripting/lua.zig");
     _ = @import("ai/autocomplete.zig");
     _ = @import("ssh/tunnel.zig");
     _ = @import("scripting/lua_engine.zig");

@@ -75,6 +75,18 @@ const SearchState = struct {
     searched_to: i64 = 0,
 };
 
+/// Message bar at the top of the window (config errors, reload results).
+pub const Notice = struct {
+    pub const Kind = enum { err, warning, info };
+    kind: Kind,
+    /// Owned lines; the first is the headline.
+    lines: std.ArrayList([]u8),
+    /// Auto-dismiss time (ms timestamp), null = until Esc.
+    expires_ms: ?i64 = null,
+
+    pub const max_rows = 6;
+};
+
 const Prompt = struct {
     /// Encoded bytes ready for the PTY.
     data: []u8,
@@ -101,6 +113,7 @@ pub const Ui = struct {
     /// last changed the selection; output that changes it clears it.
     sel_hash: u64 = 0,
     sel_hash_from: i64 = 0,
+    notice: ?Notice = null,
 
     pub fn init(allocator: std.mem.Allocator, opts: Options) Ui {
         return .{ .allocator = allocator, .opts = opts, .effects = std.ArrayList(Effect).init(allocator) };
@@ -108,6 +121,7 @@ pub const Ui = struct {
 
     pub fn deinit(self: *Ui) void {
         self.closeSearch();
+        self.clearNotice();
         if (self.prompt) |p| self.allocator.free(p.data);
         self.freeEffects(self.effects.items);
         self.effects.deinit();
@@ -141,14 +155,29 @@ pub const Ui = struct {
     /// While the search/paste bar would cover a used last row of the live
     /// primary screen (typically the prompt), the view moves up one line so
     /// that row stays visible above the bar.
+    ///
+    /// Likewise, while the notice covers the top rows and there is room
+    /// below the cursor, the view moves down so the prompt isn't hidden.
     fn viewShift(self: *const Ui, term: *const Terminal) i64 {
-        if (!self.overlayActive() or self.scroll != 0 or term.alt_active or term.rows < 2) return 0;
-        const last = term.rows - 1;
-        if (term.cursor_row == last) return 1;
-        for (term.screenRow(last)) |c| {
-            if (c.char != 0 and c.char != ' ') return 1;
+        if (self.scroll != 0 or term.alt_active or term.rows < 2) return 0;
+        var shift: i64 = 0;
+        if (self.overlayActive()) {
+            const last = term.rows - 1;
+            if (term.cursor_row == last) {
+                shift = 1;
+            } else for (term.screenRow(last)) |c| {
+                if (c.char != 0 and c.char != ' ') {
+                    shift = 1;
+                    break;
+                }
+            }
         }
-        return 0;
+        const top = self.noticeRows(term.rows, term.cols);
+        if (top > 0) {
+            const bottom_bar: usize = @intFromBool(self.overlayActive());
+            if (@as(usize, term.cursor_row) + top + bottom_bar < term.rows) shift -= @intCast(top);
+        }
+        return shift;
     }
 
     fn maxScroll(term: *const Terminal) usize {
@@ -400,7 +429,7 @@ pub const Ui = struct {
                 try self.copySelection(term);
             },
             .clear_selection => self.sel = null,
-            .none, .zoom_in, .zoom_out, .zoom_reset => return false,
+            .none, .zoom_in, .zoom_out, .zoom_reset, .reload_config => return false,
         }
         return true;
     }
@@ -543,7 +572,100 @@ pub const Ui = struct {
             }
             return true;
         }
+        if (self.notice != null and key == .escape) {
+            self.clearNotice();
+            return true;
+        }
         return false;
+    }
+
+    // ------------------------------------------------------------ notice
+
+    /// Show `headline` plus `details` at the top of the window, replacing
+    /// any current notice. Shown until Esc, or `ttl_ms` if given.
+    pub fn setNotice(self: *Ui, kind: Notice.Kind, headline: []const u8, details: []const []const u8, ttl_ms: ?i64, now_ms: i64) !void {
+        self.clearNotice();
+        var n = Notice{ .kind = kind, .lines = std.ArrayList([]u8).init(self.allocator), .expires_ms = if (ttl_ms) |t| now_ms + t else null };
+        errdefer {
+            for (n.lines.items) |l| self.allocator.free(l);
+            n.lines.deinit();
+        }
+        try n.lines.append(try self.allocator.dupe(u8, headline));
+        const room = Notice.max_rows - 1;
+        for (details, 0..) |d, i| {
+            if (i + 1 == room and details.len > room) {
+                try n.lines.append(try std.fmt.allocPrint(self.allocator, "  \u{2026} and {d} more (see stderr)", .{details.len - i}));
+                break;
+            }
+            try n.lines.append(try std.fmt.allocPrint(self.allocator, "  {s}", .{d}));
+        }
+        self.notice = n;
+    }
+
+    pub fn clearNotice(self: *Ui) void {
+        if (self.notice) |*n| {
+            for (n.lines.items) |l| self.allocator.free(l);
+            n.lines.deinit();
+        }
+        self.notice = null;
+    }
+
+    /// Drop an expired notice; returns true if the screen changed.
+    pub fn tickNotice(self: *Ui, now_ms: i64) bool {
+        const n = self.notice orelse return false;
+        const t = n.expires_ms orelse return false;
+        if (now_ms < t) return false;
+        self.clearNotice();
+        return true;
+    }
+
+    /// Milliseconds until the notice expires (for the poll timeout).
+    pub fn noticeTimeout(self: *const Ui, now_ms: i64) ?i64 {
+        const n = self.notice orelse return null;
+        const t = n.expires_ms orelse return null;
+        return @max(0, t - now_ms);
+    }
+
+    /// Rows the notice occupies at the top of a rows×cols view.
+    fn noticeRows(self: *const Ui, rows: u16, cols: u16) usize {
+        if (self.notice == null) return 0;
+        return self.layoutNotice(rows, cols, null, null);
+    }
+
+    /// Lay out (and, given buffers, draw) the notice. Long lines wrap
+    /// with indented continuations; at most max_rows + 2 rows and never
+    /// the whole screen.
+    fn layoutNotice(self: *const Ui, rows: u16, cols: u16, cells: ?[]Cell, marks: ?[]Mark) usize {
+        const note = self.notice orelse return 0;
+        const limit: usize = @min(Notice.max_rows + 2, @as(usize, rows) -| 1);
+        const colors: [2]u32 = switch (note.kind) {
+            .err => .{ 0xFFFFFF, 0x8B0000 },
+            .warning => .{ 0x000000, 0xD7AF00 },
+            .info => .{ 0x000000, 0x5FAF5F },
+        };
+        var row: usize = 0;
+        for (note.lines.items, 0..) |line, i| {
+            var rest = line;
+            var first = true;
+            while (first or rest.len > 0) {
+                if (row >= limit) return row;
+                const indent: []const u8 = if (first) "" else "      ";
+                const hint: []const u8 = if (i == 0 and first) "  [Esc] dismiss" else "";
+                const reserve = indent.len + (if (i == 0) "  [Esc] dismiss".len else 0);
+                const cut = fitWidth(rest, @max(@as(usize, cols) -| reserve, 8));
+                if (cells) |cs| {
+                    const off = row * cols;
+                    @memset(marks.?[off..][0..cols], .none);
+                    var buf: [1024]u8 = undefined;
+                    const text = std.fmt.bufPrint(&buf, "{s}{s}", .{ indent, rest[0..cut] }) catch rest[0..cut];
+                    drawText(cs[off..][0..cols], text, hint, colors[0], colors[1]);
+                }
+                rest = rest[cut..];
+                first = false;
+                row += 1;
+            }
+        }
+        return row;
     }
 
     pub fn overlayActive(self: *const Ui) bool {
@@ -724,6 +846,11 @@ pub const Ui = struct {
             };
         }
 
+        if (self.notice != null) {
+            const shown = self.layoutNotice(rows, cols, cells.items, marks.items);
+            if (out.cursor_row < shown) out.cursor_visible = false;
+        }
+
         if (self.overlayActive() and rows > 0) {
             const bar = cells.items[@as(usize, rows - 1) * cols ..][0..cols];
             const bar_marks = marks.items[@as(usize, rows - 1) * cols ..][0..cols];
@@ -757,24 +884,48 @@ pub const Ui = struct {
                 if (st.regex) "x" else " ",
             });
         }
-        var cell = Cell.init();
-        cell.fg_color = fg;
-        cell.bg_color = bg;
-        @memset(bar, cell);
-        const unicode = @import("../terminal/unicode.zig");
-        var col: usize = 0;
-        var it = (std.unicode.Utf8View.init(text.items) catch return).iterator();
+        drawText(bar, text.items, "", fg, bg);
+    }
+};
+
+/// Bytes of `text` that fit in `width` columns (whole codepoints).
+fn fitWidth(text: []const u8, width: usize) usize {
+    const unicode = @import("../terminal/unicode.zig");
+    var col: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) {
+        const n = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
+        if (i + n > text.len) return text.len;
+        const cp = std.unicode.utf8Decode(text[i..][0..n]) catch 0xFFFD;
+        const w = unicode.width(cp);
+        if (col + w > width) return i;
+        col += w;
+        i += n;
+    }
+    return text.len;
+}
+
+/// Fill `bar` with `text` (then `suffix`, right after) in fg/bg.
+fn drawText(bar: []Cell, text: []const u8, suffix: []const u8, fg: u32, bg: u32) void {
+    var cell = Cell.init();
+    cell.fg_color = fg;
+    cell.bg_color = bg;
+    @memset(bar, cell);
+    const unicode = @import("../terminal/unicode.zig");
+    var col: usize = 0;
+    for ([_][]const u8{ text, suffix }) |part| {
+        var it = (std.unicode.Utf8View.init(part) catch continue).iterator();
         while (it.nextCodepoint()) |cp| {
             const w = unicode.width(cp);
             if (w == 0) continue;
-            if (col + w > bar.len) break;
+            if (col + w > bar.len) return;
             bar[col].char = cp;
             bar[col].width = @intCast(w);
             if (w == 2) bar[col + 1].width = 0;
             col += w;
         }
     }
-};
+}
 
 fn deleteLastCodepoint(buf: *std.ArrayList(u8)) void {
     var n = buf.items.len;
@@ -1149,4 +1300,53 @@ test "search bar does not hide the prompt on the last row" {
     const x = try ui.compose(&term, &cells, &marks);
     try testing.expectEqual(@as(u21, '$'), cells.items[0].char);
     try testing.expectEqual(@as(u16, 0), x.cursor_row);
+}
+
+test "notice bar: top rows, overflow line, Esc dismisses, expiry" {
+    var term = try Terminal.initBuffer(testing.allocator, 8, 60, 10);
+    defer term.deinit();
+    var ui = Ui.init(testing.allocator, .{});
+    defer ui.deinit();
+    const details = [_][]const u8{ "a.lua:1: one", "a.lua:2: two", "a.lua:3: three", "a.lua:4: four", "a.lua:5: five", "a.lua:6: six" };
+    try ui.setNotice(.err, "config: 6 errors", &details, null, 0);
+    var cells = std.ArrayList(Cell).init(testing.allocator);
+    defer cells.deinit();
+    var marks = std.ArrayList(Mark).init(testing.allocator);
+    defer marks.deinit();
+    const out = try ui.compose(&term, &cells, &marks);
+    // Room below: the (empty) screen moves down under the notice.
+    try testing.expect(out.cursor_visible);
+    try testing.expectEqual(@as(u16, 6), out.cursor_row);
+    try testing.expectEqual(@as(u21, 'c'), cells.items[0].char);
+    try testing.expectEqual(@as(u32, 0x8B0000), cells.items[0].bg_color);
+    // Headline + 4 details + "... and 2 more".
+    try testing.expectEqual(@as(u21, 'a'), cells.items[60 * 1 + 2].char);
+    try testing.expectEqual(@as(u21, 0x2026), cells.items[60 * 5 + 2].char);
+    try testing.expect(cells.items[60 * 6].bg_color != 0x8B0000);
+    // A long line wraps onto an indented continuation row.
+    const long = [_][]const u8{"x" ** 100};
+    try ui.setNotice(.warning, "w", &long, null, 0);
+    _ = try ui.compose(&term, &cells, &marks);
+    try testing.expectEqual(@as(u21, 'x'), cells.items[60 * 1 + 59].char);
+    try testing.expectEqual(@as(u21, ' '), cells.items[60 * 2 + 0].char);
+    try testing.expectEqual(@as(u21, 'x'), cells.items[60 * 2 + 6].char);
+    try testing.expect(cells.items[60 * 4].bg_color != 0xD7AF00);
+    try testing.expect(try ui.handleKey(&term, .escape, .{}));
+    try testing.expect(ui.notice == null);
+    try testing.expect(!try ui.handleKey(&term, .escape, .{}));
+
+    // On a fresh screen the view moves down so the prompt stays visible.
+    try term.processOutput("$ ");
+    try ui.setNotice(.err, "config: 1 error", &details[0..1].*, null, 0);
+    const shifted = try ui.compose(&term, &cells, &marks);
+    try testing.expect(shifted.cursor_visible);
+    try testing.expectEqual(@as(u16, 2), shifted.cursor_row);
+    try testing.expectEqual(@as(u21, '$'), cells.items[60 * 2].char);
+    ui.clearNotice();
+
+    try ui.setNotice(.info, "config reloaded", &.{}, 1000, 0);
+    try testing.expectEqual(@as(i64, 400), ui.noticeTimeout(600).?);
+    try testing.expect(!ui.tickNotice(999));
+    try testing.expect(ui.tickNotice(1000));
+    try testing.expect(ui.notice == null);
 }

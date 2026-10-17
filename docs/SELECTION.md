@@ -29,7 +29,7 @@ merely scrolls keeps its selection). A resize that reflows lines clears it
 too, because the selected positions move.
 
 Releasing the button copies the selection to PRIMARY (X11/Wayland; emulated
-in-process on Windows). With `copy_on_select = true` it is also copied to
+in-process on Windows). With `selection.copy_on_select = true` it is also copied to
 CLIPBOARD.
 
 ## Keyboard (defaults)
@@ -45,12 +45,14 @@ CLIPBOARD.
 | Ctrl+Shift+Up / Down | `scroll_line_up` / `scroll_line_down` |
 | Ctrl+Shift+A | `select_all` |
 | Ctrl+= / Ctrl+- / Ctrl+0 | `zoom_in` / `zoom_out` / `zoom_reset` |
+| Ctrl+Shift+R | `reload_config` (see [CONFIG.md](CONFIG.md)) |
 
 Scroll bindings act on the normal screen only; in the alternate screen
 (less, vim) the key is passed through to the application, e.g. Shift+PgUp sends
 `CSI 5;2~`. Typing returns the view to the bottom.
 
-Rebind with `keybind = chord=action` lines; `chord=none` removes a default.
+Rebind in config.lua with `config.keys["chord"] = "action"`; `false` removes a
+default (legacy config.txt: `keybind = chord=action`, `chord=none`).
 Chords are `+`-joined modifiers (`ctrl`, `shift`, `alt`, `super`) and an X11
 keysym name or a single character (`ctrl+shift+c`, `shift+page_up`, `ctrl+=`).
 Other actions: `clear_selection`.
@@ -102,18 +104,21 @@ refused.
 
 ## Config keys
 
-| Key | Default | |
-|---|---|---|
-| `copy_on_select` | `false` | Also copy to CLIPBOARD on release |
-| `paste_confirm` | `true` | Confirm multi-line unbracketed pastes |
-| `osc52` | `write` | `off`, `write`, `read-write` |
-| `scrollbar` | `true` | Show a scrollbar while scrolled back |
-| `scroll_lines` | `3` | Lines per wheel notch (1–100) |
-| `word_chars` | `-_./~:@%+#?&=` | Extra characters that count as part of a word |
-| `url_open_command` | `xdg-open` | Program used for Ctrl+click |
-| `selection_background` | `#3B5BA5` | |
-| `selection_foreground` | none | Keep the text colour if unset |
-| `keybind` | — | `chord=action`, repeatable |
+In config.lua (see [CONFIG.md](CONFIG.md)); the legacy config.txt name is in
+the last column.
+
+| Option | Default | | config.txt |
+|---|---|---|---|
+| `selection.copy_on_select` | `false` | Also copy to CLIPBOARD on release | `copy_on_select` |
+| `clipboard.paste_confirm` | `true` | Confirm multi-line unbracketed pastes | `paste_confirm` |
+| `clipboard.osc52` | `"write"` | `off`, `write`, `read-write` | `osc52` |
+| `scrollback.scrollbar` | `true` | Show a scrollbar while scrolled back | `scrollbar` |
+| `scrollback.wheel_lines` | `3` | Lines per wheel notch (1–100) | `scroll_lines` |
+| `selection.word_chars` | `-_./~:@%+#?&=` | Extra characters that count as part of a word | `word_chars` |
+| `links.open_command` | `xdg-open` | Program used for Ctrl+click | `url_open_command` |
+| `colors.selection_background` | theme | | `selection_background` |
+| `colors.selection_foreground` | theme | `"none"` keeps the text colour | `selection_foreground` |
+| `keys["chord"] = "action"` | — | `false` unbinds | `keybind = chord=action` |
 
 ## Limitations
 

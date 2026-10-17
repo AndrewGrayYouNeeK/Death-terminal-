@@ -61,9 +61,16 @@ pub const Cell = struct {
     }
 
     /// Final colors after inverse / faint / hidden are applied.
-    pub fn resolvedColors(self: Cell) struct { fg: u32, bg: u32 } {
-        var fg = self.fg_color;
-        var bg = self.bg_color;
+    pub const Colors = struct { fg: u32, bg: u32 };
+
+    pub fn resolvedColors(self: Cell) Colors {
+        return self.resolvedColorsIn(&color.default_palette);
+    }
+
+    /// Same, resolving palette/default colours through `pal`.
+    pub fn resolvedColorsIn(self: Cell, pal: *const color.Palette) Colors {
+        var fg = pal.resolve(self.fg_color);
+        var bg = pal.resolve(self.bg_color);
         if (self.faint) fg = color.dim(fg);
         if (self.inverse) {
             const t = fg;
@@ -227,8 +234,12 @@ pub const Terminal = struct {
     title_changed: bool = false,
     /// Working directory reported by the shell via OSC 7 (file:// URI).
     cwd_uri: []u8,
+    /// Theme colours, used to answer OSC 10/11 queries.
+    palette: color.Palette = .{},
     cursor_visible: bool = true,
     cursor_shape: CursorShape = .block,
+    /// Shape for DECSCUSR 0 and RIS (config.lua `cursor.shape`).
+    default_cursor_shape: CursorShape = .block,
     bell: bool = false,
     /// Bytes to send back to the application (DA, DSR, ...).
     replies: std.ArrayList(u8),
@@ -288,6 +299,11 @@ pub const Terminal = struct {
     }
 
     pub fn initWithSize(allocator: std.mem.Allocator, rows: u16, cols: u16, scrollback_lines: usize) !Terminal {
+        return initWithShell(allocator, rows, cols, scrollback_lines, .{});
+    }
+
+    /// Terminal running `shell` (config.lua `shell.*`) in a new PTY.
+    pub fn initWithShell(allocator: std.mem.Allocator, rows: u16, cols: u16, scrollback_lines: usize, shell: pty_mod.ShellOptions) !Terminal {
         std.debug.print("  → Initializing terminal core...\n", .{});
 
         var term = try initBuffer(allocator, rows, cols, scrollback_lines);
@@ -296,7 +312,7 @@ pub const Terminal = struct {
         var pty = try PTY.open();
         errdefer pty.close();
         try pty.setWindowSize(rows, cols);
-        try pty.spawnShell(allocator);
+        try pty.spawnShell(allocator, shell);
         term.pty = pty;
 
         std.debug.print("  → Terminal core initialized ({d}x{d}, TERM=xterm-256color)\n", .{ cols, rows });
@@ -1071,7 +1087,7 @@ pub const Terminal = struct {
         self.leaveAlt(true);
         self.softReset();
         self.modes = .{};
-        self.cursor_shape = .block;
+        self.cursor_shape = self.default_cursor_shape;
         resetTabs(self.tabs);
         @memset(self.primary, Cell.init());
         @memset(self.alt, Cell.init());
@@ -1407,6 +1423,7 @@ pub const Terminal = struct {
                 // DECSCUSR
                 const v = p.getParam(0, 0);
                 self.cursor_shape = switch (v) {
+                    0 => self.default_cursor_shape,
                     3, 4 => .underline,
                     5, 6 => .bar,
                     else => .block,
@@ -1556,7 +1573,7 @@ pub const Terminal = struct {
             while (last + 1 < p.param_count and p.isSub(last + 1)) last += 1;
             const subs = last - i; // number of sub-params incl. the mode
             switch (p.params[i + 1]) {
-                5 => if (subs >= 2) return .{ .color = color.palette256(p.params[i + 2]), .last = last },
+                5 => if (subs >= 2) return .{ .color = color.indexed(p.params[i + 2]), .last = last },
                 2 => {
                     if (subs >= 5) return .{ .color = color.rgb(p.params[i + 3], p.params[i + 4], p.params[i + 5]), .last = last };
                     if (subs == 4) return .{ .color = color.rgb(p.params[i + 2], p.params[i + 3], p.params[i + 4]), .last = last };
@@ -1567,7 +1584,7 @@ pub const Terminal = struct {
         }
         switch (p.params[i + 1]) {
             5 => {
-                if (i + 2 < p.param_count) return .{ .color = color.palette256(p.params[i + 2]), .last = i + 2 };
+                if (i + 2 < p.param_count) return .{ .color = color.indexed(p.params[i + 2]), .last = i + 2 };
                 return .{ .color = null, .last = p.param_count - 1 };
             },
             2 => {
@@ -1628,14 +1645,14 @@ pub const Terminal = struct {
                 27 => self.pen.inverse = false,
                 28 => self.pen.hidden = false,
                 29 => self.pen.strikethrough = false,
-                30...37 => self.pen.fg = color.ansi16[v - 30],
+                30...37 => self.pen.fg = color.indexed(v - 30),
                 38 => {
                     const r = extendedColor(p, i);
                     if (r.color) |c| self.pen.fg = c;
                     i = r.last;
                 },
                 39 => self.pen.fg = color.default_fg,
-                40...47 => self.pen.bg = color.ansi16[v - 40],
+                40...47 => self.pen.bg = color.indexed(v - 40),
                 48 => {
                     const r = extendedColor(p, i);
                     if (r.color) |c| self.pen.bg = c;
@@ -1648,8 +1665,8 @@ pub const Terminal = struct {
                     i = r.last;
                 },
                 59 => self.pen.underline_color = color.none,
-                90...97 => self.pen.fg = color.ansi16[v - 90 + 8],
-                100...107 => self.pen.bg = color.ansi16[v - 100 + 8],
+                90...97 => self.pen.fg = color.indexed(v - 90 + 8),
+                100...107 => self.pen.bg = color.indexed(v - 100 + 8),
                 else => {
                     // Skip sub-params of unknown attributes.
                     while (i + 1 < p.param_count and p.isSub(i + 1)) i += 1;
@@ -1681,7 +1698,7 @@ pub const Terminal = struct {
             8 => try self.setHyperlink(arg),
             52 => try self.clipboardOsc(arg),
             10, 11 => if (std.mem.eql(u8, arg, "?")) {
-                const c = if (cmd == 10) color.default_fg else color.default_bg;
+                const c = if (cmd == 10) self.palette.fg else self.palette.bg;
                 const r = (c >> 16) & 0xFF;
                 const g = (c >> 8) & 0xFF;
                 const b = c & 0xFF;

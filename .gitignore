@@ -29,7 +29,9 @@ config.lua
 
 # Dependencies
 deps/
-vendor/
+vendor/*
+# Vendored sources that are part of the build
+!vendor/lua-5.4.7/
 
 # Distribution
 dist/

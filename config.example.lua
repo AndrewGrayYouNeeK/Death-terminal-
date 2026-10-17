@@ -1,210 +1,104 @@
--- DeathTerminal Default Configuration
--- This is an example configuration file for DeathTerminal
--- NOTE: Lua config is not executed yet (planned). Today DeathTerminal reads
--- ~/.config/death-terminal/config.txt with flat `key = value` lines:
---   rows = 24 / cols = 80 / ai_enabled = true / ai_endpoint = "..." / scrollback_lines = 10000
--- Place this file in one of the following locations:
---   Linux/macOS: ~/.config/death-terminal/config.lua
---   Windows: %APPDATA%/death-terminal/config.lua
+-- DeathTerminal configuration
+--
+-- Save as ~/.config/death-terminal/config.lua (or $XDG_CONFIG_HOME/...).
+-- Print this file at any time with:
+--
+--     deathterminal --print-default-config > ~/.config/death-terminal/config.lua
+--
+-- Every value below is the built-in default, so this file changes nothing
+-- until you edit it; delete whatever you don't care about. Saving the file
+-- reloads it in running terminals (or press Ctrl+Shift+R). Mistakes are
+-- reported with file:line in a bar at the top of the window (Esc closes
+-- it); a broken file never stops the terminal from starting -- it falls
+-- back to the defaults (on reload: keeps the previous working config).
+--
+-- This is ordinary Lua 5.4, run in a sandbox: string/table/math/utf8 and
+-- os.getenv/os.time/os.date are available, io, os.execute and require are
+-- not (start with --lua-unsafe to allow them). Options marked (restart)
+-- only apply to new terminals. Full reference: docs/CONFIG.md.
 
--- Terminal settings
-terminal = {
-    -- Terminal dimensions (rows x columns)
-    rows = 24,
-    cols = 80,
+-- Window -------------------------------------------------------------------
+config.window.rows = 24              -- initial size in cells (restart)
+config.window.cols = 80              -- (restart)
+config.window.scale = 0              -- UI scale 1-4; 0 = auto from DPI (restart)
+config.window.backend = "auto"       -- auto | x11 | wayland | win32 (restart)
+config.window.headless = true        -- false = open a window; --gui overrides (restart)
 
-    -- Font configuration
-    font_size = 14,
-    font_family = "FiraCode Nerd Font Mono",
-    font_weight = "Regular",
+-- Font ---------------------------------------------------------------------
+config.font.family = ""              -- fontconfig family; "" = bundled JetBrains Mono
+config.font.size = 11                -- points; Ctrl+= / Ctrl+- / Ctrl+0 zoom
+config.font.line_height = 1.0        -- cell height multiplier (0.5-3)
+config.font.ligatures = true         -- HarfBuzz calt/liga/dlig
+config.font.retro = false            -- built-in 8x8 bitmap font
 
-    -- Scrollback buffer size (lines)
-    scrollback = 10000,
+-- Colours ------------------------------------------------------------------
+-- Bundled themes: default, death, dracula, gruvbox-dark, nord,
+-- solarized-dark, solarized-light (also listed in dt.themes).
+config.theme = "default"
 
-    -- Cursor settings
-    cursor_style = "block", -- Options: "block", "underline", "bar"
-    cursor_blink = true,
-    cursor_blink_interval = 500, -- milliseconds
-}
+-- Individual colours override the theme. Colours are "#rrggbb" or "#rgb";
+-- cursor / cursor_text / selection_foreground also accept "none"
+-- (= derived from the text under them).
+-- config.colors.foreground = "#e0e0e0"
+-- config.colors.background = "#000000"
+-- config.colors.cursor = "#ff0033"
+-- config.colors.cursor_text = "#000000"
+-- config.colors.selection_background = "#3b5ba5"
+-- config.colors.selection_foreground = "none"
+-- config.colors.palette[1] = "#ff5555"         -- one ANSI colour (0-255)
+-- config.colors.palette = { [0] = "#000000", "#cd0000", "#00cd00" }
+-- config.colors = dt.theme("nord")             -- copy a whole theme...
+-- config.colors.background = "#20242c"         -- ...then tweak it
 
--- AI Autocomplete settings
-ai = {
-    -- Enable/disable AI autocomplete
-    enabled = true,
+-- Cursor -------------------------------------------------------------------
+config.cursor.shape = "block"        -- block | underline | bar (apps can change it)
 
-    -- gRPC endpoint for AI service
-    -- Use "localhost:50051" for local model
-    -- Use remote endpoint for cloud-based AI
-    endpoint = "localhost:50051",
+-- Rendering ----------------------------------------------------------------
+config.render.present_mode = "fifo"  -- fifo (vsync) | mailbox | immediate | fifo_relaxed
+config.render.max_fps = 120          -- redraw cap while output streams (0 = present mode only)
+config.render.read_budget_kb = 1024  -- PTY bytes parsed per batch (16-65536)
 
-    -- Maximum number of suggestions to display
-    max_suggestions = 5,
+-- Scrollback ---------------------------------------------------------------
+config.scrollback.lines = 10000      -- history lines (restart)
+config.scrollback.scrollbar = true   -- show a thumb while scrolled back
+config.scrollback.wheel_lines = 3    -- lines per mouse-wheel notch
 
-    -- Number of context lines to send to AI
-    context_lines = 10,
+-- Selection, clipboard and links -------------------------------------------
+config.selection.copy_on_select = false     -- also copy selections to CLIPBOARD
+config.selection.word_chars = "-_./~:@%+#?&="  -- extra word characters for double-click
+config.clipboard.paste_confirm = true       -- confirm multi-line pastes without bracketed paste
+config.clipboard.osc52 = "write"            -- programs may: off | write | read-write the clipboard
+config.links.open_command = dt.os == "macos" and "open" or "xdg-open"
 
-    -- Minimum characters before triggering autocomplete
-    min_chars = 3,
+-- Key bindings -------------------------------------------------------------
+-- Chords are modifiers (ctrl, shift, alt) plus a key name: letters,
+-- digits, f1-f12, page_up, home, insert, equal, minus, plus, kp_add, ...
+-- Actions: copy, paste, paste_selection, search, scroll_page_up,
+-- scroll_page_down, scroll_line_up, scroll_line_down, scroll_top,
+-- scroll_bottom, zoom_in, zoom_out, zoom_reset, select_all,
+-- clear_selection, reload_config. `false` removes a binding.
+config.default_keybindings = true    -- false = start from an empty table
+-- config.keys["ctrl+shift+t"] = "search"
+-- config.keys["ctrl+shift+c"] = false
+-- dt.bind("alt+c", "copy")              -- same thing, as a function
 
-    -- Timeout for AI requests (milliseconds)
-    timeout = 1000,
-}
+-- Shell --------------------------------------------------------------------
+config.shell.program = ""            -- "" = $SHELL, then /bin/sh (restart)
+config.shell.args = {}               -- e.g. { "-l" } (restart)
+config.shell.env = {}                -- e.g. { EDITOR = "nvim" } (restart)
+config.shell.cwd = ""                -- "" = inherit; "~" is expanded (restart)
 
--- SSH settings
-ssh = {
-    -- Default SSH port
-    default_port = 22,
+-- AI autocomplete (used from milestone 8) ----------------------------------
+config.ai.enabled = true             -- --no-ai overrides
+config.ai.endpoint = "http://localhost:11434/v1"  -- any OpenAI-compatible API (Ollama by default)
+config.ai.model = ""                 -- "" = let the backend choose
+config.ai.api_key_env = ""           -- name of an env var holding the key, if needed
 
-    -- Keepalive interval (seconds)
-    keepalive_interval = 60,
+-- SSH (used from the libssh2 milestone) ------------------------------------
+config.ssh.enabled = true
+config.ssh.config_file = "~/.ssh/config"
+config.ssh.keepalive_s = 30          -- seconds; 0 = off
 
-    -- Enable compression
-    compression = true,
-
-    -- Default username (leave empty to prompt)
-    default_username = "",
-
-    -- SSH key locations to try
-    key_paths = {
-        "~/.ssh/id_rsa",
-        "~/.ssh/id_ed25519",
-        "~/.ssh/id_ecdsa",
-    },
-}
-
--- Theme configuration (brutalist design)
-theme = {
-    -- Color scheme
-    background = "#000000",
-    foreground = "#FFFFFF",
-    cursor = "#FF0000",
-    selection = "#333333",
-
-    -- ANSI colors (0-7: normal, 8-15: bright)
-    colors = {
-        -- Normal colors
-        black = "#000000",
-        red = "#FF0000",
-        green = "#00FF00",
-        yellow = "#FFFF00",
-        blue = "#0000FF",
-        magenta = "#FF00FF",
-        cyan = "#00FFFF",
-        white = "#FFFFFF",
-
-        -- Bright colors
-        bright_black = "#808080",
-        bright_red = "#FF8080",
-        bright_green = "#80FF80",
-        bright_yellow = "#FFFF80",
-        bright_blue = "#8080FF",
-        bright_magenta = "#FF80FF",
-        bright_cyan = "#80FFFF",
-        bright_white = "#FFFFFF",
-    },
-
-    -- UI elements
-    tab_bar_background = "#000000",
-    tab_bar_foreground = "#FFFFFF",
-    tab_active_background = "#FF0000",
-    tab_active_foreground = "#000000",
-}
-
--- Keybindings
-keybindings = {
-    -- Clipboard
-    copy = "Ctrl+Shift+C",
-    paste = "Ctrl+Shift+V",
-
-    -- Tabs
-    new_tab = "Ctrl+Shift+T",
-    close_tab = "Ctrl+Shift+W",
-    next_tab = "Ctrl+Tab",
-    prev_tab = "Ctrl+Shift+Tab",
-
-    -- Panes/splits
-    split_horizontal = "Ctrl+Shift+H",
-    split_vertical = "Ctrl+Shift+V",
-    close_pane = "Ctrl+Shift+D",
-
-    -- Navigation
-    focus_next_pane = "Ctrl+Shift+N",
-    focus_prev_pane = "Ctrl+Shift+P",
-
-    -- Font size
-    increase_font_size = "Ctrl+Plus",
-    decrease_font_size = "Ctrl+Minus",
-    reset_font_size = "Ctrl+0",
-
-    -- AI Autocomplete
-    trigger_autocomplete = "Ctrl+Space",
-    accept_suggestion = "Tab",
-    next_suggestion = "Ctrl+N",
-    prev_suggestion = "Ctrl+P",
-
-    -- Other
-    search = "Ctrl+Shift+F",
-    quit = "Ctrl+Shift+Q",
-}
-
--- Performance settings
-performance = {
-    -- Enable GPU acceleration
-    gpu_acceleration = true,
-
-    -- FPS cap (0 = unlimited)
-    fps_cap = 60,
-
-    -- Triple buffering
-    triple_buffering = true,
-
-    -- VSync
-    vsync = true,
-}
-
--- Logging and debugging
-logging = {
-    -- Log level: "debug", "info", "warn", "error"
-    level = "info",
-
-    -- Log file location (empty = stderr only)
-    file = "",
-
-    -- Enable performance metrics
-    show_fps = false,
-}
-
--- Custom hooks (Lua functions called on events)
-function on_startup()
-    -- Called when DeathTerminal starts
-    print("DeathTerminal initialized")
-end
-
-function on_shutdown()
-    -- Called when DeathTerminal exits
-    print("DeathTerminal shutting down")
-end
-
-function on_command(command)
-    -- Called before executing a command
-    -- Return false to prevent execution
-    return true
-end
-
-function on_ai_suggestion(suggestions)
-    -- Called when AI suggestions are received
-    -- You can modify or filter suggestions here
-    return suggestions
-end
-
--- Custom commands
-commands = {
-    -- Define custom commands that can be invoked
-    hello = function()
-        print("Hello from DeathTerminal!")
-    end,
-
-    timestamp = function()
-        print(os.date("%Y-%m-%d %H:%M:%S"))
-    end,
-}
+-- Lua tricks ---------------------------------------------------------------
+-- if os.getenv("SSH_CONNECTION") then config.theme = "death" end
+-- if dt.os == "macos" then config.font.size = 13 end

@@ -3,6 +3,17 @@ const builtin = @import("builtin");
 const posix = std.posix;
 const linux = std.os.linux;
 
+/// What to run in the terminal (config.lua `shell.*`).
+pub const ShellOptions = struct {
+    /// "" = $SHELL, then /bin/sh. Names without '/' are searched in $PATH.
+    program: []const u8 = "",
+    args: []const []const u8 = &.{},
+    /// Extra NAME=value entries; they win over the inherited environment.
+    env: []const []const u8 = &.{},
+    /// Starting directory ("" = inherit; a leading "~" is $HOME).
+    cwd: []const u8 = "",
+};
+
 /// PTY represents a pseudo-terminal
 pub const PTY = struct {
     master_fd: posix.fd_t,
@@ -68,18 +79,26 @@ pub const PTY = struct {
     }
 
     /// Spawn a shell process in the PTY
-    pub fn spawnShell(self: *PTY, allocator: std.mem.Allocator) !void {
-        const shell: [*:0]const u8 = posix.getenv("SHELL") orelse "/bin/sh";
+    pub fn spawnShell(self: *PTY, allocator: std.mem.Allocator, opts: ShellOptions) !void {
+        // Everything the child needs is built before fork (no allocation after).
+        var arena_state = std.heap.ArenaAllocator.init(allocator);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        const program: []const u8 = if (opts.program.len > 0) opts.program else posix.getenv("SHELL") orelse "/bin/sh";
+        const shell = try resolveProgram(arena, program);
+        const argv = try arena.allocSentinel(?[*:0]const u8, opts.args.len + 1, null);
+        argv[0] = shell;
+        for (opts.args, 1..) |a, i| argv[i] = try arena.dupeZ(u8, a);
+        const cwd: ?[:0]const u8 = if (opts.cwd.len == 0) null else try arena.dupeZ(u8, try expandHome(arena, opts.cwd));
 
-        // Build the child environment before fork (no allocation after fork).
-        var env = try ChildEnv.init(allocator);
+        var env = try ChildEnv.initWith(allocator, opts.env);
         defer env.deinit();
 
         const pid = try posix.fork();
 
         if (pid == 0) {
             // Child process
-            self.setupChildProcess(shell, env.envp()) catch |err| {
+            self.setupChildProcess(shell, argv.ptr, cwd, env.envp()) catch |err| {
                 std.debug.print("Failed to setup child process: {}\n", .{err});
                 std.posix.exit(1);
             };
@@ -92,7 +111,7 @@ pub const PTY = struct {
         }
     }
 
-    fn setupChildProcess(self: *PTY, shell: [*:0]const u8, envp: [*:null]const ?[*:0]const u8) !void {
+    fn setupChildProcess(self: *PTY, shell: [*:0]const u8, argv: [*:null]const ?[*:0]const u8, cwd: ?[:0]const u8, envp: [*:null]const ?[*:0]const u8) !void {
         // The shell must start with default signal dispositions and an
         // empty mask even if we were launched with SIGINT ignored (e.g. as a
         // background job), otherwise Ctrl+C would never interrupt anything.
@@ -116,8 +135,11 @@ pub const PTY = struct {
             posix.close(self.slave_fd);
         }
 
-        const argv = [_:null]?[*:0]const u8{shell};
-        const err = linux.execve(shell, &argv, envp);
+        if (cwd) |dir| posix.chdirZ(dir) catch {
+            std.debug.print("deathterminal: cannot change to {s}, staying in the current directory\n", .{dir});
+        };
+        const err = linux.execve(shell, argv, envp);
+        std.debug.print("deathterminal: cannot run {s}\n", .{shell});
         posix.exit(@intCast(err));
     }
 
@@ -144,6 +166,24 @@ pub const PTY = struct {
     }
 };
 
+/// `name` as an executable path: names without '/' are looked up in $PATH.
+fn resolveProgram(arena: std.mem.Allocator, name: []const u8) ![:0]const u8 {
+    if (std.mem.indexOfScalar(u8, name, '/') != null) return arena.dupeZ(u8, try expandHome(arena, name));
+    var dirs = std.mem.tokenizeScalar(u8, posix.getenv("PATH") orelse "/usr/local/bin:/usr/bin:/bin", ':');
+    while (dirs.next()) |d| {
+        const full = try std.fmt.allocPrintZ(arena, "{s}/{s}", .{ d, name });
+        posix.accessZ(full, posix.X_OK) catch continue;
+        return full;
+    }
+    return arena.dupeZ(u8, name);
+}
+
+fn expandHome(arena: std.mem.Allocator, path: []const u8) ![]const u8 {
+    if (path.len == 0 or path[0] != '~' or (path.len > 1 and path[1] != '/')) return path;
+    const home = posix.getenv("HOME") orelse return path;
+    return std.fmt.allocPrint(arena, "{s}{s}", .{ home, path[1..] });
+}
+
 /// Environment for the shell: the parent's, with the terminal identity
 /// overridden (TERM=xterm-256color, COLORTERM=truecolor, TERM_PROGRAM).
 pub const ChildEnv = struct {
@@ -158,6 +198,12 @@ pub const ChildEnv = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator) !ChildEnv {
+        return initWith(allocator, &.{});
+    }
+
+    /// Same, plus `extra` NAME=value entries (which replace inherited and
+    /// built-in values of the same name).
+    pub fn initWith(allocator: std.mem.Allocator, extra: []const []const u8) !ChildEnv {
         var self = ChildEnv{
             .allocator = allocator,
             .owned = std.ArrayList([:0]u8).init(allocator),
@@ -169,16 +215,31 @@ pub const ChildEnv = struct {
         var i: usize = 0;
         while (std.c.environ[i]) |entry| : (i += 1) {
             const kv = std.mem.span(entry);
-            if (isOverridden(kv)) continue;
+            if (isOverridden(kv) or inList(kv, extra)) continue;
             try self.ptrs.append(entry);
         }
         for (overrides) |kv| {
+            if (inList(kv, extra)) continue;
+            const z = try allocator.dupeZ(u8, kv);
+            try self.owned.append(z);
+            try self.ptrs.append(z.ptr);
+        }
+        for (extra) |kv| {
             const z = try allocator.dupeZ(u8, kv);
             try self.owned.append(z);
             try self.ptrs.append(z.ptr);
         }
         try self.ptrs.append(null);
         return self;
+    }
+
+    /// Whether `list` has an entry for the same NAME as `kv`.
+    fn inList(kv: []const u8, list: []const []const u8) bool {
+        const eq = std.mem.indexOfScalar(u8, kv, '=') orelse return false;
+        for (list) |o| {
+            if (o.len > eq and o[eq] == '=' and std.mem.eql(u8, o[0..eq], kv[0..eq])) return true;
+        }
+        return false;
     }
 
     fn isOverridden(kv: []const u8) bool {
@@ -255,4 +316,36 @@ fn ptsname(fd: posix.fd_t, buffer: []u8) ![]const u8 {
         return try std.fmt.bufPrint(buffer, "/dev/pts/{d}", .{n});
     }
     return error.UnsupportedPlatform;
+}
+
+test "child env applies config overrides" {
+    if (builtin.os.tag != .linux) return;
+    const extra = [_][]const u8{ "DT_TEST_VAR=1", "TERM=dumb" };
+    var env = try ChildEnv.initWith(std.testing.allocator, &extra);
+    defer env.deinit();
+    var term_count: usize = 0;
+    var found = false;
+    var i: usize = 0;
+    const e = env.envp();
+    while (e[i]) |entry| : (i += 1) {
+        const kv = std.mem.span(entry);
+        if (std.mem.startsWith(u8, kv, "TERM=")) {
+            term_count += 1;
+            try std.testing.expectEqualStrings("TERM=dumb", kv);
+        }
+        if (std.mem.eql(u8, kv, "DT_TEST_VAR=1")) found = true;
+    }
+    try std.testing.expectEqual(@as(usize, 1), term_count);
+    try std.testing.expect(found);
+}
+
+test "resolveProgram searches PATH and expands ~" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sh = try resolveProgram(arena.allocator(), "sh");
+    try std.testing.expect(std.mem.endsWith(u8, sh, "/sh"));
+    if (posix.getenv("HOME")) |home| {
+        const p = try expandHome(arena.allocator(), "~/x");
+        try std.testing.expect(std.mem.startsWith(u8, p, home));
+    }
 }

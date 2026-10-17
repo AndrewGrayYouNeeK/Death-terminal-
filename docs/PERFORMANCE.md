@@ -44,6 +44,10 @@ Run `zig build bench` (always ReleaseFast) to reproduce the micro-benchmarks;
 
 ## Config keys
 
+In config.lua these live under `render.` (`config.render.present_mode = "mailbox"`;
+see [CONFIG.md](CONFIG.md)); the names below are the legacy config.txt keys.
+They apply live on reload.
+
 | Key | Default | |
 |---|---|---|
 | `present_mode` | `fifo` | `fifo` (vsync), `mailbox` (low-latency vsync, no tearing), `immediate` (no vsync, may tear), `fifo_relaxed`; `vsync` is an alias for `fifo`. If the surface doesn't support the mode: mailbox → immediate → fifo, immediate → mailbox → fifo. The chosen mode is logged at startup. |

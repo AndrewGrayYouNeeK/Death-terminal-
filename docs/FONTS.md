@@ -39,19 +39,23 @@ Terminal cells ─▶ Fonts.layoutRow ─▶ Frame (quads) ─▶ Vulkan instanc
   It starts at 512², doubles up to 2048², and is cleared when full; the
   frame is then rebuilt, so eviction is "clear and re-rasterise what is
   visible". Only the dirty rectangle is re-uploaded to the GPU.
-- **`src/font/retro.zig`** is the built-in 8×8 bitmap font (`font = retro`).
+- **`src/font/retro.zig`** is the built-in 8×8 bitmap font (`config.font.retro = true`).
 
 ## Configuration
 
-`~/.config/death-terminal/config.txt`:
+`~/.config/death-terminal/config.lua` (see [CONFIG.md](CONFIG.md)); changes
+apply live when the file is saved:
 
+```lua
+config.font.family = "JetBrains Mono"  -- any fontconfig family; "" = bundled
+config.font.size = 11                  -- points at 96 DPI, before HiDPI scaling
+config.font.line_height = 1.0          -- cell-height multiplier
+config.font.ligatures = true
+-- config.font.retro = true            -- 8x8 bitmap font
 ```
-font_family = JetBrains Mono   # any fontconfig family; empty = bundled
-font_size = 11                 # points at 96 DPI, before HiDPI scaling
-line_height = 1.0              # cell-height multiplier
-font_ligatures = true
-# font = retro                 # 8x8 bitmap font
-```
+
+(The legacy config.txt keys `font_family`, `font_size`, `line_height`,
+`font_ligatures`, `font = retro` still work.)
 
 Command-line equivalents: `--font retro|default`, `--font-family <name>`,
 `--font-size <pt>`, `--line-height <n>`.

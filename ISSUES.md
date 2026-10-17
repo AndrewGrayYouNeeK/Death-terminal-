@@ -103,15 +103,15 @@
 - [ ] Security: credential handling (no logging)
 
 ### Phase 5 - Lua Scripting (Lower Priority)
-- [ ] Lua state initialization
-- [ ] C API bindings for Lua 5.4
-- [ ] Lua API design and implementation
-- [ ] Hook system (startup, command execution, etc.)
-- [ ] Configuration loading from Lua files
-- [ ] Plugin system architecture
-- [ ] Sandboxing for dangerous operations
-- [ ] Error handling and reporting
-- [ ] API documentation for script authors
+- [x] Lua state initialization (vendored Lua 5.4.7, built by zig)
+- [x] C API bindings for Lua 5.4
+- [x] Lua API design and implementation (config API; `dt` table)
+- [ ] Hook system (startup, command execution, etc.) — milestone 10
+- [x] Configuration loading from Lua files (live reload)
+- [ ] Plugin system architecture — milestone 10
+- [x] Sandboxing for dangerous operations (config; `--lua-unsafe` opt-out)
+- [x] Error handling and reporting (file:line, in-window notice)
+- [x] API documentation for script authors (docs/CONFIG.md; plugin API in milestone 10)
 - [ ] Example scripts and plugins
 
 ### Main Event Loop
@@ -137,14 +137,14 @@
 - [x] CI/CD pipeline setup
 
 ### Configuration & UX
-- [x] Configuration file loading (from ~/.config/death-terminal/; reads `config.txt` with flat `key = value` lines; `config.example.lua` is not read yet)
-- [ ] Theme system implementation
-- [ ] Keybinding customization
+- [x] Configuration file loading (config.lua via XDG paths; legacy config.txt deprecated)
+- [x] Theme system implementation (7 bundled themes + per-colour overrides)
+- [x] Keybinding customization
 - [x] Font selection and management (real fonts + optional retro 8x8 bitmap font)
 - [ ] Fonts on macOS/Windows (FreeType is Linux-only for now; other platforms use the retro font)
 - [ ] Emoji ZWJ sequences / flags composed into one glyph
-- [ ] Color scheme support
-- [ ] Terminal size configuration
+- [x] Color scheme support
+- [x] Terminal size configuration
 - [ ] Preferences persistence
 
 ### Additional Features

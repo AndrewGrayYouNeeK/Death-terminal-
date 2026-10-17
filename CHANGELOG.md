@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Deprecated
+- `config.txt` (`key = value`): still read when no config.lua exists, with a warning
+
 ### Added
+- Lua 5.4 configuration: `~/.config/death-terminal/config.lua` (XDG paths, `--config`), Lua 5.4.7 vendored and built by `zig build` (no system dependency)
+- Typed config API covering every option (window, font, theme/colours/palette, cursor, render, scrollback, selection, clipboard/OSC 52, links, keys, shell program/args/env/cwd, AI and SSH placeholders), with `dt.theme()`, `dt.bind()`, `dt.themes`, `dt.os`
+- Validation errors with `file:line` and "did you mean" hints, shown in a notice bar in the window (Esc dismisses) and on stderr; a broken config falls back to the defaults at startup and keeps the previous settings on reload
+- Live reload when config.lua is saved (inotify, debounced) and with Ctrl+Shift+R (`reload_config`); theme, fonts, cursor shape, present mode, FPS cap and bindings apply live
+- Bundled themes: default, death, dracula, gruvbox-dark, nord, solarized-dark, solarized-light; indexed/default colours resolve at render time so theme changes recolour existing text
+- `deathterminal --print-default-config`; `config.example.lua` is now real and documented; `docs/CONFIG.md`
+- Config sandbox: no io / os.execute / require / debug, text-only `load`, 64 MiB memory cap and an instruction limit; `--lua-unsafe` opts out
+- `shell.program/args/env/cwd`; `cursor.shape` sets the DECSCUSR 0 default
 - Frame pacing: 2 frames in flight with per-slot fences/semaphores, no per-frame `vkQueueWaitIdle`; `present_mode = fifo|mailbox|immediate|fifo_relaxed` (or `vsync = true|false`) with fallback to what the surface supports; `max_fps` cap while output streams; the GUI loop sleeps in `poll(-1)` when nothing changes (0 CPU ticks over 10 s idle)
 - Damage tracking: per-row quad caches, only rows whose cells/marks/cursor changed are re-shaped; unchanged frames are not drawn; GPU instance uploads cover only damaged ranges; the software renderer redraws only dirty row bands
 - Instanced cell drawing: 32-byte instances (was 64) in pixel units with push constants, one draw per frame, persistently mapped per-frame instance buffers; glyph-atlas uploads are recorded into the frame's command buffer

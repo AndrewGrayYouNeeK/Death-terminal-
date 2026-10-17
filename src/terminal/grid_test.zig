@@ -22,7 +22,8 @@ test "ansi clear and color" {
 
     try term.processOutput("\x1b[H\x1b[31mX");
     try std.testing.expectEqual(@as(u21, 'X'), term.getCell(0, 0).?.char);
-    try std.testing.expectEqual(@as(u32, 0xCD0000), term.getCell(0, 0).?.fg_color);
+    try std.testing.expectEqual(@import("color.zig").indexed(1), term.getCell(0, 0).?.fg_color);
+    try std.testing.expectEqual(@as(u32, 0xCD0000), term.getCell(0, 0).?.resolvedColors().fg);
 }
 
 test "scrollback receives scrolled line" {

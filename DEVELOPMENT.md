@@ -29,7 +29,8 @@ PTY ↔ Terminal Core ↔ Renderer (Vulkan)
 | AI autocomplete | `src/ai/` | Stub (planned: OpenAI-compatible HTTP/JSON, default local Ollama) |
 | SSH tunneling | `src/ssh/` | Stub (planned: libssh2) |
 | Lua scripting | `src/scripting/` | Stub (Lua not linked yet) |
-| Configuration | `src/config/` | Reads `~/.config/death-terminal/config.txt` with flat `key = value` lines (`rows`, `cols`, `ai_enabled`, `ai_endpoint`, `scrollback_lines`, `font`, `font_family`, `font_size`, `line_height`, `font_ligatures`, plus the selection/clipboard/search keys `copy_on_select`, `paste_confirm`, `osc52`, `scrollbar`, `scroll_lines`, `word_chars`, `url_open_command`, `selection_background`, `selection_foreground`, `keybind` — see `docs/SELECTION.md` — and the performance keys `present_mode`, `vsync`, `max_fps`, `read_budget_kb` — see `docs/PERFORMANCE.md`). `config.example.lua` is the target format for the Lua milestone and is not read yet. |
+| Configuration | `src/config/` | `config.zig` (Config struct, XDG lookup, legacy `config.txt`), `lua_config.zig` (schema + validation, Lua ↔ Zig), `prelude.lua` (sandboxed env, `config` proxy, `dt` table, file:line diagnostics), `themes.zig`. Reference: `docs/CONFIG.md`; `config.example.lua` is embedded for `--print-default-config` and a test checks it equals the defaults |
+| Scripting | `src/scripting/` | `lua.zig` (vendored Lua 5.4.7 C API, memory cap, instruction hook), `lua_engine.zig` (long-lived sandboxed state for milestone 10 hooks) |
 
 ## Build Requirements
 

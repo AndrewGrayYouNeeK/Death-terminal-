@@ -40,6 +40,8 @@ pub const View = struct {
     selection_fg: u32 = color.none,
     /// Scrollbar thumb as fractions of the window height.
     scrollbar: ?struct { top: f32, height: f32 } = null,
+    /// Theme: resolves palette/default cell colours and the cursor colour.
+    palette: *const color.Palette = &color.default_palette,
 
     pub fn fromTerminal(term: *const terminal.Terminal) View {
         return .{
@@ -76,9 +78,14 @@ fn markAt(view: View, cols: u16, row: u16, col: u16) Mark {
 
 /// Colors for a cell after attributes, reverse video, and a block cursor.
 pub fn cellColors(cell: Cell, view: View, block_cursor: bool) struct { fg: u32, bg: u32 } {
-    const c = cell.resolvedColors();
+    const c = cell.resolvedColorsIn(view.palette);
     var fg = c.fg;
     var bg = c.bg;
+    if (block_cursor and view.palette.cursor != color.none) {
+        // Themed block cursor: cursor colour behind the cell's text.
+        const text_rgb = if (view.palette.cursor_text != color.none) view.palette.cursor_text else (if (view.reverse_video) fg else bg);
+        return .{ .fg = text_rgb, .bg = view.palette.cursor };
+    }
     if (view.reverse_video != block_cursor) {
         const tmp = fg;
         fg = bg;
@@ -88,7 +95,7 @@ pub fn cellColors(cell: Cell, view: View, block_cursor: bool) struct { fg: u32, 
 }
 
 pub fn clearColor(view: View) u32 {
-    return if (view.reverse_video) color.default_fg else color.default_bg;
+    return if (view.reverse_video) view.palette.fg else view.palette.bg;
 }
 
 /// Half-open range of quad indices.
@@ -105,6 +112,7 @@ const FrameKey = struct {
     reverse_video: bool = false,
     selection_bg: u32 = 0,
     selection_fg: u32 = 0,
+    palette: u64 = 0,
 };
 
 /// Cursor state that recolours cells (block cursor) or adds quads.
@@ -224,6 +232,7 @@ pub const Frame = struct {
             .reverse_video = view.reverse_video,
             .selection_bg = view.selection_bg,
             .selection_fg = view.selection_fg,
+            .palette = view.palette.hash(),
         };
         const n = @as(usize, rows) * cols;
         const full = !self.valid or !std.meta.eql(key, self.key) or self.prev_cells.items.len != n;
@@ -421,7 +430,7 @@ pub const Frame = struct {
             const x = @as(f32, @floatFromInt(col)) * cw;
             const w = cw * @as(f32, @floatFromInt(span));
             if (cell.underline) {
-                const uc = if (cell.underline_color != color.none) cell.underline_color else fg;
+                const uc = if (cell.underline_color != color.none) view.palette.resolve(cell.underline_color) else fg;
                 switch (cell.underline_style) {
                     .single => try solidTo(a, &rc.fg, x, y + uy, w, t, uc),
                     .double => {
@@ -453,7 +462,7 @@ pub const Frame = struct {
             if (rowSlice(cells, cur.row, cols)) |line| {
                 const cell = line[cur.col];
                 const span: f32 = if (cell.width == 2) 2 else 1;
-                const cc = cellColors(cell, view, false).fg;
+                const cc = if (view.palette.cursor != color.none) view.palette.cursor else cellColors(cell, view, false).fg;
                 const x = @as(f32, @floatFromInt(cur.col)) * cw;
                 const y = @as(f32, @floatFromInt(cur.row)) * ch;
                 const bar = @max(1, @round(cw / 8));
@@ -571,7 +580,7 @@ test "frame: glyphs per non-blank cell, cursor block inverts" {
     try std.testing.expectEqual(@as(usize, 1), solids);
     try std.testing.expectEqual(@as(usize, 2), glyphs);
     // Glyph under the cursor uses the background colour.
-    try std.testing.expectEqual(color.default_bg, fr.quads.items[1].rgb);
+    try std.testing.expectEqual(color.default_palette.bg, fr.quads.items[1].rgb);
 }
 
 test "frame: background runs merge, underline uses SGR 58 colour" {
