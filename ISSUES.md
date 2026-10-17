@@ -147,11 +147,11 @@
 - [ ] Preferences persistence
 
 ### Additional Features
-- [ ] Copy/paste functionality
-- [ ] Search in scrollback (search function exists, no UI)
-- [ ] Scrollback navigation (Shift+PageUp/PageDown)
+- [x] Copy/paste functionality (CLIPBOARD/PRIMARY, bracketed paste, paste prompt, OSC 52)
+- [x] Search in scrollback (Ctrl+Shift+F overlay)
+- [x] Scrollback navigation (Shift+PageUp/PageDown, wheel, Shift+Home/End, scrollbar)
 - [ ] Tabs and splits
-- [ ] Hyperlink detection and handling
+- [x] Hyperlink detection and handling (Ctrl+click URLs and OSC 8)
 - [ ] Image protocol support (optional)
 - [ ] Notifications
 - [ ] Session persistence

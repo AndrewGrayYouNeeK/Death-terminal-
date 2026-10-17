@@ -163,6 +163,10 @@ test {
     _ = @import("font/retro.zig");
     _ = @import("font/fonts.zig");
     _ = @import("renderer/frame.zig");
+    _ = @import("terminal/selection.zig");
+    _ = @import("terminal/search.zig");
+    _ = @import("terminal/urls.zig");
+    _ = @import("app/ui.zig");
     _ = @import("platform/wayland_backend.zig");
     _ = @import("platform/win32_backend.zig");
     _ = @import("app/event_loop.zig");

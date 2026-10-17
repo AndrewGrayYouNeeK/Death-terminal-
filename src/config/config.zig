@@ -22,6 +22,25 @@ pub const Config = struct {
     font_retro: bool = false,
     /// HarfBuzz ligatures (calt/liga/dlig).
     font_ligatures: bool = true,
+    /// Mouse selections also go to CLIPBOARD (PRIMARY is always set).
+    copy_on_select: bool = false,
+    /// Confirm multi-line pastes when the app hasn't enabled bracketed paste.
+    paste_confirm: bool = true,
+    /// OSC 52 clipboard access for programs: off | write | read-write.
+    osc52: []const u8 = "write",
+    /// Show a scrollbar thumb while scrolled back.
+    scrollbar: bool = true,
+    /// Lines per mouse-wheel notch in the scrollback.
+    scroll_lines: u16 = 3,
+    /// Extra characters treated as part of a word on double-click.
+    word_chars: []u8,
+    /// Program that opens Ctrl+clicked links (receives the URL as its only argument).
+    url_open_command: []u8,
+    selection_background: u32 = 0x3B5BA5,
+    /// 0xFFFFFFFF keeps the text colour.
+    selection_foreground: u32 = 0xFFFFFFFF,
+    /// `keybind = chord=action` lines, applied in order over the defaults.
+    keybinds: std.ArrayList([]u8),
 
     pub const Backend = enum { auto, x11, wayland, win32 };
 
@@ -37,12 +56,68 @@ pub const Config = struct {
             .scale = 0,
             .backend = .auto,
             .font_family = allocator.alloc(u8, 0) catch @panic("config: out of memory"),
+            .word_chars = allocator.dupe(u8, "-_./~:@%+#?&=") catch @panic("config: out of memory"),
+            .url_open_command = allocator.dupe(u8, if (builtin.os.tag == .macos) "open" else "xdg-open") catch @panic("config: out of memory"),
+            .keybinds = std.ArrayList([]u8).init(allocator),
         };
     }
 
     pub fn deinit(self: *Config) void {
         self.allocator.free(self.ai_endpoint);
         self.allocator.free(self.font_family);
+        self.allocator.free(self.word_chars);
+        self.allocator.free(self.url_open_command);
+        for (self.keybinds.items) |k| self.allocator.free(k);
+        self.keybinds.deinit();
+    }
+
+    fn replaceString(self: *Config, slot: *[]u8, value: []const u8) !void {
+        const owned = try self.allocator.dupe(u8, value);
+        self.allocator.free(slot.*);
+        slot.* = owned;
+    }
+
+    fn parseBool(value: []const u8) bool {
+        return std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1") or std.mem.eql(u8, value, "yes") or std.mem.eql(u8, value, "on");
+    }
+
+    fn parseColor(value: []const u8) !u32 {
+        if (std.mem.eql(u8, value, "none") or std.mem.eql(u8, value, "default")) return 0xFFFFFFFF;
+        const hex = if (value.len > 0 and value[0] == '#') value[1..] else value;
+        if (hex.len != 6) return error.BadColor;
+        return try std.fmt.parseInt(u32, hex, 16);
+    }
+
+    /// Selection / clipboard / scrollback / keybinding keys.
+    fn applyUiKey(self: *Config, key: []const u8, value: []const u8) !bool {
+        if (std.mem.eql(u8, key, "copy_on_select")) {
+            self.copy_on_select = parseBool(value);
+        } else if (std.mem.eql(u8, key, "paste_confirm")) {
+            self.paste_confirm = parseBool(value);
+        } else if (std.mem.eql(u8, key, "osc52")) {
+            if (std.mem.eql(u8, value, "off")) {
+                self.osc52 = "off";
+            } else if (std.mem.eql(u8, value, "write")) {
+                self.osc52 = "write";
+            } else if (std.mem.eql(u8, value, "read-write") or std.mem.eql(u8, value, "read_write")) {
+                self.osc52 = "read-write";
+            } else return error.BadOsc52Policy;
+        } else if (std.mem.eql(u8, key, "scrollbar")) {
+            self.scrollbar = parseBool(value);
+        } else if (std.mem.eql(u8, key, "scroll_lines")) {
+            self.scroll_lines = std.math.clamp(try std.fmt.parseInt(u16, value, 10), 1, 100);
+        } else if (std.mem.eql(u8, key, "word_chars")) {
+            try self.replaceString(&self.word_chars, value);
+        } else if (std.mem.eql(u8, key, "url_open_command")) {
+            try self.replaceString(&self.url_open_command, value);
+        } else if (std.mem.eql(u8, key, "selection_background")) {
+            self.selection_background = try parseColor(value);
+        } else if (std.mem.eql(u8, key, "selection_foreground")) {
+            self.selection_foreground = try parseColor(value);
+        } else if (std.mem.eql(u8, key, "keybind")) {
+            try self.keybinds.append(try self.allocator.dupe(u8, value));
+        } else return false;
+        return true;
     }
 
     fn setFontFamily(self: *Config, name: []const u8) !void {
@@ -131,6 +206,10 @@ pub const Config = struct {
                 const key = std.mem.trim(u8, trimmed[0..eq], " \t");
                 const value = try parseString(trimmed[eq + 1 ..]);
                 if (self.applyFontKey(key, value) catch false) continue;
+                if (self.applyUiKey(key, value) catch |err| {
+                    std.debug.print("config: {s}: {s}\n", .{ key, @errorName(err) });
+                    continue;
+                }) continue;
             }
 
             if (std.mem.startsWith(u8, trimmed, "rows =")) {
@@ -246,4 +325,38 @@ test "Config font keys from file and args" {
     try config.loadFromArgs(&args);
     try testing.expect(config.font_retro);
     try testing.expectEqual(@as(f32, 9), config.font_size);
+}
+
+test "Config selection, clipboard and keybind keys" {
+    const testing = std.testing;
+    var config = Config.init(testing.allocator);
+    defer config.deinit();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "c.txt", .data = 
+    \\copy_on_select = true
+    \\paste_confirm = false
+    \\osc52 = read-write
+    \\scrollbar = false
+    \\scroll_lines = 5
+    \\word_chars = "-_"
+    \\url_open_command = firefox
+    \\selection_background = #112233
+    \\keybind = ctrl+shift+c=none
+    \\keybind = alt+c=copy
+    \\
+    });
+    const path = try tmp.dir.realpathAlloc(testing.allocator, "c.txt");
+    defer testing.allocator.free(path);
+    try config.loadFromFile(path);
+    try testing.expect(config.copy_on_select);
+    try testing.expect(!config.paste_confirm);
+    try testing.expectEqualStrings("read-write", config.osc52);
+    try testing.expect(!config.scrollbar);
+    try testing.expectEqual(@as(u16, 5), config.scroll_lines);
+    try testing.expectEqualStrings("-_", config.word_chars);
+    try testing.expectEqualStrings("firefox", config.url_open_command);
+    try testing.expectEqual(@as(u32, 0x112233), config.selection_background);
+    try testing.expectEqual(@as(usize, 2), config.keybinds.items.len);
+    try testing.expectEqualStrings("alt+c=copy", config.keybinds.items[1]);
 }

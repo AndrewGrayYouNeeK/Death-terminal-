@@ -25,7 +25,30 @@ pub const State = struct {
     swallow_char: bool = false,
     class_atom: usize = 0,
     dib_pixels: []u32 = &.{},
+    /// Windows has no PRIMARY selection; it is emulated in-process.
+    primary_text: ?[]u8 = null,
+    paste_buf: std.ArrayListUnmanaged(u8) = .{},
 };
+
+pub fn setClipboard(st: *State, target: events.ClipTarget, text: []const u8) void {
+    switch (target) {
+        .primary => {
+            const copy = st.allocator.dupe(u8, text) catch return;
+            if (st.primary_text) |old| st.allocator.free(old);
+            st.primary_text = copy;
+        },
+        .clipboard => if (builtin.os.tag == .windows) Win.setClipboard(st, text),
+    }
+}
+
+pub fn requestClipboard(st: *State, target: events.ClipTarget, purpose: events.PastePurpose) void {
+    st.paste_buf.clearRetainingCapacity();
+    switch (target) {
+        .primary => if (st.primary_text) |t| st.paste_buf.appendSlice(st.allocator, t) catch {},
+        .clipboard => if (builtin.os.tag == .windows) Win.readClipboard(st),
+    }
+    st.queue.pushPaste(st.paste_buf.items, target, purpose);
+}
 
 pub fn open(st: *State, allocator: std.mem.Allocator, title: []const u8, width: u32, height: u32, scale: f32) !void {
     if (builtin.os.tag == .windows) {
@@ -118,7 +141,43 @@ const Win = if (builtin.os.tag == .windows) struct {
         std.debug.print("  → Win32 window mapped ({d}x{d}) scale={d:.2}\n", .{ st.width, st.height, st.scale });
     }
 
+    fn setClipboard(st: *State, text: []const u8) void {
+        const hwnd: w.HWND = @ptrCast(@alignCast(st.hwnd orelse return));
+        const wide = std.unicode.utf8ToUtf16LeAllocZ(st.allocator, text) catch return;
+        defer st.allocator.free(wide);
+        const bytes = (wide.len + 1) * 2;
+        const mem = w.GlobalAlloc(w.GMEM_MOVEABLE, bytes) orelse return;
+        const dst: [*]u16 = @ptrCast(@alignCast(w.GlobalLock(mem) orelse {
+            _ = w.GlobalFree(mem);
+            return;
+        }));
+        @memcpy(dst[0 .. wide.len + 1], wide[0 .. wide.len + 1]);
+        _ = w.GlobalUnlock(mem);
+        if (w.OpenClipboard(hwnd) == 0) {
+            _ = w.GlobalFree(mem);
+            return;
+        }
+        _ = w.EmptyClipboard();
+        // On success the clipboard owns `mem`.
+        if (w.SetClipboardData(w.CF_UNICODETEXT, mem) == null) _ = w.GlobalFree(mem);
+        _ = w.CloseClipboard();
+    }
+
+    fn readClipboard(st: *State) void {
+        const hwnd: w.HWND = @ptrCast(@alignCast(st.hwnd orelse return));
+        if (w.OpenClipboard(hwnd) == 0) return;
+        defer _ = w.CloseClipboard();
+        const h = w.GetClipboardData(w.CF_UNICODETEXT) orelse return;
+        const src: [*:0]const u16 = @ptrCast(@alignCast(w.GlobalLock(h) orelse return));
+        defer _ = w.GlobalUnlock(h);
+        const utf8 = std.unicode.utf16LeToUtf8Alloc(st.allocator, std.mem.span(src)) catch return;
+        defer st.allocator.free(utf8);
+        st.paste_buf.appendSlice(st.allocator, utf8) catch {};
+    }
+
     fn close(st: *State) void {
+        if (st.primary_text) |t| st.allocator.free(t);
+        st.paste_buf.deinit(st.allocator);
         if (st.dib_pixels.len != 0) {
             st.allocator.free(st.dib_pixels);
             st.dib_pixels = &.{};
@@ -253,15 +312,9 @@ const Win = if (builtin.os.tag == .windows) struct {
                 return 0;
             },
             w.WM_KEYDOWN, w.WM_SYSKEYDOWN => {
-                if ((w.GetKeyState(w.VK_CONTROL) & 0x8000) != 0) {
-                    const z: ?i8 = switch (wparam) {
-                        0xBB, w.VK_ADD => 1, // VK_OEM_PLUS
-                        0xBD, w.VK_SUBTRACT => -1, // VK_OEM_MINUS
-                        0x30, w.VK_NUMPAD0 => 0,
-                        else => null,
-                    };
-                    if (z) |step| {
-                        st.queue.pushZoom(step);
+                if (vkToKeysym(wparam)) |sym| {
+                    if (events.matchBinding(sym, currentMods())) |a| {
+                        st.queue.pushAction(a);
                         st.swallow_char = true;
                         return 0;
                     }
@@ -313,6 +366,34 @@ const Win = if (builtin.os.tag == .windows) struct {
 
     fn highY(lparam: w.LPARAM) i32 {
         return @as(i16, @bitCast(@as(u16, @truncate(@as(usize, @bitCast(lparam)) >> 16))));
+    }
+
+    /// Map a virtual key onto the X11 keysym numbering used by bindings.
+    fn vkToKeysym(vk: w.WPARAM) ?u32 {
+        return switch (vk) {
+            'A'...'Z' => @as(u32, @intCast(vk)) + 32,
+            '0'...'9' => @intCast(vk),
+            0xBB => '=', // VK_OEM_PLUS
+            0xBD => '-', // VK_OEM_MINUS
+            0xBC => ',',
+            0xBE => '.',
+            0xBF => '/',
+            w.VK_INSERT => 0xff63,
+            w.VK_DELETE => 0xffff,
+            w.VK_PRIOR => 0xff55,
+            w.VK_NEXT => 0xff56,
+            w.VK_HOME => 0xff50,
+            w.VK_END => 0xff57,
+            w.VK_UP => 0xff52,
+            w.VK_DOWN => 0xff54,
+            w.VK_LEFT => 0xff51,
+            w.VK_RIGHT => 0xff53,
+            w.VK_ADD => 0xffab,
+            w.VK_SUBTRACT => 0xffad,
+            w.VK_NUMPAD0 => 0xffb0,
+            w.VK_F1...w.VK_F12 => 0xffbe + @as(u32, @intCast(vk - w.VK_F1)),
+            else => null,
+        };
     }
 
     fn currentMods() input.Mods {

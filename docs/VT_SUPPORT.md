@@ -27,7 +27,7 @@ input encoding in `src/terminal/input.zig`; tests are in
 - Real 80/132-column switching (DECCOLM clears and homes but keeps the window size)
 - Left/right margins (DECSLRM/DECLRMM), double-width/height lines, VT52 mode, soft fonts, sixel
 - Reflow on resize, underline colour/curly underline, blinking text
-- Selection, copy/paste UI (the paste encoder exists but nothing triggers it), scrollback viewport
+- OSC 52 is handled (see [SELECTION.md](SELECTION.md)); selection/paste UI lives outside the emulator
 
 ## Verification (headless)
 

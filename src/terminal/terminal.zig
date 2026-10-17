@@ -39,6 +39,9 @@ pub const Cell = struct {
     underline_style: UnderlineStyle = .single,
     /// SGR 58 underline colour, or `color.none` to use the foreground.
     underline_color: u32 = color.none,
+    /// Set on a row's last cell when the text auto-wrapped onto the next
+    /// row, so selection/search/URLs can join the two rows.
+    soft_wrap: bool = false,
 
     pub const max_combining = 2;
 
@@ -147,6 +150,29 @@ pub const Modes = struct {
     cursor_blink: bool = false,
 };
 
+pub const ClipboardTargets = packed struct {
+    clipboard: bool = false,
+    primary: bool = false,
+
+    /// OSC 52 Pc: 'c' clipboard, 'p'/'s' primary/selection; empty = "s0"
+    /// which xterm maps to the clipboard for most setups.
+    pub fn parse(pc: []const u8) ClipboardTargets {
+        var t = ClipboardTargets{};
+        for (pc) |b| switch (b) {
+            'c' => t.clipboard = true,
+            'p', 's' => t.primary = true,
+            else => {},
+        };
+        if (!t.clipboard and !t.primary) t.clipboard = true;
+        return t;
+    }
+};
+
+pub const ClipboardOp = union(enum) {
+    set: struct { targets: ClipboardTargets, data: []u8 },
+    query: ClipboardTargets,
+};
+
 const SavedCursor = struct {
     row: u16 = 0,
     col: u16 = 0,
@@ -200,6 +226,9 @@ pub const Terminal = struct {
     replies: std.ArrayList(u8),
     /// OSC 8 hyperlink targets, referenced by `Cell.link`.
     links: std.ArrayList([]u8),
+    /// OSC 52 requests waiting for the front end (which applies the
+    /// configured policy).
+    clipboard_ops: std.ArrayList(ClipboardOp),
 
     pub fn init(allocator: std.mem.Allocator) !Terminal {
         return initWithSize(allocator, 24, 80, 10_000);
@@ -239,6 +268,7 @@ pub const Terminal = struct {
             .cwd_uri = cwd,
             .replies = std.ArrayList(u8).init(allocator),
             .links = std.ArrayList([]u8).init(allocator),
+            .clipboard_ops = std.ArrayList(ClipboardOp).init(allocator),
         };
     }
 
@@ -269,6 +299,11 @@ pub const Terminal = struct {
         self.replies.deinit();
         for (self.links.items) |l| self.allocator.free(l);
         self.links.deinit();
+        for (self.clipboard_ops.items) |op| switch (op) {
+            .set => |cs| self.allocator.free(cs.data),
+            .query => {},
+        };
+        self.clipboard_ops.deinit();
         if (self.pty) |*pty| pty.close();
         self.initialized = false;
     }
@@ -426,6 +461,7 @@ pub const Terminal = struct {
         }
 
         if (self.wrap_pending and self.modes.autowrap) {
+            self.buffer[self.cellIndex(self.cursor_row, self.cols - 1)].soft_wrap = true;
             self.cursor_col = 0;
             try self.index();
         }
@@ -437,6 +473,7 @@ pub const Terminal = struct {
                 // column and wrap, like xterm.
                 self.breakWideAt(self.cursor_row, self.cursor_col);
                 self.buffer[self.cellIndex(self.cursor_row, self.cursor_col)] = self.eraseCell();
+                self.buffer[self.cellIndex(self.cursor_row, self.cols - 1)].soft_wrap = true;
                 self.cursor_col = 0;
                 try self.index();
             } else {
@@ -1326,6 +1363,7 @@ pub const Terminal = struct {
                 self.cwd_uri = copy;
             },
             8 => try self.setHyperlink(arg),
+            52 => try self.clipboardOsc(arg),
             10, 11 => if (std.mem.eql(u8, arg, "?")) {
                 const c = if (cmd == 10) color.default_fg else color.default_bg;
                 const r = (c >> 16) & 0xFF;
@@ -1335,6 +1373,71 @@ pub const Terminal = struct {
             },
             else => {},
         }
+    }
+
+    /// OSC 52 ; Pc ; Pd — Pd is base64 text to store, or "?" to query.
+    fn clipboardOsc(self: *Terminal, arg: []const u8) !void {
+        const sep = std.mem.indexOfScalar(u8, arg, ';') orelse return;
+        const targets = ClipboardTargets.parse(arg[0..sep]);
+        const data = arg[sep + 1 ..];
+        if (self.clipboard_ops.items.len >= 16) return; // front end not draining
+        if (std.mem.eql(u8, data, "?")) {
+            try self.clipboard_ops.append(.{ .query = targets });
+            return;
+        }
+        // Accept padded and unpadded base64.
+        const trimmed = std.mem.trimRight(u8, data, "=");
+        const nopad = std.base64.standard_no_pad.Decoder;
+        const size = nopad.calcSizeForSlice(trimmed) catch return;
+        const buf = try self.allocator.alloc(u8, size);
+        nopad.decode(buf, trimmed) catch {
+            self.allocator.free(buf);
+            return;
+        };
+        try self.clipboard_ops.append(.{ .set = .{ .targets = targets, .data = buf } });
+    }
+
+    /// Hand pending OSC 52 requests to the caller (who frees `set.data`
+    /// with `freeClipboardOp`).
+    pub fn takeClipboardOps(self: *Terminal) ![]ClipboardOp {
+        return self.clipboard_ops.toOwnedSlice();
+    }
+
+    pub fn freeClipboardOps(self: *Terminal, ops: []ClipboardOp) void {
+        for (ops) |op| switch (op) {
+            .set => |s| self.allocator.free(s.data),
+            .query => {},
+        };
+        self.allocator.free(ops);
+    }
+
+    // ------------------------------------------------------------ lines
+
+    /// Absolute number of the screen's first row. Scrollback lines are
+    /// numbered below it (oldest retained = `historyTop`).
+    pub fn screenTop(self: *const Terminal) i64 {
+        return @intCast(self.scrollback.total);
+    }
+
+    pub fn historyTop(self: *const Terminal) i64 {
+        return self.screenTop() - @as(i64, @intCast(self.scrollback.len()));
+    }
+
+    /// Cells of absolute line `line` (scrollback or active screen), or
+    /// null when it is out of range. Scrollback rows keep the width they
+    /// had when they scrolled off.
+    pub fn lineAt(self: *const Terminal, line: i64) ?[]const Cell {
+        const top = self.screenTop();
+        if (line >= top) {
+            const r = line - top;
+            if (r >= self.rows) return null;
+            const start = @as(usize, @intCast(r)) * self.cols;
+            return self.buffer[start..][0..self.cols];
+        }
+        if (self.alt_active) return null;
+        const hist = self.historyTop();
+        if (line < hist) return null;
+        return self.scrollback.getLine(@intCast(line - hist));
     }
 
     /// OSC 8 ; params ; URI — an empty URI ends the link.

@@ -33,6 +33,13 @@ pub const View = struct {
     reverse_video: bool = false,
     /// Window focus; an unfocused block cursor draws hollow.
     focused: bool = true,
+    /// Optional per-cell highlight (rows*cols, see `Mark`).
+    marks: ?[]const Mark = null,
+    selection_bg: u32 = 0x3B5BA5,
+    /// `color.none` keeps each cell's own foreground.
+    selection_fg: u32 = color.none,
+    /// Scrollbar thumb as fractions of the window height.
+    scrollbar: ?struct { top: f32, height: f32 } = null,
 
     pub fn fromTerminal(term: *const terminal.Terminal) View {
         return .{
@@ -42,6 +49,30 @@ pub const View = struct {
         };
     }
 };
+
+pub const Mark = enum(u8) { none, selected, match, current_match };
+
+pub const match_bg: u32 = 0xD7AF00;
+pub const current_match_bg: u32 = 0xFF6F00;
+pub const scrollbar_rgb: u32 = 0x8A8A8A;
+
+/// Colours for a cell including selection / search highlights.
+pub fn markedColors(cell: Cell, view: View, block_cursor: bool, mark: Mark) struct { fg: u32, bg: u32 } {
+    const c = cellColors(cell, view, block_cursor);
+    if (block_cursor) return .{ .fg = c.fg, .bg = c.bg };
+    return switch (mark) {
+        .none => .{ .fg = c.fg, .bg = c.bg },
+        .selected => .{ .fg = if (view.selection_fg != color.none) view.selection_fg else c.fg, .bg = view.selection_bg },
+        .match => .{ .fg = 0x000000, .bg = match_bg },
+        .current_match => .{ .fg = 0x000000, .bg = current_match_bg },
+    };
+}
+
+fn markAt(view: View, cols: u16, row: u16, col: u16) Mark {
+    const marks = view.marks orelse return .none;
+    const i = @as(usize, row) * cols + col;
+    return if (i < marks.len) marks[i] else .none;
+}
 
 /// Colors for a cell after attributes, reverse video, and a block cursor.
 pub fn cellColors(cell: Cell, view: View, block_cursor: bool) struct { fg: u32, bg: u32 } {
@@ -101,11 +132,11 @@ pub const Frame = struct {
             var col: u16 = 0;
             while (col < cols) {
                 const at = block and row == cursor_row and cursorCovers(line, cursor_col, col);
-                const bg = cellColors(line[col], view, at).bg;
+                const bg = markedColors(line[col], view, at, markAt(view, cols, row, col)).bg;
                 var end = col + 1;
                 while (end < cols) : (end += 1) {
                     const at2 = block and row == cursor_row and cursorCovers(line, cursor_col, end);
-                    if (cellColors(line[end], view, at2).bg != bg) break;
+                    if (markedColors(line[end], view, at2, markAt(view, cols, row, end)).bg != bg) break;
                 }
                 if (bg != self.clear) try self.quads.append(.{
                     .x = @as(f32, @floatFromInt(col)) * cw,
@@ -128,7 +159,7 @@ pub const Frame = struct {
             for (self.glyphs.items) |p| {
                 const cell = line[p.col];
                 const at = block and row == cursor_row and cursorCovers(line, cursor_col, p.col);
-                const fg = cellColors(cell, view, at).fg;
+                const fg = markedColors(cell, view, at, markAt(view, cols, row, p.col)).fg;
                 const g = p.glyph;
                 if (g.rect.w == 0 or g.rect.h == 0) continue;
                 try self.quads.append(.{
@@ -157,7 +188,7 @@ pub const Frame = struct {
                 const cell = line[col];
                 if (cell.isSpacer() or cell.hidden) continue;
                 const at = block and row == cursor_row and cursorCovers(line, cursor_col, col);
-                const fg = cellColors(cell, view, at).fg;
+                const fg = markedColors(cell, view, at, markAt(view, cols, row, col)).fg;
                 const span: u8 = if (cell.width == 2) 2 else 1;
                 const x = @as(f32, @floatFromInt(col)) * cw;
                 const y = @as(f32, @floatFromInt(row)) * ch;
@@ -205,6 +236,15 @@ pub const Frame = struct {
                     try self.solid(x + cw * span - 1, y, 1, ch, cc);
                 },
             }
+        }
+
+        if (view.scrollbar) |sb| {
+            const total_h = ch * @as(f32, @floatFromInt(rows));
+            const bw = @max(4, @round(cw / 2));
+            const x = cw * @as(f32, @floatFromInt(cols)) - bw;
+            const h = @max(ch / 2, sb.height * total_h);
+            const y = @min(sb.top * total_h, total_h - h);
+            try self.solid(x, y, bw, h, scrollbar_rgb);
         }
     }
 
@@ -296,4 +336,22 @@ test "frame: wide cell cursor covers both halves" {
     cells[1].width = 0;
     try std.testing.expect(cursorCovers(&cells, 0, 1));
     try std.testing.expect(cursorCovers(&cells, 1, 0));
+}
+
+test "frame: selection and search marks recolour cells, scrollbar drawn" {
+    var f = try Fonts.init(std.testing.allocator, .{ .retro = true });
+    defer f.deinit();
+    var cells: [4]Cell = undefined;
+    testCells("abcd", &cells);
+    const marks = [_]Mark{ .selected, .selected, .match, .current_match };
+    var fr = Frame.init(std.testing.allocator);
+    defer fr.deinit();
+    try fr.build(&f, &cells, 1, 4, 0, 0, .{ .cursor_visible = false, .marks = &marks, .scrollbar = .{ .top = 0.5, .height = 0.25 } });
+    try std.testing.expectEqual(@as(u32, 0x3B5BA5), fr.quads.items[0].rgb);
+    try std.testing.expectEqual(@as(f32, 16), fr.quads.items[0].w);
+    try std.testing.expectEqual(match_bg, fr.quads.items[1].rgb);
+    try std.testing.expectEqual(current_match_bg, fr.quads.items[2].rgb);
+    const sb = fr.quads.items[fr.quads.items.len - 1];
+    try std.testing.expectEqual(scrollbar_rgb, sb.rgb);
+    try std.testing.expect(sb.x > 24);
 }

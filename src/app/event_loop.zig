@@ -14,6 +14,8 @@ const dpi = @import("../platform/dpi.zig");
 const input = @import("../terminal/input.zig");
 const fonts_mod = @import("../font/fonts.zig");
 const frame_mod = @import("../renderer/frame.zig");
+const events = @import("../platform/events.zig");
+const ui_mod = @import("ui.zig");
 
 const POLL_TIMEOUT_MS: i32 = 16;
 const READ_BUFFER_SIZE: usize = 4096;
@@ -107,12 +109,36 @@ pub const EventLoop = struct {
 
         var read_buf: [READ_BUFFER_SIZE]u8 = undefined;
         var mouse = MouseState{};
+
+        installBindings(self.cfg);
+        var ui = ui_mod.Ui.init(self.allocator, .{
+            .copy_on_select = self.cfg.copy_on_select,
+            .paste_confirm = self.cfg.paste_confirm,
+            .osc52 = ui_mod.Osc52.parse(self.cfg.osc52) orelse .write,
+            .scrollbar = self.cfg.scrollbar,
+            .scroll_lines = self.cfg.scroll_lines,
+            .word_chars = self.cfg.word_chars,
+        });
+        defer ui.deinit();
+        var view = ViewBuffers.init(self.allocator);
+        defer view.deinit();
+        const gui = Gui{
+            .term = term,
+            .vk = vulkan_renderer,
+            .soft = &soft,
+            .window = &window,
+            .fonts = &fonts,
+            .frame = &frame,
+            .ui = &ui,
+            .view = &view,
+            .cfg = self.cfg,
+        };
         std.debug.print("GUI terminal active ({s}, scale={d:.2}). Close the window or exit the shell to quit.\n", .{
             @tagName(window.backend),
             window.scale,
         });
         var focused = true;
-        try presentGui(term, vulkan_renderer, &soft, &window, &fonts, &frame, focused);
+        try gui.present(focused);
 
         while (!shutdown_requested.load(.seq_cst)) {
             var poll_fds = [_]posix.pollfd{
@@ -120,7 +146,8 @@ pub const EventLoop = struct {
                 .{ .fd = window.connectionFd() orelse -1, .events = posix.POLL.IN, .revents = 0 },
             };
             const nfd: usize = if (window.connectionFd() != null) 2 else 1;
-            _ = posix.poll(poll_fds[0..nfd], POLL_TIMEOUT_MS) catch 0;
+            const timeout: i32 = if (window.hasPending()) 0 else POLL_TIMEOUT_MS;
+            _ = posix.poll(poll_fds[0..nfd], timeout) catch 0;
 
             var need_present = false;
             while (true) {
@@ -137,32 +164,68 @@ pub const EventLoop = struct {
                         try vulkan_renderer.resize(sz.width, sz.height);
                         need_present = true;
                     },
-                    .zoom => |step| {
-                        if (try fonts.zoom(step)) {
-                            try regrid(term, &fonts, &soft, window.width, window.height);
-                            std.debug.print("  → zoom: {d:.1}pt, cell {d}x{d}, grid {d}x{d}\n", .{ fonts.size_pt, fonts.metrics.cell_w, fonts.metrics.cell_h, term.cols, term.rows });
+                    .action => |a| {
+                        const step: ?i8 = switch (a.action) {
+                            .zoom_in => 1,
+                            .zoom_out => -1,
+                            .zoom_reset => 0,
+                            else => null,
+                        };
+                        if (step) |z| {
+                            if (try fonts.zoom(z)) {
+                                try regrid(term, &fonts, &soft, window.width, window.height);
+                                std.debug.print("  → zoom: {d:.1}pt, cell {d}x{d}, grid {d}x{d}\n", .{ fonts.size_pt, fonts.metrics.cell_w, fonts.metrics.cell_h, term.cols, term.rows });
+                            }
+                        } else if (!try ui.handleAction(term, a.action)) {
+                            // Not applicable here (e.g. Shift+PgUp in the
+                            // alternate screen): the app gets the key.
+                            if (events.keysymToKey(a.sym)) |key| {
+                                const seq = input.encodeKey(key, a.mods, term.modes);
+                                _ = try term.write(seq.constSlice());
+                            }
                         }
+                        need_present = true;
+                    },
+                    .paste => |p| {
+                        try ui.onPaste(term, p.data, p.target, p.purpose);
                         need_present = true;
                     },
                     .redraw => need_present = true,
                     .input => |bytes| {
-                        // Ctrl+C arrives as 0x03 and goes to the shell like any key.
-                        _ = try term.write(bytes);
-                        if (autocomplete.enabled) {
-                            _ = autocomplete.getSuggestions("", bytes) catch {};
+                        if (try ui.handleText(term, bytes)) {
+                            need_present = true;
+                        } else {
+                            // Ctrl+C arrives as 0x03 and goes to the shell like any key.
+                            ui.userTyped();
+                            _ = try term.write(bytes);
+                            if (autocomplete.enabled) {
+                                _ = autocomplete.getSuggestions("", bytes) catch {};
+                            }
                         }
                     },
                     .key => |k| {
-                        const seq = input.encodeKey(k.key, k.mods, term.modes);
-                        _ = try term.write(seq.constSlice());
+                        if (try ui.handleKey(term, k.key, k.mods)) {
+                            need_present = true;
+                        } else {
+                            ui.userTyped();
+                            const seq = input.encodeKey(k.key, k.mods, term.modes);
+                            _ = try term.write(seq.constSlice());
+                        }
                     },
-                    .mouse => |m| try handleMouse(term, &mouse, m, .{ .w = fonts.metrics.cell_w, .h = fonts.metrics.cell_h }),
+                    .mouse => |m| {
+                        if (try ui.handleMouse(term, m, fonts.metrics.cell_w, fonts.metrics.cell_h, std.time.milliTimestamp())) {
+                            need_present = true;
+                        } else {
+                            try handleMouse(term, &mouse, m, .{ .w = fonts.metrics.cell_w, .h = fonts.metrics.cell_h });
+                        }
+                    },
                     .focus => |f| {
                         focused = f;
                         need_present = true;
                         if (input.encodeFocus(f, term.modes)) |seq| _ = try term.write(seq);
                     },
                 }
+                try gui.runEffects();
             }
 
             if (poll_fds[0].revents & posix.POLL.IN == 0 and
@@ -187,6 +250,13 @@ pub const EventLoop = struct {
                     break;
                 }
                 try term.processOutput(read_buf[0..n]);
+                if (term.clipboard_ops.items.len > 0) {
+                    const ops = try term.takeClipboardOps();
+                    defer term.freeClipboardOps(ops);
+                    try ui.onClipboardOps(ops);
+                    try gui.runEffects();
+                }
+                ui.sync(term);
                 need_present = true;
             }
 
@@ -196,7 +266,7 @@ pub const EventLoop = struct {
             }
 
             if (need_present) {
-                try presentGui(term, vulkan_renderer, &soft, &window, &fonts, &frame, focused);
+                try gui.present(focused);
             }
         }
     }
@@ -223,7 +293,7 @@ pub const EventLoop = struct {
         var read_buf: [READ_BUFFER_SIZE]u8 = undefined;
         var input_buf: [READ_BUFFER_SIZE]u8 = undefined;
 
-        std.debug.print("Headless terminal active. Press Ctrl+C to exit.\n", .{});
+        std.debug.print("Headless terminal active. Ctrl+C goes to the shell; exit the shell (exit / Ctrl+D) to quit.\n", .{});
 
         while (!shutdown_requested.load(.seq_cst)) {
             var poll_fds = [_]posix.pollfd{
@@ -273,11 +343,6 @@ pub const EventLoop = struct {
 
                 if (n == 0) break;
 
-                if (input_buf[0] == 0x03 and n == 1) {
-                    shutdown_requested.store(true, .seq_cst);
-                    break;
-                }
-
                 _ = try term.write(input_buf[0..n]);
 
                 if (autocomplete.enabled and n > 0) {
@@ -310,27 +375,38 @@ fn installSignalHandlers() !void {
     try posix.sigaction(posix.SIG.TERM, &action, null);
 }
 
+var saved_termios: ?posix.termios = null;
+
+/// Put the host terminal in raw mode so every key (Ctrl+C, Ctrl+Z, Ctrl+S,
+/// Ctrl+V ...) reaches the inner shell as a byte instead of being turned
+/// into a signal or flow control for DeathTerminal itself.
 fn enableRawMode() !bool {
-    var termios = posix.tcgetattr(posix.STDIN_FILENO) catch |err| switch (err) {
+    const orig = posix.tcgetattr(posix.STDIN_FILENO) catch |err| switch (err) {
         error.NotATerminal => return false,
         else => return err,
     };
-    termios.lflag.ICANON = false;
-    termios.lflag.ECHO = false;
-    termios.cc[@intFromEnum(posix.V.MIN)] = 0;
-    termios.cc[@intFromEnum(posix.V.TIME)] = 1;
-    try posix.tcsetattr(posix.STDIN_FILENO, posix.TCSA.NOW, termios);
+    saved_termios = orig;
+    try posix.tcsetattr(posix.STDIN_FILENO, posix.TCSA.NOW, rawTermios(orig));
     return true;
 }
 
+fn rawTermios(orig: posix.termios) posix.termios {
+    var t = orig;
+    t.lflag.ICANON = false;
+    t.lflag.ECHO = false;
+    t.lflag.ISIG = false; // Ctrl+C / Ctrl+Z / Ctrl+\ are bytes for the shell
+    t.lflag.IEXTEN = false; // Ctrl+V literal-next
+    t.iflag.IXON = false; // Ctrl+S / Ctrl+Q
+    t.iflag.ICRNL = false; // Enter stays CR
+    t.cc[@intFromEnum(posix.V.MIN)] = 0;
+    t.cc[@intFromEnum(posix.V.TIME)] = 1;
+    return t;
+}
+
 fn disableRawMode() !void {
-    var termios = posix.tcgetattr(posix.STDIN_FILENO) catch |err| switch (err) {
-        error.NotATerminal => return,
-        else => return err,
-    };
-    termios.lflag.ICANON = true;
-    termios.lflag.ECHO = true;
-    try posix.tcsetattr(posix.STDIN_FILENO, posix.TCSA.NOW, termios);
+    const orig = saved_termios orelse return;
+    try posix.tcsetattr(posix.STDIN_FILENO, posix.TCSA.NOW, orig);
+    saved_termios = null;
 }
 
 fn attachPresent(vulkan_renderer: *renderer.VulkanRenderer, window: *window_mod.Window) void {
@@ -410,28 +486,103 @@ fn regrid(term: *terminal.Terminal, fonts: *fonts_mod.Fonts, soft: *software.Sof
     try soft.resizePixels(width, height);
 }
 
-fn presentGui(
+const ViewBuffers = struct {
+    cells: std.ArrayList(terminal.Cell),
+    marks: std.ArrayList(frame_mod.Mark),
+
+    fn init(allocator: std.mem.Allocator) ViewBuffers {
+        return .{ .cells = std.ArrayList(terminal.Cell).init(allocator), .marks = std.ArrayList(frame_mod.Mark).init(allocator) };
+    }
+
+    fn deinit(self: *ViewBuffers) void {
+        self.cells.deinit();
+        self.marks.deinit();
+    }
+};
+
+/// Everything the GUI loop draws with and acts on.
+const Gui = struct {
     term: *terminal.Terminal,
-    vulkan_renderer: *renderer.VulkanRenderer,
+    vk: *renderer.VulkanRenderer,
     soft: *software.SoftwareRenderer,
     window: *window_mod.Window,
     fonts: *fonts_mod.Fonts,
     frame: *frame_mod.Frame,
-    focused: bool,
-) !void {
-    try vulkan_renderer.render();
-    var view = frame_mod.View.fromTerminal(term);
-    view.focused = focused;
-    try frame.build(fonts, term.buffer, term.rows, term.cols, term.cursor_row, term.cursor_col, view);
-    if (vulkan_renderer.presentFrame(frame, &fonts.atlas)) {
-        soft.dirty = false;
-        return;
+    ui: *ui_mod.Ui,
+    view: *ViewBuffers,
+    cfg: *const config.Config,
+
+    fn present(self: Gui, focused: bool) !void {
+        try self.vk.render();
+        const composed = try self.ui.compose(self.term, &self.view.cells, &self.view.marks);
+        var v = frame_mod.View.fromTerminal(self.term);
+        v.focused = focused;
+        v.cursor_visible = composed.cursor_visible;
+        v.marks = self.view.marks.items;
+        v.selection_bg = self.cfg.selection_background;
+        v.selection_fg = self.cfg.selection_foreground;
+        if (composed.scrollbar) |sb| v.scrollbar = .{ .top = sb.top, .height = sb.height };
+        try self.frame.build(self.fonts, self.view.cells.items, self.term.rows, self.term.cols, composed.cursor_row, composed.cursor_col, v);
+        if (self.vk.presentFrame(self.frame, &self.fonts.atlas)) {
+            self.soft.dirty = false;
+            return;
+        }
+        self.soft.render(self.frame, &self.fonts.atlas);
+        if (!self.vk.presentPixels(self.soft.pixels, self.soft.width, self.soft.height)) {
+            self.window.presentRgba(self.soft.pixels, self.soft.width, self.soft.height);
+        }
+        self.soft.dirty = false;
     }
-    soft.render(frame, &fonts.atlas);
-    if (!vulkan_renderer.presentPixels(soft.pixels, soft.width, soft.height)) {
-        window.presentRgba(soft.pixels, soft.width, soft.height);
+
+    /// Execute what the UI queued: PTY writes, clipboard, link opening.
+    fn runEffects(self: Gui) !void {
+        if (self.ui.effects.items.len == 0) return;
+        const fx = try self.ui.takeEffects();
+        defer self.ui.freeEffects(fx);
+        for (fx) |e| switch (e) {
+            .write => |bytes| _ = try self.term.write(bytes),
+            .set_clipboard => |c| self.window.setClipboard(c.target, c.text),
+            .request_paste => |r| self.window.requestClipboard(r.target, r.purpose),
+            .open_url => |url| openUrl(self.cfg.url_open_command, url),
+        };
     }
-    soft.dirty = false;
+};
+
+fn installBindings(cfg: *const config.Config) void {
+    events.bindings = events.Bindings.defaults();
+    for (cfg.keybinds.items) |spec| {
+        events.bindings.apply(spec) catch |err| std.debug.print("config: keybind {s}: {s}\n", .{ spec, @errorName(err) });
+    }
+}
+
+/// Launch `command url` detached (double fork, no shell). The URL has
+/// already passed `urls.allowedTarget`.
+fn openUrl(command: []const u8, url: []const u8) void {
+    if (builtin.os.tag == .windows) return; // TODO: ShellExecuteW
+    std.debug.print("  → open {s}\n", .{url});
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const cmd_z = arena.dupeZ(u8, command) catch return;
+    const url_z = arena.dupeZ(u8, url) catch return;
+    const argv = [_:null]?[*:0]const u8{ cmd_z.ptr, url_z.ptr, null };
+    const pid = posix.fork() catch return;
+    if (pid == 0) {
+        // Intermediate child: fork the opener and exit so it is reparented.
+        if (builtin.os.tag == .linux) _ = std.os.linux.setsid();
+        const pid2 = posix.fork() catch posix.exit(1);
+        if (pid2 == 0) {
+            const devnull = posix.openZ("/dev/null", .{ .ACCMODE = .RDWR }, 0) catch posix.exit(1);
+            posix.dup2(devnull, 0) catch {};
+            posix.dup2(devnull, 1) catch {};
+            posix.dup2(devnull, 2) catch {};
+            const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
+            _ = posix.execvpeZ(cmd_z.ptr, &argv, envp) catch {};
+            posix.exit(127);
+        }
+        posix.exit(0);
+    }
+    _ = posix.waitpid(pid, 0);
 }
 
 fn renderHeadless(term: *terminal.Terminal, vulkan_renderer: *renderer.VulkanRenderer) !void {
@@ -492,4 +643,15 @@ test "headless frame emits UTF-8 and wide chars" {
     try writeHeadlessFrame(&term, out.writer());
 
     try std.testing.expect(std.mem.indexOf(u8, out.items, "h\u{e9}llo \u{65e5}\u{672c} \u{1f642} ") != null);
+}
+
+test "raw mode keeps Ctrl+C away from signals" {
+    var t = std.mem.zeroes(posix.termios);
+    t.lflag.ISIG = true;
+    t.lflag.ICANON = true;
+    t.iflag.IXON = true;
+    const r = rawTermios(t);
+    try std.testing.expect(!r.lflag.ISIG);
+    try std.testing.expect(!r.lflag.ICANON);
+    try std.testing.expect(!r.iflag.IXON);
 }
