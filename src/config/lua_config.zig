@@ -25,7 +25,7 @@ const plugin_value = @import("../plugins/value.zig");
 const prelude_src = @embedFile("prelude.lua");
 pub const version = "0.1.0";
 
-pub const Kind = enum { section, boolean, integer, number, string, color, choice, theme, keys, string_map, string_list, palette, ssh_profiles, plugins };
+pub const Kind = enum { section, boolean, integer, number, string, color, choice, theme, keys, string_map, string_list, palette, ssh_profiles, plugins, layout };
 
 const Ref = union(enum) {
     boolean: *bool,
@@ -99,6 +99,7 @@ const present_modes = [_][]const u8{ "fifo", "fifo_relaxed", "mailbox", "immedia
 const osc52_modes = [_][]const u8{ "off", "write", "read-write" };
 const backends = [_][]const u8{ "auto", "x11", "wayland", "win32" };
 const cursor_shapes = [_][]const u8{ "block", "underline", "bar" };
+const tab_bar_modes = [_][]const u8{ "auto", "top", "bottom", "hidden" };
 
 /// Every option config.lua can set. Keep docs/CONFIG.md and
 /// config.example.lua in sync (a test checks the example).
@@ -183,6 +184,13 @@ pub const schema = [_]Field{
 
     .{ .path = "status_bar", .kind = .section },
     .{ .path = "status_bar.enabled", .kind = .boolean, .ref = ref(.boolean, "status_bar") },
+
+    .{ .path = "tabs", .kind = .section },
+    .{ .path = "tabs.bar", .kind = .choice, .choices = &tab_bar_modes, .ref = ref(.string, "tab_bar") },
+    .{ .path = "tabs.confirm_close", .kind = .boolean, .ref = ref(.boolean, "confirm_close") },
+    .{ .path = "tabs.dim_inactive", .kind = .number, .min = 0, .max = 0.9, .ref = ref(.f32, "dim_inactive") },
+    .{ .path = "tabs.inherit_cwd", .kind = .boolean, .ref = ref(.boolean, "inherit_cwd") },
+    .{ .path = "layout", .kind = .layout },
 
     .{ .path = "plugins_enabled", .kind = .boolean, .ref = ref(.boolean, "plugins_enabled") },
     .{ .path = "plugins_dir", .kind = .string, .ref = ref(.string, "plugins_dir") },
@@ -385,9 +393,10 @@ fn setValue(ctx: *Ctx, L: *State, path: []const u8, idx: c_int) ?[]const u8 {
             };
             f.ref.?(cfg).string.* = t.name;
         },
-        .keys, .string_map, .palette, .string_list, .ssh_profiles, .plugins => {
+        .keys, .string_map, .palette, .string_list, .ssh_profiles, .plugins, .layout => {
             if (c.lua_type(L, idx) != c.LUA_TTABLE) {
                 const what = switch (f.kind) {
+                    .layout => "a list of tabs like { { split = \"right\", panes = { {}, { command = \"htop\" } } } }",
                     .plugins => "a table like { git_branch = { allow = { \"exec\" }, exec = { \"git\" } } }",
                     .keys => "a table like { [\"ctrl+shift+t\"] = \"search\" }",
                     .ssh_profiles => "a table like { work = { host = \"build.example.com\", user = \"me\" } }",
@@ -413,7 +422,31 @@ fn setCollection(ctx: *Ctx, L: *State, f: *const Field, idx: c_int) ?[]const u8 
         .palette => cfg.colors.palette = [_]?u32{null} ** 256,
         .ssh_profiles => cfg.ssh_profiles.clearRetainingCapacity(),
         .plugins => cfg.plugins.clearRetainingCapacity(),
+        .layout => cfg.startup_layout.clearRetainingCapacity(),
         else => unreachable,
+    }
+    if (f.kind == .layout) {
+        // In order: tabs open left to right.
+        const n = c.lua_rawlen(L, t);
+        var count: usize = 0;
+        c.lua_pushnil(L);
+        while (c.lua_next(L, t) != 0) {
+            count += 1;
+            const ok = c.lua_isinteger(L, -2) != 0;
+            lua.pop(L, 1);
+            if (!ok) {
+                lua.pop(L, 1);
+                return fail(ctx, "layout: expected a list of tabs (no named keys)", .{});
+            }
+        }
+        if (count != n) return fail(ctx, "layout: expected a list of tabs (no gaps)", .{});
+        var i: c.lua_Integer = 1;
+        while (i <= n) : (i += 1) {
+            _ = c.lua_rawgeti(L, t, i);
+            defer lua.pop(L, 1);
+            if (setLayoutTab(ctx, L, i, -1)) |m| return m;
+        }
+        return null;
     }
     if (f.kind == .string_list) {
         const n = c.luaL_len(L, t);
@@ -521,6 +554,10 @@ fn setItem(ctx: *Ctx, L: *State, path: []const u8, key_idx: c_int, val_idx: c_in
             };
             cfg.ssh_profiles.append(p) catch return "out of memory";
         },
+        .layout => {
+            if (c.lua_isinteger(L, key_idx) == 0) return fail(ctx, "layout: index must be a number", .{});
+            return setLayoutTab(ctx, L, c.lua_tointegerx(L, key_idx, null), val_idx);
+        },
         .plugins => {
             const name = lua.toString(L, key_idx) orelse return fail(ctx, "plugins: plugin names must be strings, got {s}", .{describe(ctx, L, key_idx)});
             if (!plugin_manifest.validName(name)) return fail(ctx, "plugins: invalid plugin name \"{s}\" (lowercase letters, digits, _ and -)", .{truncate(name, 64)});
@@ -616,6 +653,106 @@ fn parsePlugin(ctx: *Ctx, L: *State, name_in: []const u8, idx_in: c_int) error{ 
         }
     }
     return p;
+}
+
+pub const max_layout_tabs = 16;
+pub const max_layout_panes = 16;
+
+/// layout[i] = { ... } (append when i is one past the end).
+fn setLayoutTab(ctx: *Ctx, L: *State, i: c.lua_Integer, val_idx: c_int) ?[]const u8 {
+    const cfg = ctx.cfg;
+    const n: c.lua_Integer = @intCast(cfg.startup_layout.items.len);
+    if (i < 1 or i > n + 1) return fail(ctx, "layout[{d}]: index out of range (1..{d})", .{ i, n + 1 });
+    if (i == n + 1 and n >= max_layout_tabs) return fail(ctx, "layout: at most {d} tabs", .{max_layout_tabs});
+    var path_buf: [32]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "layout[{d}]", .{i}) catch "layout";
+    var panes: usize = 0;
+    var title: []const u8 = "";
+    const root = parseLayoutNode(ctx, L, val_idx, path, 0, "", &panes, &title) catch |err| return switch (err) {
+        error.Invalid => ctx.buf[0..ctx.msg_len],
+        error.OutOfMemory => "out of memory",
+    };
+    const tab = cfg_mod.LayoutTab{ .title = title, .root = root };
+    if (i == n + 1) {
+        cfg.startup_layout.append(tab) catch return "out of memory";
+    } else cfg.startup_layout.items[@intCast(i - 1)] = tab;
+    return null;
+}
+
+const layout_fields = "title, split, ratio, panes, cwd, command, ssh, focus";
+
+fn parseLayoutNode(ctx: *Ctx, L: *State, idx_in: c_int, path: []const u8, depth: u8, inherit_cwd: []const u8, panes: *usize, title: *[]const u8) error{ Invalid, OutOfMemory }!cfg_mod.LayoutNode {
+    const cfg = ctx.cfg;
+    const idx = c.lua_absindex(L, idx_in);
+    if (c.lua_type(L, idx) != c.LUA_TTABLE) return invalid(ctx, "{s}: expected a table like {{ cwd = \"~/src\", command = \"vim\" }}, got {s}", .{ path, describe(ctx, L, idx) });
+    if (depth > 6) return invalid(ctx, "{s}: splits nested too deeply", .{path});
+    var node = cfg_mod.LayoutNode{};
+    var has_panes = false;
+    c.lua_pushnil(L);
+    while (c.lua_next(L, idx) != 0) {
+        defer lua.pop(L, 1);
+        const key = lua.toString(L, -2) orelse return invalid(ctx, "{s}: option names must be strings (put panes in `panes = {{ ... }}`)", .{path});
+        if (std.mem.eql(u8, key, "split")) {
+            const v = lua.toString(L, -1) orelse "";
+            if (std.mem.eql(u8, v, "right") or std.mem.eql(u8, v, "horizontal")) {
+                node.split = .right;
+            } else if (std.mem.eql(u8, v, "down") or std.mem.eql(u8, v, "vertical")) {
+                node.split = .down;
+            } else return invalid(ctx, "{s}.split: expected \"right\" (side by side) or \"down\" (stacked), got {s}", .{ path, describe(ctx, L, -1) });
+        } else if (std.mem.eql(u8, key, "ratio")) {
+            const v = c.lua_tonumberx(L, -1, null);
+            if (c.lua_type(L, -1) != c.LUA_TNUMBER or v < 0.05 or v > 0.95) return invalid(ctx, "{s}.ratio: expected a number from 0.05 to 0.95, got {s}", .{ path, describe(ctx, L, -1) });
+            node.ratio = @floatCast(v);
+        } else if (std.mem.eql(u8, key, "panes")) {
+            has_panes = true;
+        } else if (std.mem.eql(u8, key, "focus")) {
+            if (c.lua_type(L, -1) != c.LUA_TBOOLEAN) return invalid(ctx, "{s}.focus: expected true or false, got {s}", .{ path, describe(ctx, L, -1) });
+            node.focus = c.lua_toboolean(L, -1) != 0;
+        } else if (std.mem.eql(u8, key, "title") or std.mem.eql(u8, key, "cwd") or std.mem.eql(u8, key, "command") or std.mem.eql(u8, key, "ssh")) {
+            const v = lua.toString(L, -1) orelse return invalid(ctx, "{s}.{s}: expected a string, got {s}", .{ path, key, describe(ctx, L, -1) });
+            if (v.len > 4096) return invalid(ctx, "{s}.{s}: too long", .{ path, key });
+            const d = try cfg.dupe(v);
+            switch (key[1]) {
+                'i' => {
+                    if (depth != 0) return invalid(ctx, "{s}.title: only a tab (top level) has a title", .{path});
+                    title.* = d;
+                },
+                'w' => node.cwd = d,
+                'o' => {
+                    if (std.mem.indexOfAny(u8, v, "\r\n") != null) return invalid(ctx, "{s}.command: one line only", .{path});
+                    node.command = d;
+                },
+                else => node.ssh = d,
+            }
+        } else return invalid(ctx, "{s}: unknown option '{s}' (layouts have: {s})", .{ path, key, layout_fields });
+    }
+    // A split's cwd is the default for its panes.
+    if (node.cwd.len == 0) node.cwd = inherit_cwd;
+    if (node.split == null) {
+        if (has_panes) return invalid(ctx, "{s}: `panes` needs `split = \"right\"` or `\"down\"`", .{path});
+        panes.* += 1;
+        if (panes.* > max_layout_panes) return invalid(ctx, "{s}: at most {d} panes per tab", .{ path, max_layout_panes });
+        if (node.ssh.len > 0 and node.command.len > 0) return invalid(ctx, "{s}: a pane has either `ssh` or `command`", .{path});
+        return node;
+    }
+    if (!has_panes) return invalid(ctx, "{s}: a split needs `panes = {{ {{...}}, {{...}} }}`", .{path});
+    _ = c.lua_getfield(L, idx, "panes");
+    defer lua.pop(L, 1);
+    const pidx = c.lua_absindex(L, -1);
+    if (c.lua_type(L, pidx) != c.LUA_TTABLE) return invalid(ctx, "{s}.panes: expected a list of panes, got {s}", .{ path, describe(ctx, L, pidx) });
+    const n = c.lua_rawlen(L, pidx);
+    if (n < 2) return invalid(ctx, "{s}.panes: a split needs at least 2 panes", .{path});
+    const kids = try cfg.arena.allocator().alloc(cfg_mod.LayoutNode, @intCast(n));
+    var i: c.lua_Integer = 1;
+    while (i <= n) : (i += 1) {
+        _ = c.lua_rawgeti(L, pidx, i);
+        defer lua.pop(L, 1);
+        var cb: [128]u8 = undefined;
+        const cp = std.fmt.bufPrint(&cb, "{s}.panes[{d}]", .{ path, i }) catch path;
+        kids[@intCast(i - 1)] = try parseLayoutNode(ctx, L, -1, cp, depth + 1, node.cwd, panes, title);
+    }
+    node.children = kids;
+    return node;
 }
 
 const profile_fields = "host, port, user, identity_file, jump, env, command, theme, forwards, keepalive_s, reconnect";

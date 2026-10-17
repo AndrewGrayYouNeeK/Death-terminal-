@@ -94,7 +94,7 @@ src/
 ├── ai/                   # AI suggestions: OpenAI-compatible HTTP/JSON client, redaction, worker
 ├── ssh/                  # Built-in SSH client (libssh2), ~/.ssh/config, forwards
 ├── plugins/              # Plugin host: sandbox.lua, permissions, hooks, registry/CLI, jobs
-├── app/                  # Event loop, UI overlays (palette, toasts, status bar), plugin bridge
+├── app/                  # Event loop, GUI (gui.zig), tabs/panes (session.zig), UI overlays, plugin bridge
 └── scripting/            # Lua engine and API bindings
 ```
 

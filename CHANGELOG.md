@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - AI "offline" with endpoints that answer HTTP/1.0 or `Connection: close` and label an SSE stream as `application/json` (or send no Content-Type): the body is now sniffed (`data:` vs `{`), so these replies are parsed instead of failing as bad JSON. Close-delimited and Content-Length bodies are covered by tests
 
 ### Added
+- Tabs and split panes (docs/TABS.md): every pane has its own PTY, grid, scrollback, selection, search and AI context. Layout tree with right/down splits, resize from the keyboard (Alt+Shift+arrows) or by dragging dividers, directional (Alt+arrows) and click focus, zoom (Ctrl+Shift+Z), equalize, close pane
+- Tab bar (`config.tabs.bar` = auto/top/bottom/hidden): themed, title + cwd, bell / failed / running / activity markers, close buttons, `+`, drag to reorder, double-click (or Ctrl+Shift+Alt+R) to rename, wheel to cycle; new/close/next/prev/move/goto-N actions
+- New tabs and panes start in the focused pane's OSC 7 directory (`config.tabs.inherit_cwd`); SSH palette opens profiles in a tab (Enter), split (Shift+Enter) or window (Alt+Enter)
+- `config.tabs.dim_inactive` fades unfocused panes; `config.tabs.confirm_close` asks before closing a pane/tab/window with a running program (foreground process group)
+- `config.layout`: startup tabs with nested splits, ratios, cwd, commands, SSH targets and initial focus
+- Plugins: tab_new/tab_close/tab_focus/pane_new/pane_close/pane_focus events, `pane`/`tab` ids in payloads, `dt.tabs.*`, `dt.panes.*`, `dt.term.tab()/pane()`, all tab/pane actions via `dt.action`; the command palette lists tabs and the new actions
 - Lua plugins (`~/.config/death-terminal/plugins/<name>/{manifest.lua,init.lua}`): each runs in its own sandboxed Lua state with memory and per-callback CPU limits (enforced even through `pcall`), and gets only the permissions granted in `config.plugins.<name>.allow` (`screen`, `input`, `pty`, `clipboard`, `network` + `hosts`, `exec` + `exec` allowlist, `fs` in its data dir, `ai`)
 - Hooks: startup, config_reload, shutdown, key (can consume), command_start / command_finish with exit code and duration (OSC 133), output_line, cwd, title, bell, focus, ssh_connect / ssh_disconnect (built-in client, OSC 7799 with a per-window nonce), ai_suggestion (filter / rewrite)
 - Plugin API: palette commands, keybindings, status-bar segments, toasts (+ desktop notifications), timers, custom themes, built-in actions, async HTTP and exec, scoped files, `require` within the plugin

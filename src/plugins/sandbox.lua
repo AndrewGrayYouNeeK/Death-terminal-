@@ -225,6 +225,28 @@ dt.term = {
   ssh = function() return api.term("ssh") end,
   size = function() return api.term("rows"), api.term("cols") end,
   focused = function() return api.term("focused") end,
+  tab = function() return api.term("tab") end,
+  pane = function() return api.term("pane") end,
+}
+
+dt.tabs = {
+  list = function() return api.tabs_list() end,
+  new = function(opts)
+    local cwd = nil
+    if type(opts) == "table" then cwd = opts.cwd elseif type(opts) == "string" then cwd = opts end
+    return api.tab("new", cwd)
+  end,
+  focus = function(id) return api.tab("focus", id) end,
+  close = function(id) return api.tab("close", id) end,
+  rename = function(id, name) return api.tab("rename", id, tostring(name)) end,
+  current = function() return api.term("tab") end,
+}
+
+dt.panes = {
+  split = function(dir) return api.pane("split", dir) end,
+  focus = function(id) return api.pane("focus", id) end,
+  close = function(id) return api.pane("close", id) end,
+  current = function() return api.term("pane") end,
 }
 
 dt.screen = {

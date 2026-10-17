@@ -575,3 +575,61 @@ test "examples: the bundled plugins load and do their job" {
     if (seg) |s| try t.expect(s.len > 2);
     try t.expect(f.host.plugins.items[0].running());
 }
+
+test "tabs and panes: events, list and layout requests" {
+    const f = try Fixture.init();
+    defer f.deinit();
+    try f.start(&.{.{
+        "tabby",
+        \\local seen = {}
+        \\dt.on("tab_new", function(e) seen[#seen + 1] = "tab_new:" .. e.tab end)
+        \\dt.on("pane_focus", function(e) seen[#seen + 1] = "pane_focus:" .. e.tab .. "/" .. e.pane end)
+        \\dt.command({ id = "go", title = "Go", run = function()
+        \\  local tabs = dt.tabs.list()
+        \\  assert(#tabs == 2, "tabs " .. #tabs)
+        \\  assert(tabs[1].id == 1 and tabs[1].title == "one" and not tabs[1].active)
+        \\  assert(tabs[2].active and #tabs[2].panes == 2 and tabs[2].focused_pane == 3)
+        \\  assert(dt.tabs.current() == 2 and dt.panes.current() == 3)
+        \\  assert(dt.tabs.focus(1))
+        \\  assert(not dt.tabs.focus(99))
+        \\  assert(dt.tabs.rename(2, "build"))
+        \\  assert(dt.panes.split("down"))
+        \\  assert(not pcall(dt.panes.split, "diagonal"))
+        \\  assert(dt.panes.close(2))
+        \\  assert(not dt.panes.focus(7))
+        \\  assert(dt.tabs.new({ cwd = "/tmp" }))
+        \\  dt.status.set("seen", table.concat(seen, ","))
+        \\end })
+        ,
+        &.{},
+        .{ .name = "" },
+    }});
+    const h = f.host;
+    try t.expectEqual(host_mod.Status.running, f.plugin(0).status);
+    h.setTabs(&.{
+        .{ .id = 1, .title = "one", .active = false, .panes = &.{1}, .focused_pane = 1 },
+        .{ .id = 2, .title = "two", .active = true, .panes = &.{ 2, 3 }, .focused_pane = 3 },
+    }, 2, 3);
+    h.emitLayout(.tab_new, 2, null);
+    h.emitLayout(.pane_focus, 2, 3);
+    h.runCommand(0);
+    var seen: []const u8 = "";
+    for (h.segments.items) |s| if (std.mem.eql(u8, s.id, "seen")) {
+        seen = s.text;
+    };
+    try t.expectEqualStrings("tab_new:2,pane_focus:2/3", seen);
+    var ops: [8]std.meta.Tag(host_mod.LayoutOp) = undefined;
+    var n: usize = 0;
+    for (h.effects.items) |e| if (e == .layout) {
+        ops[n] = e.layout;
+        n += 1;
+        switch (e.layout) {
+            .tab_rename => |r| try t.expectEqualStrings("build", r.name),
+            .tab_new => |d| try t.expectEqualStrings("/tmp", d.?),
+            .pane_split => |d| try t.expect(d == .down),
+            .pane_close => |id| try t.expectEqual(@as(u32, 2), id),
+            else => {},
+        }
+    };
+    try t.expectEqualSlices(std.meta.Tag(host_mod.LayoutOp), &.{ .tab_focus, .tab_rename, .pane_split, .pane_close, .tab_new }, ops[0..n]);
+}

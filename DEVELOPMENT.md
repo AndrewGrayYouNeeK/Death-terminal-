@@ -4,7 +4,7 @@ This document tracks development status and priorities for the DeathTerminal des
 
 ## Project Overview
 
-DeathTerminal is a Zig-based, GPU-accelerated terminal emulator. It has AI command suggestions (OpenAI-compatible HTTP/JSON, docs/AI.md) and Lua config; SSH tunneling and Lua plugins are planned. It is a **native desktop application** — not a web app.
+DeathTerminal is a Zig-based, GPU-accelerated terminal emulator. It has AI command suggestions (OpenAI-compatible HTTP/JSON, docs/AI.md) and Lua config; built-in SSH, Lua plugins, and tabs/split panes. It is a **native desktop application** — not a web app.
 
 ## Architecture
 

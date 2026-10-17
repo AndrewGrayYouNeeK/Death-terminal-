@@ -11,6 +11,7 @@ const lua_engine = @import("scripting/lua_engine.zig");
 const config = @import("config/config.zig");
 const event_loop = @import("app/event_loop.zig");
 const plugin_registry = @import("plugins/registry.zig");
+const spawn = @import("app/spawn.zig");
 
 const VERSION = "0.1.0";
 
@@ -92,52 +93,24 @@ pub fn main() !void {
     defer shell_arena.deinit();
     // `--ssh <target>`: the window runs the built-in SSH client instead of a shell.
     const ssh_name = sshArg(args);
-    var ssh_display: []const u8 = "";
-    var ssh_nonce: []const u8 = "";
-    const shell_opts = if (ssh_name) |name| blk: {
-        const sa = shell_arena.allocator();
-        if (builtin.os.tag != .linux) {
-            std.debug.print("--ssh: the built-in SSH client is only available on Linux builds for now\n", .{});
-            std.process.exit(2);
-        }
-        if (!cfg.ssh_enabled) {
-            std.debug.print("--ssh: the built-in SSH client is disabled (config.ssh.enabled = false)\n", .{});
-            std.process.exit(2);
-        }
-        const t = ssh_target.resolveForConfig(sa, cfg.ssh_profiles.items, cfg.ssh_config_file, cfg.ssh_keepalive_s, name) catch |err| {
-            std.debug.print("--ssh: cannot use \"{s}\": {s} (expected a profile from config.ssh.profiles, a ~/.ssh/config Host, or user@host[:port])\n", .{ name, @errorName(err) });
-            std.process.exit(2);
-        };
-        var db: [300]u8 = undefined;
-        ssh_display = try sa.dupe(u8, t.display(&db));
-        // A per-window secret for the client's connect/disconnect reports
-        // (OSC 7799), so remote output can't fake them.
-        var nb: [16]u8 = undefined;
-        std.crypto.random.bytes(&nb);
-        ssh_nonce = try std.fmt.allocPrint(sa, "{s}", .{std.fmt.fmtSliceHexLower(&nb)});
-        var env = std.ArrayList([]const u8).init(sa);
-        try env.appendSlice(cfg.shell_env.items);
-        try env.append(try std.fmt.allocPrint(sa, "DT_SSH_NONCE={s}", .{ssh_nonce}));
-        var child_args = std.ArrayList([]const u8).init(sa);
-        try child_args.appendSlice(&.{ "--ssh-session", name });
-        if (config_arg) |c| try child_args.appendSlice(&.{ "--config", c });
-        if (load_opts.lua_unsafe) try child_args.append("--lua-unsafe");
-        std.debug.print("  → SSH session: {s} ({s})\n", .{ name, ssh_display });
-        break :blk @import("terminal/pty.zig").ShellOptions{
-            .program = try std.fs.selfExePathAlloc(sa),
-            .args = child_args.items,
-            .env = env.items,
-            .cwd = cfg.shell_cwd,
-        };
-    } else shell_inject.apply(shell_arena.allocator(), .{
-        .program = cfg.shell_program,
-        .args = cfg.shell_args.items,
-        .env = cfg.shell_env.items,
-        .cwd = cfg.shell_cwd,
-    }, cfg.shell_integration);
-    var term = try terminal.Terminal.initWithShell(allocator, cfg.rows, cfg.cols, cfg.scrollback_lines, shell_opts);
+    const spawn_ctx = spawn.Context{ .config_arg = config_arg, .lua_unsafe = load_opts.lua_unsafe };
+    // config.layout (unless --ssh): the first tab's first pane is this one.
+    const use_layout = ssh_name == null and !cfg.headless and cfg.startup_layout.items.len > 0;
+    var first_req = spawn.Request{ .ssh = ssh_name };
+    if (use_layout) {
+        var leaf: *const config.LayoutNode = &cfg.startup_layout.items[0].root;
+        while (leaf.split != null and leaf.children.len > 0) leaf = &leaf.children[0];
+        first_req = .{ .cwd = leaf.cwd, .ssh = if (leaf.ssh.len > 0) leaf.ssh else null };
+    }
+    const sp = spawn.options(shell_arena.allocator(), &cfg, spawn_ctx, first_req) catch |err| {
+        std.debug.print("{s}: cannot use \"{s}\": {s}\n", .{ if (ssh_name != null) "--ssh" else "layout", first_req.ssh orelse "", spawn.describe(err) });
+        std.process.exit(2);
+    };
+    const ssh_display = sp.display;
+    if (ssh_name) |name| std.debug.print("  → SSH session: {s} ({s})\n", .{ name, ssh_display });
+    var term = try terminal.Terminal.initWithShell(allocator, cfg.rows, cfg.cols, cfg.scrollback_lines, sp.opts);
     defer term.deinit();
-    term.setSshNonce(ssh_nonce);
+    term.setSshNonce(sp.nonce);
 
     std.debug.print("[3/5] Initializing Lua scripting engine...\n", .{});
     var lua = try lua_engine.LuaEngine.init(allocator);
@@ -163,6 +136,8 @@ pub fn main() !void {
         .startup_diags = &diags,
         .ssh_target = ssh_name,
         .ssh_remote = ssh_display,
+        .spawn_ctx = spawn_ctx,
+        .startup_layout = use_layout,
     };
     try loop.run(&vulkan_renderer, &term, &lua);
 }
@@ -344,6 +319,10 @@ test {
     _ = @import("terminal/urls.zig");
     _ = @import("app/ui.zig");
     _ = @import("app/palette.zig");
+    _ = @import("app/layout.zig");
+    _ = @import("app/tabs.zig");
+    _ = @import("app/spawn.zig");
+    _ = @import("app/session.zig");
     _ = @import("plugins/permissions.zig");
     _ = @import("plugins/value.zig");
     _ = @import("plugins/manifest.zig");

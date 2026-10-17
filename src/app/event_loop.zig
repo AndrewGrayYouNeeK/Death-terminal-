@@ -10,6 +10,7 @@ const ssh_target = @import("../ssh/target.zig");
 const ssh_control = @import("../ssh/control.zig");
 const palette_mod = ui_mod.palette_mod;
 const plugin_bridge = @import("plugin_bridge.zig");
+const spawn = @import("spawn.zig");
 const lua_engine = @import("../scripting/lua_engine.zig");
 const config = @import("../config/config.zig");
 const window_mod = @import("../platform/window.zig");
@@ -21,12 +22,13 @@ const events = @import("../platform/events.zig");
 const ui_mod = @import("ui.zig");
 const color = @import("../terminal/color.zig");
 const config_watch = @import("config_watch.zig");
+const gui_mod = @import("gui.zig");
 
 /// Wait this long after the last change event before reloading, so an
 /// editor's write+rename save triggers one reload.
-const RELOAD_DEBOUNCE_MS: i64 = 100;
+pub const RELOAD_DEBOUNCE_MS: i64 = 100;
 /// How long the "config reloaded" notice stays up.
-const RELOADED_NOTICE_MS: i64 = 3000;
+pub const RELOADED_NOTICE_MS: i64 = 3000;
 
 /// Headless mode polls with this timeout so Ctrl+C / SIGTERM are noticed.
 const HEADLESS_POLL_MS: i32 = 250;
@@ -34,11 +36,18 @@ const READ_BUFFER_SIZE: usize = 64 * 1024;
 /// Longest the GUI parses PTY output before servicing input and drawing.
 const READ_TIME_BUDGET_NS: u64 = 8 * std.time.ns_per_ms;
 
-var shutdown_requested = std.atomic.Value(bool).init(false);
+pub var shutdown_requested = std.atomic.Value(bool).init(false);
+
+/// Write end of a pipe the GUI loop polls, so SIGTERM/SIGINT wake it even
+/// when the signal lands on another thread (e.g. a Vulkan driver worker) and
+/// the main thread sleeps in poll() without a timeout. -1 = none.
+pub var signal_wake_fd = std.atomic.Value(i32).init(-1);
 
 fn handleSignal(sig: i32) callconv(.C) void {
     _ = sig;
     shutdown_requested.store(true, .seq_cst);
+    const fd = signal_wake_fd.load(.seq_cst);
+    if (fd >= 0) _ = std.c.write(fd, "x", 1);
 }
 
 /// Main application event loop: PTY I/O, rendering, and subsystem ticks.
@@ -59,6 +68,10 @@ pub const EventLoop = struct {
     ssh_target: ?[]const u8 = null,
     /// "user@host[:port]" of that session (AI context, palette title).
     ssh_remote: []const u8 = "",
+    /// How to start more panes like the first one.
+    spawn_ctx: spawn.Context = .{},
+    /// Open config.layout's tabs (the first pane is already `term`).
+    startup_layout: bool = false,
 
     fn aiSettings(self: *const EventLoop) ai_controller.Settings {
         var s = ai_controller.Settings.fromConfig(self.cfg);
@@ -77,362 +90,11 @@ pub const EventLoop = struct {
         if (self.cfg.headless) {
             try self.runHeadless(vulkan_renderer, term);
         } else {
-            self.runGui(vulkan_renderer, term) catch |err| {
+            gui_mod.run(self, vulkan_renderer, term) catch |err| {
                 std.debug.print("GUI failed ({s}); falling back to headless.\n", .{@errorName(err)});
                 try self.runHeadless(vulkan_renderer, term);
             };
         }
-    }
-
-    fn runGui(
-        self: *EventLoop,
-        vulkan_renderer: *renderer.VulkanRenderer,
-        term: *terminal.Terminal,
-    ) !void {
-        var scale: f32 = if (self.cfg.scale >= 1.0)
-            dpi.normalize(self.cfg.scale)
-        else
-            dpi.detectEnvScale();
-
-        var fonts = try fonts_mod.Fonts.init(self.allocator, fontOptions(self.cfg, scale));
-        defer fonts.deinit();
-        var frame = frame_mod.Frame.init(self.allocator);
-        defer frame.deinit();
-        std.debug.print("  → Font: {s} {d:.1}pt, cell {d}x{d}px\n", .{ fonts.familyName(), fonts.size_pt, fonts.metrics.cell_w, fonts.metrics.cell_h });
-
-        var soft = try software.SoftwareRenderer.init(self.allocator, term.cols, term.rows, .{ .w = fonts.metrics.cell_w, .h = fonts.metrics.cell_h });
-        defer soft.deinit();
-
-        var window = try window_mod.Window.open(self.allocator, .{
-            .title = "DeathTerminal",
-            .width = soft.width,
-            .height = soft.height,
-            .scale = self.cfg.scale,
-            .backend = self.cfg.backend,
-        });
-        defer window.deinit();
-        if (!window.isLive()) return error.NoWindowBackend;
-        if (window.scale != scale) {
-            scale = window.scale;
-            _ = try fonts.setScale(scale);
-            try regrid(term, &fonts, &soft, window.width, window.height, 0);
-        }
-        defer vulkan_renderer.detachPresent();
-        vulkan_renderer.setPresentMode(renderer.PresentMode.parse(self.cfg.present_mode) orelse .fifo);
-        attachPresent(vulkan_renderer, &window);
-
-        const pty_fd = term.getPtyFd() orelse return error.NoPty;
-        try setNonBlocking(pty_fd);
-        try installSignalHandlers();
-
-        const read_buf = try self.allocator.alloc(u8, READ_BUFFER_SIZE);
-        defer self.allocator.free(read_buf);
-        var mouse = MouseState{};
-        var pace = Pacer{
-            .frame_ns = frameNs(self.cfg.max_fps),
-            .read_budget = @as(usize, self.cfg.read_budget_kb) * 1024,
-        };
-
-        installBindings(self.cfg);
-        var ui = ui_mod.Ui.init(self.allocator, uiOptions(self.cfg));
-        defer ui.deinit();
-        ui.status_visible = self.cfg.status_bar;
-        if (ui.status_visible) try regrid(term, &fonts, &soft, window.width, window.height, ui.statusRows());
-        var palette = self.cfg.palette();
-        term.palette = palette;
-        applyCursorShape(term, self.cfg.cursor_shape);
-        var watcher: ?config_watch.Watcher = if (self.watch_path) |p| config_watch.Watcher.init(p) else null;
-        defer if (watcher) |*w| w.deinit();
-        // Pending debounced reload (ms timestamp).
-        var reload_at: ?i64 = null;
-        if (self.startup_diags) |d| if (d.items.items.len > 0) {
-            try showDiagnostics(&ui, d, self.watch_path orelse "config", if (d.hasErrors()) "using the defaults" else null);
-        };
-        var view = ViewBuffers.init(self.allocator);
-        defer view.deinit();
-        var ai = ai_controller.Controller.init(self.allocator, self.aiSettings());
-        defer ai.deinit();
-        if (ai.engine != null) std.debug.print("  → AI: {s} via {s}\n", .{ self.cfg.ai_model, self.cfg.ai_endpoint });
-        var plugins = plugin_bridge.Bridge.init(self.allocator, term);
-        defer plugins.deinit();
-        const gui = Gui{
-            .term = term,
-            .vk = vulkan_renderer,
-            .soft = &soft,
-            .window = &window,
-            .fonts = &fonts,
-            .frame = &frame,
-            .ui = &ui,
-            .view = &view,
-            .cfg = self.cfg,
-            .palette = &palette,
-            .pace = &pace,
-            .ai = &ai,
-            .plugins = &plugins,
-            .loop = self,
-        };
-        gui.startPlugins();
-        ai.filter = plugins.aiFilter();
-        std.debug.print("GUI terminal active ({s}, scale={d:.2}). Close the window or exit the shell to quit.\n", .{
-            @tagName(window.backend),
-            window.scale,
-        });
-        var focused = true;
-        _ = try gui.present(focused, true);
-        pace.presented(nowNs());
-        // Set when something visible changed; drawn at the next frame slot.
-        var need_present = false;
-        // Expose/resize: the window contents are gone, redraw even if the
-        // frame is unchanged.
-        var force_present = false;
-        // The last read stopped at the budget: more output is waiting.
-        var pty_backlog = false;
-
-        while (!shutdown_requested.load(.seq_cst)) {
-            var poll_fds = [_]posix.pollfd{
-                .{ .fd = pty_fd, .events = posix.POLL.IN, .revents = 0 },
-                // A negative fd is ignored by poll.
-                .{ .fd = window.connectionFd() orelse -1, .events = posix.POLL.IN, .revents = 0 },
-                .{ .fd = if (watcher) |w| w.fd else -1, .events = posix.POLL.IN, .revents = 0 },
-                .{ .fd = ai.wakeFd(), .events = posix.POLL.IN, .revents = 0 },
-                .{ .fd = plugins.wakeFd(), .events = posix.POLL.IN, .revents = 0 },
-            };
-            // Sleep until input, output or the next frame slot; with nothing
-            // to do the timeout is infinite (no wakeups when idle).
-            var timeout: i32 = if (window.hasPending() or pty_backlog)
-                0
-            else if (need_present or force_present)
-                pace.msUntilNext(nowNs())
-            else
-                -1;
-            const now_ms = std.time.milliTimestamp();
-            if (reload_at) |t| timeout = minTimeout(timeout, t - now_ms);
-            if (ui.noticeTimeout(now_ms)) |t| timeout = minTimeout(timeout, t);
-            if (ai.timeout(now_ms)) |t| timeout = minTimeout(timeout, t);
-            if (ui.toastTimeout(now_ms)) |t| timeout = minTimeout(timeout, t);
-            if (plugins.timeout(now_ms)) |t| timeout = minTimeout(timeout, t);
-            _ = posix.poll(&poll_fds, timeout) catch 0;
-            pace.wakeups += 1;
-
-            if (poll_fds[3].revents & posix.POLL.IN != 0) {
-                if (try ai.onWake(&ui, term, std.time.milliTimestamp())) need_present = true;
-            }
-            ai.tick(term, std.time.milliTimestamp());
-            plugins.tick(std.time.milliTimestamp());
-            if (try gui.pluginEffects(focused)) need_present = true;
-            if (ui.tickToasts(std.time.milliTimestamp())) need_present = true;
-
-            if (poll_fds[2].revents & posix.POLL.IN != 0) {
-                if (watcher) |*w| {
-                    if (w.drain()) reload_at = std.time.milliTimestamp() + RELOAD_DEBOUNCE_MS;
-                }
-            }
-            if (reload_at) |t| if (std.time.milliTimestamp() >= t) {
-                reload_at = null;
-                try gui.reloadConfig(self);
-                need_present = true;
-                force_present = true;
-            };
-            if (ui.tickNotice(std.time.milliTimestamp())) need_present = true;
-
-            while (true) {
-                switch (window.poll()) {
-                    .none => break,
-                    .close => {
-                        shutdown_requested.store(true, .seq_cst);
-                        break;
-                    },
-                    .resize => |sz| {
-                        // HiDPI: the compositor may change the scale with the size.
-                        if (window.scale != fonts.scale) _ = try fonts.setScale(window.scale);
-                        try regrid(term, &fonts, &soft, sz.width, sz.height, ui.statusRows());
-                        try vulkan_renderer.resize(sz.width, sz.height);
-                        ui.sync(term);
-                        plugins.resized();
-                        need_present = true;
-                        force_present = true;
-                    },
-                    .action => |a| {
-                        const step: ?i8 = switch (a.action) {
-                            .zoom_in => 1,
-                            .zoom_out => -1,
-                            .zoom_reset => 0,
-                            else => null,
-                        };
-                        if (a.action == .reload_config) {
-                            reload_at = null;
-                            try gui.reloadConfig(self);
-                            force_present = true;
-                        } else if (a.action == .ai_explain) {
-                            try ai.explain(&ui, term, std.time.milliTimestamp());
-                        } else if (a.action == .ssh_palette) {
-                            if (ui.paletteOpen(.ssh)) ui.closePalette() else try gui.openSshPalette();
-                        } else if (a.action == .command_palette) {
-                            if (ui.paletteOpen(.commands)) ui.closePalette() else try gui.openCommandPalette();
-                        } else if (a.action == .toggle_status_bar) {
-                            try gui.setStatusBar(!ui.status_visible);
-                        } else if (a.action == .plugin_binding) {
-                            if (plugins.host) |h| h.runBinding(a.arg);
-                        } else if (step) |z| {
-                            if (try fonts.zoom(z)) {
-                                try regrid(term, &fonts, &soft, window.width, window.height, ui.statusRows());
-                                plugins.resized();
-                                std.debug.print("  → zoom: {d:.1}pt, cell {d}x{d}, grid {d}x{d}\n", .{ fonts.size_pt, fonts.metrics.cell_w, fonts.metrics.cell_h, term.cols, term.rows });
-                            }
-                        } else if (try ui.handleAction(term, a.action)) {
-                            if (a.action == .ai_accept) ai.onAccepted();
-                        } else {
-                            // Not applicable here (e.g. Shift+PgUp in the
-                            // alternate screen, Tab with no suggestion):
-                            // the key goes on as if unbound.
-                            if (events.keysymToKey(a.sym)) |key| {
-                                if (!try ui.handleKey(term, key, a.mods)) {
-                                    if (ui.userTyped()) need_present = true;
-                                    const seq = input.encodeKey(key, a.mods, term.modes);
-                                    _ = try term.write(seq.constSlice());
-                                    ai.onKeystroke(&ui, std.time.milliTimestamp());
-                                }
-                            } else if (a.sym >= 0x20 and a.sym < 0x7f) {
-                                // A printable key (e.g. Alt+]): Alt sends ESC first.
-                                var b: [2]u8 = .{ 0x1b, @intCast(a.sym) };
-                                const bytes: []const u8 = if (a.mods.alt) b[0..2] else b[1..2];
-                                if (!try ui.handleText(term, bytes)) {
-                                    _ = try term.write(bytes);
-                                    ai.onKeystroke(&ui, std.time.milliTimestamp());
-                                }
-                            }
-                        }
-                        need_present = true;
-                    },
-                    .paste => |p| {
-                        if (p.purpose == .plugin) {
-                            if (plugins.host) |h| h.clipboardResult(p.data);
-                            continue;
-                        }
-                        try ui.onPaste(term, p.data, p.target, p.purpose);
-                        ai.onKeystroke(&ui, std.time.milliTimestamp());
-                        need_present = true;
-                    },
-                    .redraw => {
-                        need_present = true;
-                        force_present = true;
-                    },
-                    .input => |bytes| {
-                        if (try ui.handleText(term, bytes)) {
-                            need_present = true;
-                        } else if (plugins.text(bytes)) {
-                            need_present = true;
-                        } else {
-                            // Ctrl+C arrives as 0x03 and goes to the shell like any key.
-                            if (ui.userTyped()) need_present = true;
-                            _ = try term.write(bytes);
-                            ai.onTyped(&ui, term, bytes, std.time.milliTimestamp());
-                            need_present = true;
-                        }
-                    },
-                    .key => |k| {
-                        if (try ui.handleKey(term, k.key, k.mods)) {
-                            need_present = true;
-                        } else if (plugins.key(k.key, k.mods)) {
-                            need_present = true;
-                        } else {
-                            if (ui.userTyped()) need_present = true;
-                            const seq = input.encodeKey(k.key, k.mods, term.modes);
-                            _ = try term.write(seq.constSlice());
-                            ai.onKeystroke(&ui, std.time.milliTimestamp());
-                            need_present = true;
-                        }
-                    },
-                    .mouse => |m| {
-                        // The status bar row is not part of the grid.
-                        if (ui.status_visible and m.y >= @as(i32, @intCast(@as(u32, term.rows) * fonts.metrics.cell_h)) and m.action != .release) continue;
-                        if (try ui.handleMouse(term, m, fonts.metrics.cell_w, fonts.metrics.cell_h, std.time.milliTimestamp())) {
-                            need_present = true;
-                        } else {
-                            try handleMouse(term, &mouse, m, .{ .w = fonts.metrics.cell_w, .h = fonts.metrics.cell_h });
-                        }
-                    },
-                    .focus => |f| {
-                        focused = f;
-                        need_present = true;
-                        plugins.focus(f);
-                        if (input.encodeFocus(f, term.modes)) |seq| _ = try term.write(seq);
-                    },
-                }
-                try gui.runEffects();
-                _ = try gui.pluginEffects(focused);
-            }
-
-            if (poll_fds[0].revents & posix.POLL.IN == 0 and
-                poll_fds[0].revents & (posix.POLL.HUP | posix.POLL.ERR) != 0)
-            {
-                std.debug.print("\nShell exited.\n", .{});
-                break;
-            }
-
-            if (pty_backlog or poll_fds[0].revents & posix.POLL.IN != 0) {
-                // Coalesce: parse everything available up to the byte/time
-                // budget, then let input and drawing run before more.
-                const start = nowNs();
-                var total: usize = 0;
-                pty_backlog = false;
-                var exited = false;
-                while (true) {
-                    const n = posix.read(pty_fd, read_buf) catch |err| switch (err) {
-                        error.WouldBlock => break,
-                        // Linux reports EIO on the master once the shell exits.
-                        error.InputOutput => {
-                            exited = true;
-                            break;
-                        },
-                        else => return err,
-                    };
-                    if (n == 0) {
-                        exited = true;
-                        break;
-                    }
-                    try term.processOutput(read_buf[0..n]);
-                    total += n;
-                    if (total >= pace.read_budget or nowNs() - start >= READ_TIME_BUDGET_NS) {
-                        pty_backlog = true;
-                        break;
-                    }
-                }
-                if (total > 0) {
-                    pace.bytes += total;
-                    pace.batches += 1;
-                    if (term.clipboard_ops.items.len > 0) {
-                        const ops = try term.takeClipboardOps();
-                        defer term.freeClipboardOps(ops);
-                        try ui.onClipboardOps(ops);
-                        try gui.runEffects();
-                    }
-                    ui.sync(term);
-                    plugins.afterOutput(std.time.milliTimestamp());
-                    _ = try gui.pluginEffects(focused);
-                    need_present = true;
-                }
-                if (exited) {
-                    if (total > 0) _ = try gui.present(focused, true);
-                    std.debug.print("\nShell exited.\n", .{});
-                    break;
-                }
-            }
-
-            if (term.title_changed) {
-                term.title_changed = false;
-                window.setTitle(term.title);
-            }
-
-            if ((need_present or force_present) and pace.due(nowNs())) {
-                const drawn = try gui.present(focused, force_present);
-                pace.presented(nowNs());
-                if (drawn) pace.frames += 1 else pace.skipped += 1;
-                need_present = false;
-                force_present = false;
-            }
-        }
-        if (std.posix.getenv("DT_PERF_STATS") != null) pace.report();
     }
 
     fn runHeadless(
@@ -521,13 +183,13 @@ pub const EventLoop = struct {
     }
 };
 
-fn setNonBlocking(fd: posix.fd_t) !void {
+pub fn setNonBlocking(fd: posix.fd_t) !void {
     var fl_flags = try posix.fcntl(fd, posix.F.GETFL, 0);
     fl_flags |= 1 << @bitOffsetOf(posix.O, "NONBLOCK");
     _ = try posix.fcntl(fd, posix.F.SETFL, fl_flags);
 }
 
-fn installSignalHandlers() !void {
+pub fn installSignalHandlers() !void {
     if (builtin.os.tag == .windows) return;
 
     const action = posix.Sigaction{
@@ -574,7 +236,7 @@ fn disableRawMode() !void {
     saved_termios = null;
 }
 
-fn attachPresent(vulkan_renderer: *renderer.VulkanRenderer, window: *window_mod.Window) void {
+pub fn attachPresent(vulkan_renderer: *renderer.VulkanRenderer, window: *window_mod.Window) void {
     switch (window.backend) {
         .x11 => _ = vulkan_renderer.attachX11(window.x11DisplayPtr(), window.x11WindowId(), window.width, window.height),
         .wayland => _ = vulkan_renderer.attachWayland(window.waylandDisplayPtr(), window.waylandSurfacePtr(), window.width, window.height),
@@ -583,435 +245,8 @@ fn attachPresent(vulkan_renderer: *renderer.VulkanRenderer, window: *window_mod.
     }
 }
 
-const MouseState = struct {
-    held: input.MouseButton = .none,
-    last_col: u16 = std.math.maxInt(u16),
-    last_row: u16 = std.math.maxInt(u16),
-};
-
-/// Number of arrow-key presses sent per wheel notch in the alternate screen
-/// when the application did not enable mouse reporting (xterm's
-/// "alternateScroll" behaviour, so `less`/`man` scroll with the wheel).
-const ALT_SCROLL_LINES: usize = 3;
-
-fn handleMouse(term: *terminal.Terminal, st: *MouseState, m: window_mod.MouseInput, cell: software.CellPx) !void {
-    const col: u16 = @intCast(std.math.clamp(@divFloor(m.x, @as(i32, @intCast(cell.w))), 0, @as(i32, term.cols) - 1));
-    const row: u16 = @intCast(std.math.clamp(@divFloor(m.y, @as(i32, @intCast(cell.h))), 0, @as(i32, term.rows) - 1));
-    const wheel = switch (m.button) {
-        .wheel_up, .wheel_down, .wheel_left, .wheel_right => true,
-        else => false,
-    };
-
-    switch (m.action) {
-        .press => if (!wheel) {
-            st.held = m.button;
-        },
-        .release => st.held = .none,
-        .motion => {
-            if (col == st.last_col and row == st.last_row) return;
-        },
-    }
-    st.last_col = col;
-    st.last_row = row;
-
-    if (term.modes.mouse == .off) {
-        if (wheel and term.alt_active and m.action == .press) {
-            const key: ?input.Key = switch (m.button) {
-                .wheel_up => .up,
-                .wheel_down => .down,
-                else => null,
-            };
-            if (key) |k| {
-                const seq = input.encodeKey(k, .{}, term.modes);
-                for (0..ALT_SCROLL_LINES) |_| _ = try term.write(seq.constSlice());
-            }
-        }
-        return;
-    }
-
-    const ev = input.MouseEvent{
-        .action = m.action,
-        .button = if (m.action == .motion) st.held else m.button,
-        .col = col,
-        .row = row,
-        .mods = m.mods,
-    };
-    if (input.encodeMouse(ev, term.modes, st.held != .none)) |seq| {
-        _ = try term.write(seq.constSlice());
-    }
-}
-
-/// Fit the grid to a window of `width`×`height` px with the current cell
-/// size; resizes the terminal (and so the PTY) when it changes.
-/// `reserved` rows at the bottom are kept for the status bar.
-fn regrid(term: *terminal.Terminal, fonts: *fonts_mod.Fonts, soft: *software.SoftwareRenderer, width: u32, height: u32, reserved: u16) !void {
-    const cell = fonts.cellSize();
-    const cols: u16 = @intCast(std.math.clamp(width / cell.w, 1, 1000));
-    const all: u32 = height / cell.h;
-    const rows: u16 = @intCast(std.math.clamp(if (all > reserved + 1) all - reserved else 1, 1, 500));
-    if (cols != term.cols or rows != term.rows) try term.resize(rows, cols);
-    try soft.resizePixels(width, height);
-}
-
-const ViewBuffers = struct {
-    cells: std.ArrayList(terminal.Cell),
-    marks: std.ArrayList(frame_mod.Mark),
-
-    fn init(allocator: std.mem.Allocator) ViewBuffers {
-        return .{ .cells = std.ArrayList(terminal.Cell).init(allocator), .marks = std.ArrayList(frame_mod.Mark).init(allocator) };
-    }
-
-    fn deinit(self: *ViewBuffers) void {
-        self.cells.deinit();
-        self.marks.deinit();
-    }
-};
-
-/// Everything the GUI loop draws with and acts on.
-const Gui = struct {
-    term: *terminal.Terminal,
-    vk: *renderer.VulkanRenderer,
-    soft: *software.SoftwareRenderer,
-    window: *window_mod.Window,
-    fonts: *fonts_mod.Fonts,
-    frame: *frame_mod.Frame,
-    ui: *ui_mod.Ui,
-    view: *ViewBuffers,
-    cfg: *config.Config,
-    /// Effective colours (theme + overrides) of `cfg`.
-    palette: *color.Palette,
-    pace: *Pacer,
-    ai: *ai_controller.Controller,
-    plugins: *plugin_bridge.Bridge,
-    loop: *const EventLoop,
-
-    /// Build the frame and draw it. Unchanged frames are not drawn unless
-    /// `force` (expose/resize). Returns whether anything was presented.
-    fn present(self: Gui, focused: bool, force: bool) !bool {
-        try self.vk.render();
-        const composed = try self.ui.compose(self.term, &self.view.cells, &self.view.marks);
-        var v = frame_mod.View.fromTerminal(self.term);
-        v.focused = focused;
-        v.cursor_visible = composed.cursor_visible;
-        v.marks = self.view.marks.items;
-        v.palette = self.palette;
-        v.selection_bg = self.palette.selection_bg;
-        v.selection_fg = self.palette.selection_fg;
-        if (composed.scrollbar) |sb| v.scrollbar = .{ .top = sb.top, .height = sb.height };
-        try self.frame.build(self.fonts, self.view.cells.items, composed.rows, self.term.cols, composed.cursor_row, composed.cursor_col, v);
-        if (!self.frame.changed and !force) return false;
-        switch (self.vk.presentFrame(self.frame, &self.fonts.atlas)) {
-            .presented => {
-                self.soft.dirty = false;
-                return true;
-            },
-            .skipped => return false,
-            .unavailable => {},
-        }
-        self.soft.renderDamage(self.frame, &self.fonts.atlas);
-        if (!self.vk.presentPixels(self.soft.pixels, self.soft.width, self.soft.height)) {
-            self.window.presentRgba(self.soft.pixels, self.soft.width, self.soft.height);
-        }
-        self.soft.dirty = false;
-        return true;
-    }
-
-    /// Re-read the config file and apply what can change live. A file with
-    /// errors leaves the running config untouched and shows why.
-    fn reloadConfig(self: Gui, loop: *const EventLoop) !void {
-        const allocator = self.cfg.allocator;
-        var diags = config.Diagnostics.init(allocator);
-        defer diags.deinit();
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
-        const src = config.locate(&buf, loop.config_arg);
-        const shown_path = if (src) |sv| sv.path else loop.watch_path orelse "config";
-        var next = config.Config.init(allocator);
-        var adopted = false;
-        defer if (!adopted) next.deinit();
-        if (src) |sv| next.loadSource(sv, loop.load_opts, &diags);
-        diags.print();
-        if (diags.hasErrors()) {
-            std.debug.print("config: reload failed, keeping the previous settings\n", .{});
-            try showDiagnostics(self.ui, &diags, shown_path, "kept the previous settings");
-            return;
-        }
-        next.loadFromArgs(loop.args) catch {};
-
-        var restart = std.ArrayList(u8).init(allocator);
-        defer restart.deinit();
-        try restartOnlyChanges(self.cfg, &next, &restart);
-        try self.applyConfig(&next);
-        self.cfg.deinit();
-        self.cfg.* = next;
-        adopted = true;
-        // Slices into the old config's arena were re-pointed by applyConfig.
-        self.ui.opts = uiOptions(self.cfg);
-        self.fonts.opts.family = self.cfg.font_family;
-        self.ai.applySettings(self.ui, loop.aiSettings());
-        if (self.plugins.reload(self.cfg, chordTaken)) {
-            self.installAllBindings();
-            self.refreshStatus();
-        } else self.installAllBindings();
-
-        std.debug.print("config: reloaded {s}\n", .{shown_path});
-        var lines = std.ArrayList([]const u8).init(allocator);
-        defer lines.deinit();
-        for (diags.items.items) |it| try lines.append(it.text);
-        var restart_line: []u8 = &.{};
-        defer allocator.free(restart_line);
-        if (restart.items.len > 0) {
-            restart_line = try std.fmt.allocPrint(allocator, "restart DeathTerminal to apply: {s}", .{restart.items});
-            try lines.append(restart_line);
-        }
-        var head_buf: [512]u8 = undefined;
-        const head = std.fmt.bufPrint(&head_buf, "config reloaded: {s}", .{shown_path}) catch "config reloaded";
-        const now = std.time.milliTimestamp();
-        if (lines.items.len > 0) {
-            try self.ui.setNotice(.warning, head, lines.items, 10 * RELOADED_NOTICE_MS, now);
-        } else try self.ui.setNotice(.info, head, &.{}, RELOADED_NOTICE_MS, now);
-    }
-
-    /// Push `next`'s live settings into the running terminal.
-    fn applyConfig(self: Gui, next: *const config.Config) !void {
-        const old = self.cfg;
-        if (old.status_bar != next.status_bar) try self.setStatusBar(next.status_bar);
-        self.palette.* = next.palette();
-        self.term.palette = self.palette.*;
-        applyCursorShape(self.term, next.cursor_shape);
-        if (fontsChanged(old, next)) {
-            if (fonts_mod.Fonts.init(self.cfg.allocator, fontOptions(next, self.fonts.scale))) |f_new| {
-                var f = f_new;
-                // New atlas contents: make sure no cache or GPU copy matches.
-                f.atlas.generation = self.fonts.atlas.generation +% 1;
-                f.atlas.epoch = self.fonts.atlas.epoch +% 1;
-                self.fonts.deinit();
-                self.fonts.* = f;
-                self.frame.invalidate();
-                try regrid(self.term, self.fonts, self.soft, self.window.width, self.window.height, self.ui.statusRows());
-                self.ui.sync(self.term);
-                std.debug.print("  → Font: {s} {d:.1}pt, cell {d}x{d}px\n", .{ self.fonts.familyName(), self.fonts.size_pt, self.fonts.metrics.cell_w, self.fonts.metrics.cell_h });
-            } else |err| {
-                std.debug.print("config: cannot load the new font ({s}); keeping the current one\n", .{@errorName(err)});
-            }
-        }
-        self.vk.setPresentMode(renderer.PresentMode.parse(next.present_mode) orelse .fifo);
-        self.pace.frame_ns = frameNs(next.max_fps);
-        self.pace.read_budget = @as(usize, next.read_budget_kb) * 1024;
-        installBindings(next);
-    }
-
-    /// Execute what the UI queued: PTY writes, clipboard, link opening.
-    fn runEffects(self: Gui) !void {
-        if (self.ui.effects.items.len == 0) return;
-        const fx = try self.ui.takeEffects();
-        defer self.ui.freeEffects(fx);
-        for (fx) |e| switch (e) {
-            .write => |bytes| _ = try self.term.write(bytes),
-            .set_clipboard => |c| self.window.setClipboard(c.target, c.text),
-            .request_paste => |r| self.window.requestClipboard(r.target, r.purpose),
-            .open_url => |url| openUrl(self.cfg.url_open_command, url),
-            .palette => |pick| switch (pick) {
-                .action => |n| self.window.queue.pushAction(.{ .action = @enumFromInt(n), .sym = 0, .mods = .{} }),
-                .command => |n| if (self.plugins.host) |h| h.runCommand(n),
-                else => try self.sshPick(pick),
-            },
-        };
-    }
-
-    // ------------------------------------------------------------ plugins
-
-    fn startPlugins(self: Gui) void {
-        // Plugin chords are checked against the terminal's own bindings.
-        installBindings(self.cfg);
-        self.plugins.start(self.cfg, chordTaken);
-        self.installAllBindings();
-        self.refreshStatus();
-        _ = self.pluginEffects(true) catch {};
-    }
-
-    /// Config bindings, then the plugins' (never replacing one).
-    fn installAllBindings(self: Gui) void {
-        installBindings(self.cfg);
-        const h = self.plugins.host orelse return;
-        for (h.binds.items) |b| {
-            if (!events.bindings.addPlugin(b.chord, b.id)) h.log(b.plugin, "warn", "keybinding {s} is taken; ignored", .{b.spec});
-        }
-    }
-
-    fn refreshStatus(self: Gui) void {
-        self.ui.clearStatus();
-        const h = self.plugins.host orelse return;
-        for (h.segments.items) |seg| {
-            if (seg.text.len == 0 or !seg.plugin.running()) continue;
-            self.ui.addStatus(seg.right, seg.text, seg.fg) catch {};
-        }
-    }
-
-    fn setStatusBar(self: Gui, on: bool) !void {
-        if (self.ui.status_visible == on) return;
-        self.ui.status_visible = on;
-        try regrid(self.term, self.fonts, self.soft, self.window.width, self.window.height, self.ui.statusRows());
-        self.ui.sync(self.term);
-        self.plugins.resized();
-        self.frame.invalidate();
-    }
-
-    /// Apply what plugins asked for. True if the screen changed.
-    fn pluginEffects(self: Gui, focused: bool) !bool {
-        const h = self.plugins.host orelse return false;
-        if (h.effects.items.len == 0) return false;
-        // Handlers below can queue more (e.g. a theme hook): take a copy.
-        const fx = try self.cfg.allocator.dupe(host_effect, h.effects.items);
-        h.effects.clearRetainingCapacity();
-        defer {
-            for (fx) |*e| freeHostEffect(self.cfg.allocator, e);
-            self.cfg.allocator.free(fx);
-        }
-        var redraw = false;
-        const now = std.time.milliTimestamp();
-        for (fx) |e| switch (e) {
-            .write => |bytes| _ = try self.term.write(bytes),
-            .set_clipboard => |text| self.window.setClipboard(.clipboard, text),
-            .request_clipboard => self.window.requestClipboard(.clipboard, .plugin),
-            .notify => |n| {
-                var tb: [320]u8 = undefined;
-                const line = std.fmt.bufPrint(&tb, "{s}: {s}", .{ n.source, n.text[0..@min(n.text.len, 280)] }) catch n.text;
-                try self.ui.addToast(line, switch (n.level) {
-                    .info, .success => .info,
-                    .warn => .warn,
-                    .@"error" => .err,
-                }, n.timeout_ms, now);
-                if (n.desktop and !focused) desktopNotify(n.source, n.text);
-                redraw = true;
-            },
-            .theme => |t| {
-                self.palette.* = t.palette;
-                self.term.palette = t.palette;
-                h.setInfo(.theme, t.name);
-                self.frame.invalidate();
-                redraw = true;
-            },
-            .action => |a| self.window.queue.pushAction(.{ .action = a, .sym = 0, .mods = .{} }),
-            .redraw => {
-                self.refreshStatus();
-                redraw = true;
-            },
-            .bindings_changed => self.installAllBindings(),
-        };
-        return redraw;
-    }
-
-    fn openCommandPalette(self: Gui) !void {
-        const pal = try self.ui.openPalette(.commands, "");
-        var cb: [48]u8 = undefined;
-        if (self.plugins.host) |h| {
-            for (h.commands.items, 0..) |cmd, i| {
-                if (!cmd.plugin.running()) continue;
-                try pal.addItem(.command, cmd.title, cmd.plugin.name, i, false);
-            }
-        }
-        inline for (@typeInfo(events.Action).Enum.fields) |f| {
-            const act: events.Action = @enumFromInt(f.value);
-            if (act.title()) |ttl| {
-                try pal.addItem(.action, ttl, events.chordFor(&events.bindings, act, &cb) orelse "", f.value, false);
-            }
-        }
-    }
-
-    // ---------------------------------------------------------------- ssh
-
-    /// pid of the SSH client when this window is an SSH session.
-    fn sshPid(self: Gui) ?posix.pid_t {
-        if (self.loop.ssh_target == null) return null;
-        const p = self.term.pty orelse return null;
-        return p.child_pid;
-    }
-
-    fn openSshPalette(self: Gui) !void {
-        const pal = try self.ui.openPalette(.ssh, if (self.loop.ssh_remote.len > 0) self.loop.ssh_remote else "profiles");
-        try self.fillSshPalette(pal);
-    }
-
-    /// This session's forwards + reconnect (from the client's control
-    /// socket), then profiles and ~/.ssh/config aliases.
-    fn fillSshPalette(self: Gui, pal: *palette_mod.Palette) !void {
-        var arena_state = std.heap.ArenaAllocator.init(self.cfg.allocator);
-        defer arena_state.deinit();
-        const a = arena_state.allocator();
-        var items = std.ArrayList(palette_mod.Item).init(a);
-        if (self.sshPid()) |pid| {
-            var out: [8192]u8 = undefined;
-            if (ssh_control.request(pid, "list", &out)) |reply| {
-                var lines = std.mem.splitScalar(u8, reply, '\n');
-                while (lines.next()) |ln| {
-                    const f = parseForwardLine(ln) orelse continue;
-                    try items.append(.{ .kind = .forward, .name = try a.dupe(u8, f.spec), .detail = try a.dupe(u8, f.state), .arg = f.n, .on = f.on });
-                }
-            } else |_| try pal.setStatus(" session not reachable (still connecting?) ");
-            try items.append(.{ .kind = .reconnect, .name = try a.dupe(u8, "Reconnect"), .detail = try a.dupe(u8, self.loop.ssh_remote) });
-        }
-        for (self.cfg.ssh_profiles.items) |p| {
-            var db: [300]u8 = undefined;
-            const detail = if (ssh_target.resolveForConfig(a, self.cfg.ssh_profiles.items, self.cfg.ssh_config_file, self.cfg.ssh_keepalive_s, p.name)) |t|
-                try std.fmt.allocPrint(a, "{s}{s}{s}", .{ t.display(&db), if (t.jumps.len > 0) "  via jump" else "", if (t.forwards.len > 0) "  +forwards" else "" })
-            else |_|
-                try a.dupe(u8, "(invalid)");
-            try items.append(.{ .kind = .profile, .name = try a.dupe(u8, p.name), .detail = detail });
-        }
-        // Lua table order is arbitrary: list profiles by name.
-        const first_profile = blk: {
-            for (items.items, 0..) |it, i| if (it.kind == .profile) break :blk i;
-            break :blk items.items.len;
-        };
-        std.mem.sort(palette_mod.Item, items.items[first_profile..], {}, struct {
-            fn lt(_: void, x: palette_mod.Item, y: palette_mod.Item) bool {
-                return std.mem.lessThan(u8, x.name, y.name);
-            }
-        }.lt);
-        var aliases = std.ArrayList([]const u8).init(a);
-        ssh_target.configAliases(a, self.cfg.ssh_config_file, &aliases);
-        for (aliases.items) |name| {
-            if (ssh_target.findProfile(self.cfg.ssh_profiles.items, name) != null) continue;
-            try items.append(.{ .kind = .alias, .name = try a.dupe(u8, name), .detail = try a.dupe(u8, "~/.ssh/config") });
-        }
-        try pal.setItems(items.items);
-    }
-
-    fn sshPick(self: Gui, pick: palette_mod.Pick) !void {
-        const now = std.time.milliTimestamp();
-        switch (pick) {
-            .open => |name| {
-                openSshWindow(self.loop, name);
-                var hb: [300]u8 = undefined;
-                try self.ui.setNotice(.info, std.fmt.bufPrint(&hb, "ssh: opening {s} in a new window", .{name}) catch "ssh: opening a new window", &.{}, RELOADED_NOTICE_MS, now);
-            },
-            .toggle => |n| {
-                const pid = self.sshPid() orelse return;
-                var cmd: [32]u8 = undefined;
-                var out: [512]u8 = undefined;
-                const reply = ssh_control.request(pid, std.fmt.bufPrint(&cmd, "toggle {d}", .{n}) catch "list", &out) catch "error session not reachable";
-                if (self.ui.palette) |*pal| {
-                    var spec: []const u8 = "forward";
-                    for (pal.items.items) |it| if (it.kind == .forward and it.arg == n) {
-                        spec = it.name;
-                    };
-                    var sb: [200]u8 = undefined;
-                    try pal.setStatus(toggleStatus(&sb, spec, std.mem.trim(u8, reply, " \n")));
-                    try self.fillSshPalette(pal);
-                }
-            },
-            .reconnect => {
-                const pid = self.sshPid() orelse return;
-                var out: [64]u8 = undefined;
-                _ = ssh_control.request(pid, "reconnect", &out) catch {};
-            },
-            .action, .command => {},
-        }
-    }
-};
-
 /// " L 8080:localhost:80 → on " from a control reply "ok on <state>".
-fn toggleStatus(buf: []u8, spec: []const u8, reply: []const u8) []const u8 {
+pub fn toggleStatus(buf: []u8, spec: []const u8, reply: []const u8) []const u8 {
     if (std.mem.startsWith(u8, reply, "ok ")) {
         const r = reply[3..];
         const word = r[0 .. std.mem.indexOfScalar(u8, r, ' ') orelse r.len];
@@ -1027,10 +262,10 @@ test "toggleStatus" {
     try std.testing.expectEqualStrings(" D 1080: session not reachable ", toggleStatus(&b, "D 1080", "error session not reachable"));
 }
 
-const ForwardLine = struct { n: usize, on: bool, spec: []const u8, state: []const u8 };
+pub const ForwardLine = struct { n: usize, on: bool, spec: []const u8, state: []const u8 };
 
 /// "<n> <on|off> <spec> | <state>" from the control socket's `list`.
-fn parseForwardLine(line: []const u8) ?ForwardLine {
+pub fn parseForwardLine(line: []const u8) ?ForwardLine {
     var it = std.mem.splitScalar(u8, line, ' ');
     const n = std.fmt.parseInt(usize, it.next() orelse return null, 10) catch return null;
     const onoff = it.next() orelse return null;
@@ -1049,7 +284,7 @@ test "parseForwardLine" {
 }
 
 /// A new window process for `name` (same config file and safety flags).
-fn openSshWindow(loop: *const EventLoop, name: []const u8) void {
+pub fn openSshWindow(loop: *const EventLoop, name: []const u8) void {
     var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
@@ -1062,9 +297,9 @@ fn openSshWindow(loop: *const EventLoop, name: []const u8) void {
     spawnDetached(argv.items, false);
 }
 
-const host_effect = plugin_bridge.host_mod.Effect;
+pub const host_effect = plugin_bridge.host_mod.Effect;
 
-fn freeHostEffect(a: std.mem.Allocator, e: *host_effect) void {
+pub fn freeHostEffect(a: std.mem.Allocator, e: *host_effect) void {
     switch (e.*) {
         .write, .set_clipboard => |x| a.free(x),
         .notify => |n| {
@@ -1072,28 +307,33 @@ fn freeHostEffect(a: std.mem.Allocator, e: *host_effect) void {
             a.free(n.text);
         },
         .theme => |t| a.free(t.name),
+        .layout => |l| switch (l) {
+            .tab_new => |cwd| if (cwd) |d| a.free(d),
+            .tab_rename => |r| a.free(r.name),
+            else => {},
+        },
         else => {},
     }
 }
 
-fn chordTaken(c: events.Chord) bool {
+pub fn chordTaken(c: events.Chord) bool {
     return events.bindings.has(c);
 }
 
 /// `notify-send` (if installed) for a plugin notice while unfocused.
-fn desktopNotify(source: []const u8, text: []const u8) void {
+pub fn desktopNotify(source: []const u8, text: []const u8) void {
     if (builtin.os.tag != .linux) return;
     var tb: [96]u8 = undefined;
     const title = std.fmt.bufPrint(&tb, "DeathTerminal: {s}", .{source}) catch "DeathTerminal";
     spawnDetached(&.{ "notify-send", "--app-name=DeathTerminal", "--", title, text[0..@min(text.len, 500)] }, true);
 }
 
-fn nowNs() u64 {
+pub fn nowNs() u64 {
     return @intCast(std.time.nanoTimestamp());
 }
 
 /// Frame pacing and throughput counters for the GUI loop.
-const Pacer = struct {
+pub const Pacer = struct {
     /// Minimum time between presents (0 = uncapped).
     frame_ns: u64,
     read_budget: usize,
@@ -1104,22 +344,22 @@ const Pacer = struct {
     bytes: u64 = 0,
     batches: u64 = 0,
 
-    fn due(self: *const Pacer, now: u64) bool {
+    pub fn due(self: *const Pacer, now: u64) bool {
         return now -% self.last_present >= self.frame_ns;
     }
 
-    fn msUntilNext(self: *const Pacer, now: u64) i32 {
+    pub fn msUntilNext(self: *const Pacer, now: u64) i32 {
         const elapsed = now -% self.last_present;
         if (elapsed >= self.frame_ns) return 0;
         const left = self.frame_ns - elapsed;
         return @intCast((left + std.time.ns_per_ms - 1) / std.time.ns_per_ms);
     }
 
-    fn presented(self: *Pacer, now: u64) void {
+    pub fn presented(self: *Pacer, now: u64) void {
         self.last_present = now;
     }
 
-    fn report(self: *const Pacer) void {
+    pub fn report(self: *const Pacer) void {
         std.debug.print("perf: {d} frames presented, {d} unchanged skipped, {d} wakeups, {d} bytes in {d} batches\n", .{ self.frames, self.skipped, self.wakeups, self.bytes, self.batches });
     }
 };
@@ -1135,17 +375,17 @@ test "pacer waits for the next frame slot" {
     try std.testing.expect(u.due(0));
 }
 
-fn frameNs(max_fps: u16) u64 {
+pub fn frameNs(max_fps: u16) u64 {
     return if (max_fps == 0) 0 else std.time.ns_per_s / @as(u64, max_fps);
 }
 
 /// Combine a poll timeout (-1 = infinite) with another wait in ms.
-fn minTimeout(timeout: i32, ms: i64) i32 {
+pub fn minTimeout(timeout: i32, ms: i64) i32 {
     const m: i32 = @intCast(std.math.clamp(ms, 0, std.math.maxInt(i32)));
     return if (timeout < 0) m else @min(timeout, m);
 }
 
-fn fontOptions(cfg: *const config.Config, scale: f32) fonts_mod.Options {
+pub fn fontOptions(cfg: *const config.Config, scale: f32) fonts_mod.Options {
     return .{
         .family = cfg.font_family,
         .size_pt = cfg.font_size,
@@ -1156,12 +396,12 @@ fn fontOptions(cfg: *const config.Config, scale: f32) fonts_mod.Options {
     };
 }
 
-fn fontsChanged(a: *const config.Config, b: *const config.Config) bool {
+pub fn fontsChanged(a: *const config.Config, b: *const config.Config) bool {
     return !std.mem.eql(u8, a.font_family, b.font_family) or a.font_size != b.font_size or
         a.line_height != b.line_height or a.font_retro != b.font_retro or a.font_ligatures != b.font_ligatures;
 }
 
-fn uiOptions(cfg: *const config.Config) ui_mod.Options {
+pub fn uiOptions(cfg: *const config.Config) ui_mod.Options {
     return .{
         .copy_on_select = cfg.copy_on_select,
         .paste_confirm = cfg.paste_confirm,
@@ -1173,7 +413,7 @@ fn uiOptions(cfg: *const config.Config) ui_mod.Options {
 }
 
 /// New default cursor shape; also applied now unless an app chose one.
-fn applyCursorShape(term: *terminal.Terminal, shape: config.CursorShape) void {
+pub fn applyCursorShape(term: *terminal.Terminal, shape: config.CursorShape) void {
     const s: terminal.CursorShape = switch (shape) {
         .block => .block,
         .underline => .underline,
@@ -1184,7 +424,7 @@ fn applyCursorShape(term: *terminal.Terminal, shape: config.CursorShape) void {
 }
 
 /// Names of changed options that only apply to new terminals.
-fn restartOnlyChanges(a: *const config.Config, b: *const config.Config, out: *std.ArrayList(u8)) !void {
+pub fn restartOnlyChanges(a: *const config.Config, b: *const config.Config, out: *std.ArrayList(u8)) !void {
     const w = out.writer();
     var first = true;
     const names = [_]struct { []const u8, bool }{
@@ -1219,7 +459,7 @@ fn shortenPath(text: []const u8) []const u8 {
 }
 
 /// Put config diagnostics in the notice bar.
-fn showDiagnostics(ui: *ui_mod.Ui, diags: *const config.Diagnostics, path: []const u8, consequence: ?[]const u8) !void {
+pub fn showDiagnostics(ui: *ui_mod.Ui, diags: *const config.Diagnostics, path: []const u8, consequence: ?[]const u8) !void {
     var lines = std.ArrayList([]const u8).init(ui.allocator);
     defer lines.deinit();
     // Errors first; the headline names the file, so lines start at its
@@ -1236,7 +476,7 @@ fn showDiagnostics(ui: *ui_mod.Ui, diags: *const config.Diagnostics, path: []con
     try ui.setNotice(if (n > 0) .err else .warning, head, lines.items, null, std.time.milliTimestamp());
 }
 
-fn installBindings(cfg: *const config.Config) void {
+pub fn installBindings(cfg: *const config.Config) void {
     events.bindings = if (cfg.default_keybindings) events.Bindings.defaults() else .{};
     // config.ai.accept_key moves "accept suggestion" off Tab.
     if (cfg.default_keybindings and !std.ascii.eqlIgnoreCase(cfg.ai_accept_key, "tab")) {
@@ -1253,7 +493,7 @@ fn installBindings(cfg: *const config.Config) void {
 
 /// Launch `command url` detached (double fork, no shell). The URL has
 /// already passed `urls.allowedTarget`.
-fn openUrl(command: []const u8, url: []const u8) void {
+pub fn openUrl(command: []const u8, url: []const u8) void {
     if (builtin.os.tag == .windows) return; // TODO: ShellExecuteW
     std.debug.print("  → open {s}\n", .{url});
     spawnDetached(&.{ command, url }, true);
@@ -1261,7 +501,7 @@ fn openUrl(command: []const u8, url: []const u8) void {
 
 /// Runs argv[0] (looked up in $PATH) detached from this process: double
 /// fork so it is reparented and never becomes our zombie.
-fn spawnDetached(args: []const []const u8, quiet: bool) void {
+pub fn spawnDetached(args: []const []const u8, quiet: bool) void {
     if (builtin.os.tag == .windows) return;
     var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_state.deinit();

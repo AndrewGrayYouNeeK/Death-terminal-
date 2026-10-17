@@ -21,21 +21,26 @@ pub const Item = struct {
     arg: usize = 0,
     on: bool = false,
 
-    pub const Kind = enum { forward, reconnect, profile, alias, action, command };
+    pub const Kind = enum { forward, reconnect, profile, alias, action, command, tab };
 };
 
 pub const Mode = enum { ssh, commands };
 
 pub const Pick = union(enum) {
-    /// Open this profile / alias in a new window (owned).
-    open: []u8,
+    /// Open this profile / alias (name owned): Enter = new tab,
+    /// Shift+Enter = split, Alt+Enter = new window.
+    open: struct { name: []u8, where: Where = .tab },
     toggle: usize,
     reconnect,
     /// A built-in action (`events.Action` value).
     action: usize,
     /// A plugin command (index into the host's command list).
     command: usize,
+    /// Go to this tab (id).
+    tab: usize,
 };
+
+pub const Where = enum { tab, split, window };
 
 pub const Result = union(enum) { none, close, pick: Pick };
 
@@ -143,13 +148,18 @@ pub const Palette = struct {
     }
 
     fn pick(self: *Palette) !Result {
+        return self.pickAt(.tab);
+    }
+
+    fn pickAt(self: *Palette, where: Where) !Result {
         const it = self.visible(self.sel) orelse return .none;
         return switch (it.kind) {
             .forward => .{ .pick = .{ .toggle = it.arg } },
             .action => .{ .pick = .{ .action = it.arg } },
             .command => .{ .pick = .{ .command = it.arg } },
+            .tab => .{ .pick = .{ .tab = it.arg } },
             .reconnect => .{ .pick = .reconnect },
-            .profile, .alias => .{ .pick = .{ .open = try self.allocator.dupe(u8, it.name) } },
+            .profile, .alias => .{ .pick = .{ .open = .{ .name = try self.allocator.dupe(u8, it.name), .where = where } } },
         };
     }
 
@@ -185,10 +195,10 @@ pub const Palette = struct {
         return .none;
     }
 
-    pub fn handleKey(self: *Palette, key: input.Key) !Result {
+    pub fn handleKey(self: *Palette, key: input.Key, mods: input.Mods) !Result {
         switch (key) {
             .escape => return .close,
-            .enter, .kp_enter => return self.pick(),
+            .enter, .kp_enter => return self.pickAt(if (mods.alt) .window else if (mods.shift) .split else .tab),
             .up => self.move(-1),
             .down, .tab => self.move(1),
             .page_up => self.move(-8),
@@ -287,6 +297,7 @@ pub const Palette = struct {
                 .profile => col += put(line[col..], "▸ ", lfg, lbg),
                 .alias => col += put(line[col..], "· ", lfg, lbg),
                 .action => col += put(line[col..], "› ", lfg, lbg),
+                .tab => col += put(line[col..], "⇥ ", lfg, lbg),
                 .command => col += put(line[col..], "◆ ", if (selected) sel_fg else accent, lbg),
             }
             col += put(line[col..], it.name, lfg, lbg);
@@ -371,20 +382,21 @@ test "palette filters, moves and picks" {
     _ = try p.handleText("pr");
     try t.expectEqual(@as(usize, 1), p.visibleCount());
     const r = try p.handleText("\r");
-    try t.expectEqualStrings("prod", r.pick.open);
-    t.allocator.free(r.pick.open);
+    try t.expectEqualStrings("prod", r.pick.open.name);
+    try t.expect(r.pick.open.where == .tab);
+    t.allocator.free(r.pick.open.name);
     _ = try p.handleText("\x15");
     try t.expectEqual(@as(usize, 4), p.visibleCount());
-    try t.expect((try p.handleKey(.enter)).pick.toggle == 1);
-    _ = try p.handleKey(.down);
-    try t.expect((try p.handleKey(.enter)).pick == .reconnect);
-    _ = try p.handleKey(.up);
-    _ = try p.handleKey(.up);
+    try t.expect((try p.handleKey(.enter, .{})).pick.toggle == 1);
+    _ = try p.handleKey(.down, .{});
+    try t.expect((try p.handleKey(.enter, .{})).pick == .reconnect);
+    _ = try p.handleKey(.up, .{});
+    _ = try p.handleKey(.up, .{});
     try t.expectEqual(@as(usize, 3), p.sel); // wraps
-    try t.expect(try p.handleKey(.escape) == .close);
+    try t.expect(try p.handleKey(.escape, .{}) == .close);
     _ = try p.handleText("zzz");
     try t.expectEqual(@as(usize, 0), p.visibleCount());
-    try t.expect(try p.handleKey(.enter) == .none);
+    try t.expect(try p.handleKey(.enter, .{}) == .none);
 }
 
 test "palette draws inside small and large grids" {
@@ -413,7 +425,7 @@ test "command palette picks actions and plugin commands" {
     _ = try p.handleText("git");
     try t.expectEqual(@as(usize, 3), (try p.handleText("\r")).pick.command);
     _ = try p.handleText("\x15");
-    try t.expectEqual(@as(usize, 1), (try p.handleKey(.enter)).pick.action);
+    try t.expectEqual(@as(usize, 1), (try p.handleKey(.enter, .{})).pick.action);
     const cells = try t.allocator.alloc(Cell, 24 * 80);
     defer t.allocator.free(cells);
     @memset(cells, Cell.init());

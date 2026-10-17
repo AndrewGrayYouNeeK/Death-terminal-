@@ -159,7 +159,10 @@
 - [x] Copy/paste functionality (CLIPBOARD/PRIMARY, bracketed paste, paste prompt, OSC 52)
 - [x] Search in scrollback (Ctrl+Shift+F overlay)
 - [x] Scrollback navigation (Shift+PageUp/PageDown, wheel, Shift+Home/End, scrollbar)
-- [ ] Tabs and splits
+- [x] Tabs and splits (milestone 11, docs/TABS.md)
+- [ ] Tabs: SSH profile themes in tabs/splits (only new windows get the profile theme)
+- [ ] Tabs: detach a pane into its own window / move panes between tabs
+- [ ] Tabs: session restore of layouts on restart
 - [x] Hyperlink detection and handling (Ctrl+click URLs and OSC 8)
 - [ ] Image protocol support (optional)
 - [ ] Notifications

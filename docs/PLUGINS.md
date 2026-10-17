@@ -130,8 +130,17 @@ dt.status.set("hello", "👋", { align = "right" })
 | `focus` | `focused` | |
 | `ssh_connect` / `ssh_disconnect` | `target` | built-in SSH sessions (`--ssh`) only |
 | `ai_suggestion` | `input`, `text` | needs `ai`. Return `false` to drop the suggestion or a string to replace the whole command line (it must still start with what was typed) |
+| `tab_new` / `tab_close` | `tab` | a tab was opened / closed |
+| `tab_focus` | `tab`, `pane` | another tab became the current one |
+| `pane_new` / `pane_close` | `tab`, `pane` | a pane was opened (new tab or split) / closed |
+| `pane_focus` | `tab`, `pane` | the focus moved to another pane (also on tab switches) |
 
 \* `command` only for plugins holding `screen`.
+
+`command_start`, `command_finish`, `cwd`, `title`, `bell` and the SSH events come from
+every pane, not just the focused one; their payloads carry the pane's `pane` and `tab`
+ids. `command_finish`'s `focused` is true only when the window has the focus *and* the
+command ran in the focused pane.
 
 SSH events come from the built-in client, which reports with a per-window secret (OSC 7799
 plus `DT_SSH_NONCE`), so output from a remote host can't fake them. Running OpenSSH's `ssh`
@@ -152,8 +161,11 @@ inside a normal window doesn't produce them.
 | `dt.timer.after(ms, fn)`, `dt.timer.every(ms, fn)`, `dt.timer.cancel(id)` | minimum 100 ms, max 64 timers |
 | `dt.theme.register{ name, fg, bg, cursor, cursor_text, selection_bg, selection_fg, ansi = {16} }` | a custom theme |
 | `dt.theme.set(name)`, `dt.theme.list()`, `dt.theme.current()` | switch themes (bundled or registered). A config reload goes back to the configured theme |
-| `dt.action(name)` | run a built-in action: `search`, `scroll_*`, `zoom_*`, `select_all`, `clear_selection`, `reload_config`, `ai_explain`, `ssh_palette`, `command_palette`, `toggle_status_bar` |
-| `dt.term.cwd()`, `.title()`, `.ssh()`, `.size()`, `.focused()` | terminal info |
+| `dt.action(name)` | run a built-in action: `search`, `scroll_*`, `zoom_*`, `select_all`, `clear_selection`, `reload_config`, `ai_explain`, `ssh_palette`, `command_palette`, `toggle_status_bar`, and the tab / pane actions (`new_tab`, `close_tab`, `next_tab`, `prev_tab`, `move_tab_left/right`, `goto_tab_1`…`9`, `toggle_tab_bar`, `split_right`, `split_down`, `close_pane`, `focus_left/right/up/down`, `next_pane`, `prev_pane`, `resize_left/right/up/down`, `zoom_pane`, `equalize_panes`) |
+| `dt.term.cwd()`, `.title()`, `.ssh()`, `.size()`, `.focused()`, `.tab()`, `.pane()` | the focused pane's terminal info and ids |
+| `dt.tabs.list()` | `{ { id, title, active, panes = { pane ids }, focused_pane }, ... }` left to right |
+| `dt.tabs.new{ cwd = ... }`, `dt.tabs.focus(id)`, `dt.tabs.close(id)`, `dt.tabs.rename(id, name)`, `dt.tabs.current()` | false for an unknown id. `close` asks first like the user's close does |
+| `dt.panes.split("right"/"down")`, `dt.panes.focus(id)`, `dt.panes.close(id)`, `dt.panes.current()` | split the focused pane; focus / close any pane |
 | `dt.screen.text(scrollback)`, `.lines(n)`, `.cursor()` | `screen`. Cursor is 1-based `row, col` |
 | `dt.pty.write(s)` | `pty`, up to 64 KiB |
 | `dt.clipboard.set(s)`, `dt.clipboard.get(fn)` | `clipboard` |
@@ -165,6 +177,23 @@ inside a normal window doesn't produce them.
 Plugins get `string`, `table`, `math`, `utf8`, `coroutine`, `os.time/clock/date/difftime`
 and the safe base functions. There's no `io`, `os.execute`, `os.getenv`, `debug`,
 `dofile`/`loadfile`, and `load` only takes text.
+
+### Tabs and panes
+
+Each pane is tracked separately: hooks fire for output in background panes too (with
+`pane` / `tab` in the payload) while `dt.term`, `dt.screen` and `dt.pty.write` act on the
+focused pane. Layout requests (`dt.tabs.*`, `dt.panes.*`, tab / pane actions) are applied
+by the window after the callback returns; the ids stay valid until the tab / pane closes.
+
+```lua
+dt.on("pane_new", function(e)
+  dt.notify("pane " .. e.pane .. " in tab " .. e.tab)
+end)
+dt.command({ id = "dev", title = "Dev layout: editor + shell", run = function()
+  dt.tabs.new()
+  dt.panes.split("right")
+end })
+```
 
 ### Errors and limits
 
@@ -187,6 +216,7 @@ Edits to other modules a plugin `require`s need a change to `init.lua` (or a res
 
 ## Built-in palette
 
-Ctrl+Shift+P opens the command palette: plugin commands first (with the plugin's name),
-then every built-in action with its current chord. Type to filter, arrows to move, Enter
+Ctrl+Shift+P opens the command palette: "Go to tab N: title" entries (with two or more
+tabs), plugin commands (with the plugin's name), then every built-in action with its
+current chord, including the tab and pane actions. Type to filter, arrows to move, Enter
 to run, Esc to close. Ctrl+Shift+S still opens the SSH palette.

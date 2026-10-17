@@ -13,6 +13,29 @@ pub const lua_config = @import("lua_config.zig");
 pub const SshProfile = @import("../ssh/target.zig").Profile;
 pub const PluginConfig = @import("../plugins/plugin_config.zig").PluginConfig;
 
+/// A pane, or a split of several (`config.layout`). Strings live in the
+/// config arena.
+pub const LayoutNode = struct {
+    /// null = a pane; otherwise `children` side by side ("right") or
+    /// stacked ("down").
+    split: ?enum { right, down } = null,
+    /// Share of the first child (two children only; more are made even).
+    ratio: f32 = 0.5,
+    children: []const LayoutNode = &.{},
+    cwd: []const u8 = "",
+    /// Typed into the pane's shell once it starts (like tmux send-keys).
+    command: []const u8 = "",
+    /// Run the built-in SSH client for this profile / target instead.
+    ssh: []const u8 = "",
+    /// This pane gets the focus.
+    focus: bool = false,
+};
+
+pub const LayoutTab = struct {
+    title: []const u8 = "",
+    root: LayoutNode,
+};
+
 pub const CursorShape = enum { block, underline, bar };
 
 /// Per-entry colour overrides applied on top of the selected theme
@@ -138,6 +161,16 @@ pub const Config = struct {
     plugins: std.ArrayList(PluginConfig),
     /// One-row status bar at the bottom (plugin segments; off by default).
     status_bar: bool = false,
+    /// Tab bar: "auto" (only with 2+ tabs), "top", "bottom", "hidden".
+    tab_bar: []const u8 = "auto",
+    /// Ask before closing a pane / tab / window whose shell runs a program.
+    confirm_close: bool = true,
+    /// Fade inactive panes' text towards the background (0 = off, 0.9 max).
+    dim_inactive: f32 = 0,
+    /// New tabs and panes start in the focused pane's directory (OSC 7).
+    inherit_cwd: bool = true,
+    /// `config.layout`: tabs (and their splits) to open at startup.
+    startup_layout: std.ArrayList(LayoutTab),
     scrollback_lines: usize = 10_000,
     headless: bool = true,
     scale: f32 = 0,
@@ -203,6 +236,7 @@ pub const Config = struct {
             .shell_args = std.ArrayList([]const u8).init(allocator),
             .shell_env = std.ArrayList([]const u8).init(allocator),
             .ssh_profiles = std.ArrayList(SshProfile).init(allocator),
+            .startup_layout = std.ArrayList(LayoutTab).init(allocator),
             .plugins = std.ArrayList(PluginConfig).init(allocator),
         };
     }
@@ -212,6 +246,7 @@ pub const Config = struct {
         self.shell_args.deinit();
         self.shell_env.deinit();
         self.ssh_profiles.deinit();
+        self.startup_layout.deinit();
         self.plugins.deinit();
         self.arena.deinit();
         self.allocator.destroy(self.arena);

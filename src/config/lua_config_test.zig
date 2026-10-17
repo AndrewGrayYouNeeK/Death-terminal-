@@ -192,14 +192,14 @@ test "lua config: config.example.lua is valid and matches the defaults" {
     try t.expectEqual(@as(usize, 0), d.items.items.len);
     var def = config.Config.init(t.allocator);
     defer def.deinit();
-    inline for (.{ "rows", "cols", "scale", "backend", "headless", "font_size", "line_height", "font_retro", "font_ligatures", "cursor_shape", "max_fps", "read_budget_kb", "scrollback_lines", "scrollbar", "scroll_lines", "copy_on_select", "paste_confirm", "default_keybindings", "ai_enabled", "ai_timeout_ms", "ai_debounce_ms", "ai_max_tokens", "ai_explain_max_tokens", "ai_history", "ai_output_lines", "shell_integration", "ssh_enabled", "ssh_keepalive_s" }) |name| {
+    inline for (.{ "rows", "cols", "scale", "backend", "headless", "font_size", "line_height", "font_retro", "font_ligatures", "cursor_shape", "max_fps", "read_budget_kb", "scrollback_lines", "scrollbar", "scroll_lines", "copy_on_select", "paste_confirm", "default_keybindings", "ai_enabled", "ai_timeout_ms", "ai_debounce_ms", "ai_max_tokens", "ai_explain_max_tokens", "ai_history", "ai_output_lines", "shell_integration", "ssh_enabled", "ssh_keepalive_s", "confirm_close", "dim_inactive", "inherit_cwd" }) |name| {
         try t.expectEqual(@field(def, name), @field(cfg, name));
     }
-    inline for (.{ "font_family", "theme", "present_mode", "osc52", "word_chars", "url_open_command", "shell_program", "shell_cwd", "ai_endpoint", "ai_model", "ai_api_key_env", "ai_accept_key", "ssh_config_file", "ssh_known_hosts" }) |name| {
+    inline for (.{ "font_family", "theme", "present_mode", "osc52", "word_chars", "url_open_command", "shell_program", "shell_cwd", "ai_endpoint", "ai_model", "ai_api_key_env", "ai_accept_key", "ssh_config_file", "ssh_known_hosts", "tab_bar" }) |name| {
         try t.expectEqualStrings(@field(def, name), @field(cfg, name));
     }
     try t.expectEqual(def.palette().hash(), cfg.palette().hash());
-    try t.expectEqual(@as(usize, 0), cfg.shell_args.items.len + cfg.shell_env.items.len + cfg.ssh_profiles.items.len);
+    try t.expectEqual(@as(usize, 0), cfg.shell_args.items.len + cfg.shell_env.items.len + cfg.ssh_profiles.items.len + cfg.startup_layout.items.len);
 }
 
 test "lua config: load() falls back to defaults on errors" {
@@ -385,4 +385,69 @@ test "lua config: plugin mistakes are reported" {
     try t.expect(d.contains("plugins.e: unknown option 'alow'"));
     try t.expect(d.contains("plugins.f.settings"));
     try t.expectEqual(@as(usize, 1), cfg.plugins.items.len);
+}
+
+test "lua config: tabs options and startup layout" {
+    var d = config.Diagnostics.init(t.allocator);
+    defer d.deinit();
+    var cfg = loadStr(
+        \\config.tabs = { bar = "bottom", confirm_close = false, dim_inactive = 0.4 }
+        \\config.tabs.inherit_cwd = false
+        \\config.layout = {
+        \\  { title = "dev", cwd = "/tmp", split = "right", ratio = 0.6, panes = {
+        \\      { command = "vim", focus = true },
+        \\      { split = "down", panes = { { command = "htop" }, {} } },
+        \\  } },
+        \\  { ssh = "work" },
+        \\}
+        \\config.layout[3] = { cwd = "~" }
+    , &d);
+    defer cfg.deinit();
+    d.print();
+    try t.expectEqual(@as(usize, 0), d.items.items.len);
+    try t.expectEqualStrings("bottom", cfg.tab_bar);
+    try t.expect(!cfg.confirm_close and !cfg.inherit_cwd);
+    try t.expectApproxEqAbs(@as(f32, 0.4), cfg.dim_inactive, 0.001);
+    try t.expectEqual(@as(usize, 3), cfg.startup_layout.items.len);
+    const dev = cfg.startup_layout.items[0];
+    try t.expectEqualStrings("dev", dev.title);
+    try t.expect(dev.root.split.? == .right);
+    try t.expectApproxEqAbs(@as(f32, 0.6), dev.root.ratio, 0.001);
+    try t.expectEqual(@as(usize, 2), dev.root.children.len);
+    try t.expectEqualStrings("vim", dev.root.children[0].command);
+    try t.expect(dev.root.children[0].focus);
+    try t.expectEqualStrings("/tmp", dev.root.children[0].cwd);
+    const right = dev.root.children[1];
+    try t.expect(right.split.? == .down);
+    try t.expectEqualStrings("htop", right.children[0].command);
+    try t.expectEqualStrings("/tmp", right.children[1].cwd);
+    try t.expectEqualStrings("work", cfg.startup_layout.items[1].root.ssh);
+    try t.expectEqualStrings("~", cfg.startup_layout.items[2].root.cwd);
+}
+
+test "lua config: layout mistakes are reported" {
+    var d = config.Diagnostics.init(t.allocator);
+    defer d.deinit();
+    var cfg = loadStr(
+        \\config.tabs.bar = "left"
+        \\config.layout = { { split = "sideways", panes = { {}, {} } } }
+        \\config.layout = { { split = "right", panes = { {} } } }
+        \\config.layout = { { panes = { {}, {} } } }
+        \\config.layout = { { comand = "vim" } }
+        \\config.layout = { { split = "down", panes = { { title = "x" }, {} } } }
+        \\config.layout = "vim"
+        \\config.layout[5] = {}
+        \\config.layout = { { command = "htop" } }
+    , &d);
+    defer cfg.deinit();
+    try t.expectEqual(@as(usize, 8), d.errorCount());
+    try t.expect(d.contains("tabs.bar"));
+    try t.expect(d.contains("layout[1].split: expected \"right\""));
+    try t.expect(d.contains("at least 2 panes"));
+    try t.expect(d.contains("`panes` needs `split"));
+    try t.expect(d.contains("unknown option 'comand'"));
+    try t.expect(d.contains("only a tab (top level) has a title"));
+    try t.expect(d.contains("layout: expected a list of tabs"));
+    try t.expect(d.contains("layout[5]: index out of range"));
+    try t.expectEqual(@as(usize, 1), cfg.startup_layout.items.len);
 }

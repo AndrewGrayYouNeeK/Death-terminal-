@@ -41,6 +41,13 @@ pub const Event = enum {
     ssh_disconnect,
     ai_suggestion,
     shutdown,
+    /// Tabs and panes ({ tab = id, pane = id }).
+    tab_new,
+    tab_close,
+    tab_focus,
+    pane_new,
+    pane_close,
+    pane_focus,
 
     /// The permission a plugin needs to subscribe.
     pub fn needs(self: Event) ?Permission {
@@ -102,6 +109,8 @@ pub const Effect = union(enum) {
     redraw,
     /// Plugin keybindings changed: reinstall them (`Host.binds`).
     bindings_changed,
+    /// dt.tabs / dt.panes requests.
+    layout: LayoutOp,
 
     fn deinit(self: *Effect, a: std.mem.Allocator) void {
         switch (self.*) {
@@ -111,9 +120,36 @@ pub const Effect = union(enum) {
                 a.free(n.text);
             },
             .theme => |t| a.free(t.name),
+            .layout => |l| switch (l) {
+                .tab_new => |cwd| if (cwd) |d| a.free(d),
+                .tab_rename => |r| a.free(r.name),
+                else => {},
+            },
             else => {},
         }
     }
+};
+
+/// A tab / pane change a plugin asked for (ids from dt.tabs.list()).
+pub const LayoutOp = union(enum) {
+    /// Optional working directory (owned).
+    tab_new: ?[]u8,
+    tab_focus: u32,
+    tab_close: u32,
+    tab_rename: struct { id: u32, name: []u8 },
+    /// Split the focused pane.
+    pane_split: enum { right, down },
+    pane_focus: u32,
+    pane_close: u32,
+};
+
+/// Snapshot of one tab for dt.tabs.list() (kept current by the app).
+pub const TabInfo = struct {
+    id: u32,
+    title: []const u8,
+    active: bool,
+    panes: []const u32,
+    focused_pane: u32,
 };
 
 pub const Segment = struct {
@@ -269,6 +305,12 @@ pub const Info = struct {
     title: std.ArrayListUnmanaged(u8) = .{},
     ssh: std.ArrayListUnmanaged(u8) = .{},
     theme: std.ArrayListUnmanaged(u8) = .{},
+    /// Focused tab / pane ids.
+    tab: u32 = 1,
+    pane: u32 = 1,
+    /// Tabs, left to right (strings in `tabs_arena`).
+    tabs: []const TabInfo = &.{},
+    tabs_arena: ?std.heap.ArenaAllocator = null,
 };
 
 pub const SuggestionResult = union(enum) { keep, drop, replace: []u8 };
@@ -354,6 +396,7 @@ pub const Host = struct {
         self.info.title.deinit(a);
         self.info.ssh.deinit(a);
         self.info.theme.deinit(a);
+        if (self.info.tabs_arena) |*ar| ar.deinit();
         self.queue.release();
         if (self.log_file) |f| f.close();
         self.arena.deinit();
@@ -904,6 +947,45 @@ pub const Host = struct {
         list.appendSlice(self.a, s[0..@min(s.len, 4096)]) catch {};
     }
 
+    /// Replace the tab snapshot (copied).
+    pub fn setTabs(self: *Host, tabs: []const TabInfo, tab: u32, pane: u32) void {
+        self.info.tab = tab;
+        self.info.pane = pane;
+        var ar = std.heap.ArenaAllocator.init(self.a);
+        const copy = blk: {
+            const al = ar.allocator();
+            const out = al.alloc(TabInfo, tabs.len) catch break :blk null;
+            for (tabs, out) |t, *o| {
+                o.* = t;
+                o.title = al.dupe(u8, t.title[0..@min(t.title.len, 256)]) catch break :blk null;
+                o.panes = al.dupe(u32, t.panes) catch break :blk null;
+            }
+            break :blk out;
+        };
+        if (copy == null) {
+            ar.deinit();
+            return;
+        }
+        if (self.info.tabs_arena) |*old| old.deinit();
+        self.info.tabs_arena = ar;
+        self.info.tabs = copy.?;
+    }
+
+    /// Emit a tab / pane event ({ tab = .., pane = .. }).
+    pub fn emitLayout(self: *Host, ev: Event, tab: u32, pane: ?u32) void {
+        if (!self.wants(ev)) return;
+        const S = struct {
+            threadlocal var buf: [2]value.Entry = undefined;
+        };
+        S.buf[0] = .{ .key = "tab", .value = .{ .integer = tab } };
+        var n: usize = 1;
+        if (pane) |pn| {
+            S.buf[1] = .{ .key = "pane", .value = .{ .integer = pn } };
+            n = 2;
+        }
+        self.emit(ev, .{ .map = S.buf[0..n] });
+    }
+
     // ------------------------------------------------------------ effects
 
     fn effect(self: *Host, e: Effect) void {
@@ -1084,6 +1166,9 @@ const api_fns = .{
     .{ "theme_current", apiThemeCurrent },
     .{ "action", apiAction },
     .{ "term", apiTerm },
+    .{ "tabs_list", apiTabsList },
+    .{ "tab", apiTab },
+    .{ "pane", apiPane },
     .{ "screen_text", apiScreenText },
     .{ "screen_cursor", apiScreenCursor },
     .{ "pty_write", apiPtyWrite },
@@ -1576,6 +1661,14 @@ pub const plugin_actions = [_]events.Action{
     .scroll_top,      .scroll_bottom,     .zoom_in,          .zoom_out,       .zoom_reset,
     .select_all,      .clear_selection,   .reload_config,    .ai_explain,     .ssh_palette,
     .command_palette, .toggle_status_bar,
+    // Tabs and panes.
+    .new_tab,          .close_tab,      .next_tab,
+    .prev_tab,        .move_tab_left,     .move_tab_right,   .toggle_tab_bar, .goto_tab_1,
+    .goto_tab_2,      .goto_tab_3,        .goto_tab_4,       .goto_tab_5,     .goto_tab_6,
+    .goto_tab_7,      .goto_tab_8,        .goto_tab_9,       .split_right,    .split_down,
+    .close_pane,      .focus_left,        .focus_right,      .focus_up,       .focus_down,
+    .next_pane,       .prev_pane,         .resize_left,      .resize_right,   .resize_up,
+    .resize_down,     .zoom_pane,         .equalize_panes,
 };
 
 fn apiAction(p: *Plugin, L: *State) error{LuaMsg}!c_int {
@@ -1593,6 +1686,93 @@ fn apiAction(p: *Plugin, L: *State) error{LuaMsg}!c_int {
     return 0;
 }
 
+fn apiTabsList(p: *Plugin, L: *State) error{LuaMsg}!c_int {
+    const info = &p.host.info;
+    c.lua_createtable(L, @intCast(info.tabs.len), 0);
+    for (info.tabs, 1..) |t, i| {
+        c.lua_createtable(L, 0, 5);
+        c.lua_pushinteger(L, t.id);
+        c.lua_setfield(L, -2, "id");
+        setStr(L, "title", t.title);
+        c.lua_pushboolean(L, @intFromBool(t.active));
+        c.lua_setfield(L, -2, "active");
+        c.lua_pushinteger(L, t.focused_pane);
+        c.lua_setfield(L, -2, "focused_pane");
+        c.lua_createtable(L, @intCast(t.panes.len), 0);
+        for (t.panes, 1..) |pn, j| {
+            c.lua_pushinteger(L, pn);
+            c.lua_rawseti(L, -2, @intCast(j));
+        }
+        c.lua_setfield(L, -2, "panes");
+        c.lua_rawseti(L, -2, @intCast(i));
+    }
+    return 1;
+}
+
+fn tabExists(p: *Plugin, id: u32) bool {
+    for (p.host.info.tabs) |t| if (t.id == id) return true;
+    return false;
+}
+
+fn paneExists(p: *Plugin, id: u32) bool {
+    for (p.host.info.tabs) |t| for (t.panes) |pn| if (pn == id) return true;
+    return false;
+}
+
+/// api.tab(op, id, arg): op = "new" | "focus" | "close" | "rename".
+/// Returns false for an unknown id.
+fn apiTab(p: *Plugin, L: *State) error{LuaMsg}!c_int {
+    const op = try argStr(p, L, 1, "dt.tabs", "op");
+    const a = p.host.a;
+    if (std.mem.eql(u8, op, "new")) {
+        const cwd = try optStr(p, L, 2, "dt.tabs.new", "cwd");
+        const owned: ?[]u8 = if (cwd) |d| (a.dupe(u8, d[0..@min(d.len, 4096)]) catch return p.raise("out of memory", .{})) else null;
+        p.host.effect(.{ .layout = .{ .tab_new = owned } });
+        c.lua_pushboolean(L, 1);
+        return 1;
+    }
+    const id: u32 = @intCast(try argInt(p, L, 2, "dt.tabs", "id", 0, std.math.maxInt(u32)));
+    if (!tabExists(p, id)) {
+        c.lua_pushboolean(L, 0);
+        return 1;
+    }
+    if (std.mem.eql(u8, op, "focus")) {
+        p.host.effect(.{ .layout = .{ .tab_focus = id } });
+    } else if (std.mem.eql(u8, op, "close")) {
+        p.host.effect(.{ .layout = .{ .tab_close = id } });
+    } else if (std.mem.eql(u8, op, "rename")) {
+        const name = try argStr(p, L, 3, "dt.tabs.rename", "name");
+        const owned = a.dupe(u8, name[0..@min(name.len, 128)]) catch return p.raise("out of memory", .{});
+        p.host.effect(.{ .layout = .{ .tab_rename = .{ .id = id, .name = owned } } });
+    } else return p.raise("dt.tabs: unknown operation '{s}'", .{op[0..@min(op.len, 32)]});
+    c.lua_pushboolean(L, 1);
+    return 1;
+}
+
+/// api.pane(op, arg): op = "split" (arg "right"/"down") | "focus" | "close".
+fn apiPane(p: *Plugin, L: *State) error{LuaMsg}!c_int {
+    const op = try argStr(p, L, 1, "dt.panes", "op");
+    if (std.mem.eql(u8, op, "split")) {
+        const dir = (try optStr(p, L, 2, "dt.panes.split", "direction")) orelse "right";
+        const d: @TypeOf(@as(LayoutOp, undefined).pane_split) = if (std.mem.eql(u8, dir, "right")) .right else if (std.mem.eql(u8, dir, "down")) .down else return p.raise("dt.panes.split: direction must be \"right\" or \"down\"", .{});
+        p.host.effect(.{ .layout = .{ .pane_split = d } });
+        c.lua_pushboolean(L, 1);
+        return 1;
+    }
+    const id: u32 = @intCast(try argInt(p, L, 2, "dt.panes", "id", 0, std.math.maxInt(u32)));
+    if (!paneExists(p, id)) {
+        c.lua_pushboolean(L, 0);
+        return 1;
+    }
+    if (std.mem.eql(u8, op, "focus")) {
+        p.host.effect(.{ .layout = .{ .pane_focus = id } });
+    } else if (std.mem.eql(u8, op, "close")) {
+        p.host.effect(.{ .layout = .{ .pane_close = id } });
+    } else return p.raise("dt.panes: unknown operation '{s}'", .{op[0..@min(op.len, 32)]});
+    c.lua_pushboolean(L, 1);
+    return 1;
+}
+
 fn apiTerm(p: *Plugin, L: *State) error{LuaMsg}!c_int {
     const k = try argStr(p, L, 1, "dt.term", "key");
     const info = &p.host.info;
@@ -1608,6 +1788,10 @@ fn apiTerm(p: *Plugin, L: *State) error{LuaMsg}!c_int {
         c.lua_pushinteger(L, info.cols);
     } else if (std.mem.eql(u8, k, "focused")) {
         c.lua_pushboolean(L, @intFromBool(info.focused));
+    } else if (std.mem.eql(u8, k, "tab")) {
+        c.lua_pushinteger(L, info.tab);
+    } else if (std.mem.eql(u8, k, "pane")) {
+        c.lua_pushinteger(L, info.pane);
     } else c.lua_pushnil(L);
     return 1;
 }

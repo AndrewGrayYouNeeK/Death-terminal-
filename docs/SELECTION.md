@@ -14,6 +14,7 @@
 | Middle-click | Paste PRIMARY |
 | Ctrl+click | Open the URL or OSC 8 hyperlink under the pointer |
 | Wheel | Scroll history on the normal screen (`scroll_lines` per notch); arrow keys / mouse reports in the alternate screen |
+| Click in another pane | Focus it (the click goes on to the pane); see [TABS.md](TABS.md) for the tab bar and dividers |
 
 If the application turned on mouse reporting (htop, vim `mouse=a`, tmux),
 clicks go to the application. Hold **Shift** to select anyway.
@@ -49,6 +50,16 @@ CLIPBOARD.
 | Ctrl+Shift+S | `ssh_palette`: SSH forwards and profiles (see [SSH.md](SSH.md)) |
 | Ctrl+Shift+P | `command_palette`: built-in actions and plugin commands (see [PLUGINS.md](PLUGINS.md)) |
 | Ctrl+Shift+B | `toggle_status_bar` |
+| Ctrl+Shift+T / Ctrl+Shift+Alt+W | `new_tab` / `close_tab` (see [TABS.md](TABS.md)) |
+| Ctrl+PgDn / Ctrl+PgUp (Ctrl+Tab / Ctrl+Shift+Tab) | `next_tab` / `prev_tab` |
+| Ctrl+Shift+PgUp / PgDn | `move_tab_left` / `move_tab_right` |
+| Alt+1 … Alt+9 | `goto_tab_1` … `goto_tab_9` |
+| Ctrl+Shift+Alt+R | `rename_tab` |
+| Ctrl+Shift+E / Ctrl+Shift+O | `split_right` / `split_down` |
+| Ctrl+Shift+W | `close_pane` |
+| Alt+arrows | `focus_left` / `focus_right` / `focus_up` / `focus_down` |
+| Alt+Shift+arrows | `resize_left` / `resize_right` / `resize_up` / `resize_down` |
+| Ctrl+Shift+Z / Ctrl+Shift+Alt+E | `zoom_pane` / `equalize_panes` |
 
 Scroll bindings act on the normal screen only; in the alternate screen
 (less, vim) the key is passed through to the application, e.g. Shift+PgUp sends
