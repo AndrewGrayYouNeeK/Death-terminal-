@@ -15,7 +15,7 @@ const std = @import("std");
 const posix = std.posix;
 
 pub fn dirPath(buf: []u8) ![]const u8 {
-    if (posix.getenv("XDG_RUNTIME_DIR")) |rt| if (rt.len > 0) {
+    if (@import("../platform/env.zig").get("XDG_RUNTIME_DIR")) |rt| if (rt.len > 0) {
         return std.fmt.bufPrint(buf, "{s}/deathterminal", .{rt});
     };
     return std.fmt.bufPrint(buf, "/tmp/deathterminal-{d}", .{std.os.linux.getuid()});

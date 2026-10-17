@@ -9,6 +9,7 @@ const unicode = @import("unicode.zig");
 const color = @import("color.zig");
 const scrollback_mod = @import("scrollback.zig");
 const pty_mod = @import("pty.zig");
+const io = @import("../platform/io.zig");
 pub const shell_integration = @import("shell_integration.zig");
 
 pub const PTY = pty_mod.PTY;
@@ -156,6 +157,10 @@ pub const Modes = struct {
     /// DECSCNM
     reverse_video: bool = false,
     cursor_blink: bool = false,
+    /// DECCOLM state (?3): 132-column mode.
+    col132: bool = false,
+    /// ?40: DECCOLM allowed (reset to `Terminal.allow_column_switch`).
+    allow_deccolm: bool = true,
 };
 
 pub const ClipboardTargets = packed struct {
@@ -253,6 +258,13 @@ pub const Terminal = struct {
     cursor_shape: CursorShape = .block,
     /// Shape for DECSCUSR 0 and RIS (config.lua `cursor.shape`).
     default_cursor_shape: CursorShape = .block,
+    /// Config `window.allow_column_switch`: whether DECCOLM (?3) is
+    /// honoured; also the value ?40 returns to on RIS.
+    allow_column_switch: bool = true,
+    /// Whether DECCOLM resizes this grid. Headless terminals (whose size is
+    /// virtual) do; GUI panes follow the window layout, so there DECCOLM
+    /// only has its side effects (clear, home, reset margins).
+    deccolm_resizes: bool = true,
     bell: bool = false,
     /// Bumped on every BEL (the front end diffs it).
     bell_count: u32 = 0,
@@ -368,8 +380,8 @@ pub const Terminal = struct {
         self.initialized = false;
     }
 
-    pub fn getPtyFd(self: *const Terminal) ?posix.fd_t {
-        if (self.pty) |pty| return pty.master_fd;
+    pub fn getPtyFd(self: *const Terminal) ?io.Fd {
+        if (self.pty) |pty| return pty.fd();
         return null;
     }
 
@@ -383,8 +395,8 @@ pub const Terminal = struct {
             while (off < data.len) {
                 const n = pty.write(data[off..]) catch |err| switch (err) {
                     error.WouldBlock => {
-                        var fds = [_]posix.pollfd{.{ .fd = pty.master_fd, .events = posix.POLL.OUT, .revents = 0 }};
-                        _ = posix.poll(&fds, 100) catch {};
+                        var fds = [_]io.PollFd{io.pollFd(pty.fd(), io.POLL.OUT)};
+                        _ = io.poll(&fds, 100);
                         continue;
                     },
                     else => return err,
@@ -1116,7 +1128,7 @@ pub const Terminal = struct {
     pub fn fullReset(self: *Terminal) void {
         self.leaveAlt(true);
         self.softReset();
-        self.modes = .{};
+        self.modes = .{ .allow_deccolm = self.allow_column_switch };
         self.cursor_shape = self.default_cursor_shape;
         resetTabs(self.tabs);
         @memset(self.primary, Cell.init());
@@ -1525,15 +1537,9 @@ pub const Terminal = struct {
     fn setPrivateMode(self: *Terminal, mode: u32, on: bool) void {
         switch (mode) {
             1 => self.modes.app_cursor = on,
-            // DECCOLM: the grid size follows the window, so 80/132 switching
-            // is not honoured, but the side effects apps rely on are (reset
-            // margins, clear the screen, home the cursor), like Alacritty.
-            3 => {
-                self.scroll_top = 0;
-                self.scroll_bottom = self.rows - 1;
-                @memset(self.buffer, self.eraseCell());
-                self.setCursorPos(1, 1);
-            },
+            // DECCOLM: 80/132 columns when allowed (config + ?40), like
+            // xterm; ignored entirely otherwise.
+            3 => self.setColumnMode(on),
             5 => self.modes.reverse_video = on,
             6 => {
                 self.modes.origin = on;
@@ -1546,6 +1552,7 @@ pub const Terminal = struct {
             9 => self.modes.mouse = if (on) .x10 else .off,
             12 => self.modes.cursor_blink = on,
             25 => self.cursor_visible = on,
+            40 => self.modes.allow_deccolm = on and self.allow_column_switch,
             47 => if (on) self.enterAlt(false) else self.leaveAlt(false),
             1047 => if (on) self.enterAlt(false) else self.leaveAlt(true),
             1048 => if (on) self.saveCursor() else self.restoreCursor(),
@@ -1568,10 +1575,25 @@ pub const Terminal = struct {
         }
     }
 
+    /// DECCOLM. The width changes (if this grid may resize) and, as on a
+    /// VT100, the screen is cleared, the cursor homed and the margins reset.
+    fn setColumnMode(self: *Terminal, on: bool) void {
+        if (!self.modes.allow_deccolm) return;
+        self.modes.col132 = on;
+        const want: u16 = if (on) 132 else 80;
+        if (self.deccolm_resizes and self.cols != want) self.resize(self.rows, want) catch {};
+        self.scroll_top = 0;
+        self.scroll_bottom = self.rows - 1;
+        @memset(self.buffer, self.eraseCell());
+        self.setCursorPos(1, 1);
+    }
+
     fn privateModeState(self: *const Terminal, mode: u32) u8 {
         const m = self.modes;
         const v: ?bool = switch (mode) {
             1 => m.app_cursor,
+            3 => m.col132,
+            40 => m.allow_deccolm,
             5 => m.reverse_video,
             6 => m.origin,
             7 => m.autowrap,

@@ -6,6 +6,7 @@
 //! value never needs a matching free and `deinit` releases everything.
 
 const std = @import("std");
+const env_mod = @import("../platform/env.zig");
 const builtin = @import("builtin");
 const color = @import("../terminal/color.zig");
 pub const themes = @import("themes.zig");
@@ -191,6 +192,8 @@ pub const Config = struct {
     cursor_shape: CursorShape = .block,
     /// Mouse selections also go to CLIPBOARD (PRIMARY is always set).
     copy_on_select: bool = false,
+    /// Honour DECCOLM (80/132 column switching, CSI ?3 h/l).
+    allow_column_switch: bool = true,
     /// Confirm multi-line pastes when the app hasn't enabled bracketed paste.
     paste_confirm: bool = true,
     /// OSC 52 clipboard access for programs: off | write | read-write.
@@ -202,7 +205,12 @@ pub const Config = struct {
     /// Extra characters treated as part of a word on double-click.
     word_chars: []const u8 = "-_./~:@%+#?&=",
     /// Program that opens Ctrl+clicked links (receives the URL as its only argument).
-    url_open_command: []const u8 = if (builtin.os.tag == .macos) "open" else "xdg-open",
+    url_open_command: []const u8 = switch (builtin.os.tag) {
+        .macos => "open",
+        // "" = the default handler (ShellExecute).
+        .windows => "",
+        else => "xdg-open",
+    },
     /// Swapchain present mode: fifo (vsync) | mailbox | immediate |
     /// fifo_relaxed. Falls back to what the surface supports.
     present_mode: []const u8 = "fifo",
@@ -224,7 +232,7 @@ pub const Config = struct {
     /// Starting directory ("" = inherit; "~" is expanded).
     shell_cwd: []const u8 = "",
 
-    pub const Backend = enum { auto, x11, wayland, win32 };
+    pub const Backend = enum { auto, x11, wayland, win32, cocoa };
 
     pub fn init(allocator: std.mem.Allocator) Config {
         const arena = allocator.create(std.heap.ArenaAllocator) catch @panic("config: out of memory");
@@ -297,7 +305,9 @@ pub const Config = struct {
 
     /// Selection / clipboard / scrollback / keybinding keys.
     fn applyUiKey(self: *Config, key: []const u8, value: []const u8) !bool {
-        if (std.mem.eql(u8, key, "copy_on_select")) {
+        if (std.mem.eql(u8, key, "allow_column_switch")) {
+            self.allow_column_switch = parseBool(value);
+        } else if (std.mem.eql(u8, key, "copy_on_select")) {
             self.copy_on_select = parseBool(value);
         } else if (std.mem.eql(u8, key, "paste_confirm")) {
             self.paste_confirm = parseBool(value);
@@ -508,6 +518,7 @@ pub const Config = struct {
         if (std.mem.eql(u8, name, "x11")) return .x11;
         if (std.mem.eql(u8, name, "wayland")) return .wayland;
         if (std.mem.eql(u8, name, "win32")) return .win32;
+        if (std.mem.eql(u8, name, "cocoa")) return .cocoa;
         return error.UnknownBackend;
     }
 
@@ -537,8 +548,11 @@ pub fn locate(buf: []u8, explicit: ?[]const u8) ?Source {
         @memcpy(buf[0..p.len], p);
         return Source.fromPath(buf[0..p.len]);
     }
-    const env = std.posix.getenv;
+    const env = env_mod.get;
     const rel = "death-terminal/config.lua";
+    if (builtin.os.tag == .windows) if (env("APPDATA")) |x| {
+        if (exists(buf, "{s}\\death-terminal\\config.lua", .{x})) |p| return .{ .path = p, .kind = .lua };
+    };
     if (env("XDG_CONFIG_HOME")) |x| if (x.len > 0) {
         if (exists(buf, "{s}/{s}", .{ x, rel })) |p| return .{ .path = p, .kind = .lua };
     };
@@ -558,7 +572,10 @@ pub fn locate(buf: []u8, explicit: ?[]const u8) ?Source {
 
 /// Where a new config.lua would go (for messages and the file watcher).
 pub fn userConfigPath(buf: []u8) ?[]const u8 {
-    const env = std.posix.getenv;
+    const env = env_mod.get;
+    if (builtin.os.tag == .windows) if (env("APPDATA")) |x| {
+        return std.fmt.bufPrint(buf, "{s}\\death-terminal\\config.lua", .{x}) catch null;
+    };
     if (env("XDG_CONFIG_HOME")) |x| if (x.len > 0) {
         return std.fmt.bufPrint(buf, "{s}/death-terminal/config.lua", .{x}) catch null;
     };

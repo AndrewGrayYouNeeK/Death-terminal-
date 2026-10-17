@@ -1,0 +1,39 @@
+# Maintainer: Andrew Gray <AndrewGrayYouNeeK@users.noreply.github.com>
+# AUR package skeleton: builds DeathTerminal from the release source tarball.
+# Update pkgver and sha256sums (`updpkgsums`) for each release.
+pkgname=deathterminal
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Brutalist GPU terminal emulator with AI suggestions, built-in SSH and Lua plugins"
+arch=('x86_64' 'aarch64')
+url="https://github.com/AndrewGrayYouNeeK/Death-terminal-"
+license=('Unlicense')
+depends=('libx11' 'wayland' 'libxkbcommon' 'freetype2' 'harfbuzz' 'fontconfig' 'openssl')
+optdepends=('vulkan-icd-loader: GPU rendering (software fallback otherwise)'
+            'vulkan-driver: GPU rendering')
+makedepends=('zig>=0.13.0' 'zig<0.14.0' 'vulkan-headers' 'wayland-protocols' 'python')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "Death-terminal--$pkgver"
+  zig build -Doptimize=ReleaseFast -Dversion="$pkgver" --summary none
+}
+
+check() {
+  cd "Death-terminal--$pkgver"
+  zig build test --summary none
+}
+
+package() {
+  cd "Death-terminal--$pkgver"
+  install -Dm755 zig-out/bin/deathterminal "$pkgdir/usr/bin/deathterminal"
+  install -Dm644 packaging/linux/deathterminal.desktop "$pkgdir/usr/share/applications/deathterminal.desktop"
+  install -Dm644 packaging/linux/deathterminal.1 "$pkgdir/usr/share/man/man1/deathterminal.1"
+  install -Dm644 packaging/icons/deathterminal.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/deathterminal.svg"
+  for s in 16 32 48 64 128 256 512; do
+    install -Dm644 "packaging/icons/png/deathterminal-$s.png" "$pkgdir/usr/share/icons/hicolor/${s}x${s}/apps/deathterminal.png"
+  done
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md CHANGELOG.md config.example.lua -t "$pkgdir/usr/share/doc/$pkgname/"
+}

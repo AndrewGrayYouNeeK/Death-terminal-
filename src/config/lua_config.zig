@@ -6,6 +6,7 @@
 //! mistakes become diagnostics with file:line instead of aborting.
 
 const std = @import("std");
+const env_mod = @import("../platform/env.zig");
 const builtin = @import("builtin");
 const lua = @import("../scripting/lua.zig");
 const c = lua.c;
@@ -97,7 +98,7 @@ fn colorRef(comptime name: []const u8) RefFn {
 
 const present_modes = [_][]const u8{ "fifo", "fifo_relaxed", "mailbox", "immediate" };
 const osc52_modes = [_][]const u8{ "off", "write", "read-write" };
-const backends = [_][]const u8{ "auto", "x11", "wayland", "win32" };
+const backends = [_][]const u8{ "auto", "x11", "wayland", "win32", "cocoa" };
 const cursor_shapes = [_][]const u8{ "block", "underline", "bar" };
 const tab_bar_modes = [_][]const u8{ "auto", "top", "bottom", "hidden" };
 
@@ -110,6 +111,7 @@ pub const schema = [_]Field{
     .{ .path = "window.scale", .kind = .number, .min = 0, .max = 4, .ref = ref(.f32, "scale"), .restart = true },
     .{ .path = "window.backend", .kind = .choice, .choices = &backends, .ref = ref(.backend, "backend"), .restart = true },
     .{ .path = "window.headless", .kind = .boolean, .ref = ref(.boolean, "headless"), .restart = true },
+    .{ .path = "window.allow_column_switch", .kind = .boolean, .ref = ref(.boolean, "allow_column_switch") },
 
     .{ .path = "font", .kind = .section },
     .{ .path = "font.family", .kind = .string, .ref = ref(.string, "font_family") },
@@ -217,7 +219,7 @@ pub fn loadFile(cfg: *Config, path: []const u8, opts: cfg_mod.LoadOptions, diags
 
 /// Path with $HOME shown as "~" (what error messages print).
 pub fn displayName(buf: []u8, path: []const u8) []const u8 {
-    if (std.posix.getenv("HOME")) |home| {
+    if (env_mod.get("HOME")) |home| {
         if (home.len > 1 and std.mem.startsWith(u8, path, home) and path.len > home.len and path[home.len] == '/') {
             return std.fmt.bufPrint(buf, "~{s}", .{path[home.len..]}) catch path;
         }

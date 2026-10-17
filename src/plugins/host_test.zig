@@ -1,6 +1,7 @@
 //! Plugin host tests: sandbox, permissions, hook dispatch, error isolation.
 
 const std = @import("std");
+const io = @import("../platform/io.zig");
 const t = std.testing;
 const host_mod = @import("host.zig");
 const Host = host_mod.Host;
@@ -490,8 +491,8 @@ test "async: exec results arrive through the wake fd" {
     try t.expectEqual(host_mod.Status.running, f.plugin(0).status);
     const deadline = std.time.milliTimestamp() + 5000;
     while (h.segments.items.len == 0 and std.time.milliTimestamp() < deadline) {
-        var pfd = [1]std.posix.pollfd{.{ .fd = h.wakeFd(), .events = std.posix.POLL.IN, .revents = 0 }};
-        _ = try std.posix.poll(&pfd, 100);
+        var pfd = [1]io.PollFd{io.pollFd(h.wakeFd(), io.POLL.IN)};
+        _ = io.poll(&pfd, 100);
         h.tick(std.time.milliTimestamp());
     }
     try t.expectEqualStrings("false|4|out ", h.segments.items[0].text);
@@ -564,8 +565,8 @@ test "examples: the bundled plugins load and do their job" {
     const deadline = std.time.milliTimestamp() + 5000;
     var seg: ?[]const u8 = null;
     while (std.time.milliTimestamp() < deadline and seg == null) {
-        var fds = [_]std.posix.pollfd{.{ .fd = f.host.wakeFd(), .events = std.posix.POLL.IN, .revents = 0 }};
-        _ = try std.posix.poll(&fds, 100);
+        var fds = [_]io.PollFd{io.pollFd(f.host.wakeFd(), io.POLL.IN)};
+        _ = io.poll(&fds, 100);
         f.host.pollJobs();
         for (f.host.segments.items) |s| if (std.mem.eql(u8, s.id, "branch")) {
             seg = s.text;

@@ -18,7 +18,20 @@ pub const EnumerateDeviceExtensionPropertiesFn = *const fn (vk.VkPhysicalDevice,
 fn libNames() []const []const u8 {
     return switch (builtin.os.tag) {
         .windows => &[_][]const u8{"vulkan-1.dll"},
-        .macos, .ios => &[_][]const u8{ "libvulkan.1.dylib", "libvulkan.dylib" },
+        // The Vulkan loader (with MoltenVK as its driver), else MoltenVK
+        // itself: next to the binary, in the .app's Frameworks, then the
+        // usual install places (Homebrew, the LunarG SDK).
+        .macos, .ios => &[_][]const u8{
+            "libvulkan.1.dylib",
+            "@executable_path/libvulkan.1.dylib",
+            "@executable_path/../Frameworks/libvulkan.1.dylib",
+            "@executable_path/../Frameworks/libMoltenVK.dylib",
+            "/opt/homebrew/lib/libvulkan.1.dylib",
+            "/usr/local/lib/libvulkan.1.dylib",
+            "libMoltenVK.dylib",
+            "/opt/homebrew/lib/libMoltenVK.dylib",
+            "/usr/local/lib/libMoltenVK.dylib",
+        },
         else => &[_][]const u8{ "libvulkan.so.1", "libvulkan.so" },
     };
 }

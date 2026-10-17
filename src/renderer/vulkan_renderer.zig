@@ -153,7 +153,7 @@ pub const VulkanRenderer = struct {
         create_info.sType = vk.VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
         create_info.pApplicationInfo = &app_info;
 
-        var ext_names: [4][*:0]const u8 = undefined;
+        var ext_names: [8][*:0]const u8 = undefined;
         var ext_count: u32 = 0;
         if (self.hasInstanceExtension("VK_KHR_surface")) {
             ext_names[ext_count] = "VK_KHR_surface";
@@ -170,6 +170,17 @@ pub const VulkanRenderer = struct {
         if (self.hasInstanceExtension("VK_KHR_win32_surface")) {
             ext_names[ext_count] = "VK_KHR_win32_surface";
             ext_count += 1;
+        }
+        if (self.hasInstanceExtension("VK_EXT_metal_surface")) {
+            ext_names[ext_count] = "VK_EXT_metal_surface";
+            ext_count += 1;
+        }
+        // MoltenVK behind the Vulkan loader is a "portability" driver and
+        // is only enumerated when asked for.
+        if (self.hasInstanceExtension("VK_KHR_portability_enumeration")) {
+            ext_names[ext_count] = "VK_KHR_portability_enumeration";
+            ext_count += 1;
+            create_info.flags |= 0x00000001; // VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR
         }
         if (ext_count > 0) {
             create_info.enabledExtensionCount = ext_count;
@@ -290,11 +301,21 @@ pub const VulkanRenderer = struct {
         create_info.pQueueCreateInfos = &queue_info;
         create_info.pEnabledFeatures = &features;
 
-        const swapchain_ext: [*:0]const u8 = "VK_KHR_swapchain";
+        var dev_exts: [2][*:0]const u8 = undefined;
+        var dev_ext_count: u32 = 0;
         if (self.hasDeviceExtension("VK_KHR_swapchain")) {
-            create_info.enabledExtensionCount = 1;
-            create_info.ppEnabledExtensionNames = @ptrCast(&swapchain_ext);
+            dev_exts[dev_ext_count] = "VK_KHR_swapchain";
+            dev_ext_count += 1;
             std.debug.print("    → Device extension VK_KHR_swapchain enabled\n", .{});
+        }
+        // Must be enabled when the device offers it (MoltenVK).
+        if (self.hasDeviceExtension("VK_KHR_portability_subset")) {
+            dev_exts[dev_ext_count] = "VK_KHR_portability_subset";
+            dev_ext_count += 1;
+        }
+        if (dev_ext_count > 0) {
+            create_info.enabledExtensionCount = dev_ext_count;
+            create_info.ppEnabledExtensionNames = @ptrCast(&dev_exts);
         }
 
         var device: vk.VkDevice = null;
@@ -371,6 +392,16 @@ pub const VulkanRenderer = struct {
         const h = self.presentHandles() orelse return false;
         self.gpu.attachWin32(h, hinstance, hwnd, width, height) catch |err| {
             std.debug.print("    → Vulkan Win32 present not available ({s}); using GDI blit\n", .{@errorName(err)});
+            return false;
+        };
+        return self.finishTextPipeline();
+    }
+
+    pub fn attachMetal(self: *VulkanRenderer, layer: ?*anyopaque, width: u32, height: u32) bool {
+        if (!self.has_device or self.loader == null) return false;
+        const h = self.presentHandles() orelse return false;
+        self.gpu.attachMetal(h, layer, width, height) catch |err| {
+            std.debug.print("    → Vulkan Metal present not available ({s}); using CoreGraphics blit\n", .{@errorName(err)});
             return false;
         };
         return self.finishTextPipeline();

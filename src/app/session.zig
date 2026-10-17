@@ -3,7 +3,10 @@
 //! renderer draws from them (tab bar, dividers, dimming, status row).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = std.posix;
+const io = @import("../platform/io.zig");
+const procinfo = @import("../platform/procinfo.zig");
 const terminal = @import("../terminal/terminal.zig");
 const input = @import("../terminal/input.zig");
 const color = @import("../terminal/color.zig");
@@ -90,7 +93,10 @@ pub const Pane = struct {
         a.free(self.ssh_display);
         var pid: ?posix.pid_t = null;
         if (self.owned) {
-            if (self.term.pty) |p| pid = p.child_pid;
+            // Windows: the process handle is closed with the pty, nothing to reap.
+            if (builtin.os.tag != .windows) if (self.term.pty) |p| {
+                pid = p.child_pid;
+            };
             self.term.deinit();
             a.destroy(self.term);
         }
@@ -98,8 +104,8 @@ pub const Pane = struct {
         return pid;
     }
 
-    pub fn ptyFd(self: *const Pane) posix.fd_t {
-        return self.term.getPtyFd() orelse -1;
+    pub fn ptyFd(self: *const Pane) io.Fd {
+        return self.term.getPtyFd() orelse io.none;
     }
 
     /// Name of the program in the foreground of the pane's terminal when
@@ -107,16 +113,9 @@ pub const Pane = struct {
     pub fn runningProgram(self: *const Pane, buf: []u8) ?[]const u8 {
         const p = self.term.pty orelse return null;
         const child = p.child_pid orelse return null;
+        if (builtin.os.tag == .windows) return procinfo.childProgram(child, buf);
         const fd = self.term.getPtyFd() orelse return null;
-        const pgrp = tcgetpgrp(fd) orelse return null;
-        if (pgrp == child or pgrp <= 0) return null;
-        var pb: [64]u8 = undefined;
-        const path = std.fmt.bufPrint(&pb, "/proc/{d}/comm", .{pgrp}) catch return "a program";
-        const f = std.fs.openFileAbsolute(path, .{}) catch return "a program";
-        defer f.close();
-        const n = f.read(buf) catch return "a program";
-        const name = std.mem.trimRight(u8, buf[0..n], "\n");
-        return if (name.len == 0) "a program" else name;
+        return procinfo.foregroundProgram(fd, child, buf);
     }
 
     /// Exit code of the last finished command (OSC 133 D), if any.
@@ -131,12 +130,6 @@ pub const Pane = struct {
     }
 };
 
-fn tcgetpgrp(fd: posix.fd_t) ?posix.pid_t {
-    var pgrp: posix.pid_t = 0;
-    const rc = std.os.linux.ioctl(fd, std.os.linux.T.IOCGPGRP, @intFromPtr(&pgrp));
-    if (std.os.linux.E.init(rc) != .SUCCESS) return null;
-    return pgrp;
-}
 
 pub const BarMode = enum {
     auto,
@@ -338,6 +331,7 @@ pub const Workspace = struct {
 
     /// Collect exited children of closed panes.
     pub fn reap(self: *Workspace) void {
+        if (builtin.os.tag == .windows) return;
         var i: usize = 0;
         while (i < self.zombies.items.len) {
             const r = posix.waitpid(self.zombies.items[i], posix.W.NOHANG);

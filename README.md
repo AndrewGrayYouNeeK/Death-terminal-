@@ -99,12 +99,19 @@ zig build test                # unit tests
 
 ### Requirements
 
-- Zig 0.13.x
-- Vulkan loader + headers (`libvulkan-dev`; `mesa-vulkan-drivers` for a software GPU)
-- Linux: `libx11-dev`, `libwayland-dev`, `wayland-protocols`, `libxkbcommon-dev`, `libfreetype-dev`, `libharfbuzz-dev`, `libfontconfig-dev`
+- Zig 0.13.x (Vulkan headers are vendored; the loader is loaded at run time)
+- Linux: `libx11-dev`, `libwayland-dev`, `wayland-protocols`, `libxkbcommon-dev`, `libfreetype-dev`, `libharfbuzz-dev`, `libfontconfig-dev`, `libssl-dev`; a Vulkan loader + driver (`libvulkan1`, `mesa-vulkan-drivers`) at run time, or the software renderer is used
+- Windows / macOS: nothing extra to build. `zig build -Dtarget=x86_64-windows` / `-Dtarget=aarch64-macos` cross-compiles from Linux; FreeType and HarfBuzz are fetched and built from source. See [docs/PLATFORMS.md](docs/PLATFORMS.md)
 - Optional fallback fonts: `fonts-noto-cjk`, `fonts-noto-color-emoji`
 
 See [QUICKSTART.md](QUICKSTART.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for details.
+
+### Install (0.1.0)
+
+`zig build release` writes versioned archives to `zig-out/release/`. On Linux,
+`zig build release -Dpackages=true` also builds the AppImage, `.deb` and `.rpm`.
+Package skeletons for AUR, winget/MSI and Homebrew (cask and formula) are in
+[packaging/](packaging/README.md).
 
 ## 🧪 Current Status
 
@@ -117,15 +124,16 @@ See [QUICKSTART.md](QUICKSTART.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for deta
 - Vulkan loader, instance/device, swapchain present, SPIR-V glyph pipeline, software fallback
 - Frame pacing with 2 frames in flight, vsync/mailbox/immediate present modes, zero idle CPU, damage-tracked rows and instanced cell draws, coalesced PTY reads so `cat bigfile`/`yes` don't stall input; `zig build bench` (see [docs/PERFORMANCE.md](docs/PERFORMANCE.md))
 - Real fonts: FreeType/HarfBuzz/fontconfig, bold/italic faces, CJK + colour emoji fallback, procedural box drawing, underline styles/colours, runtime zoom, optional retro 8×8 font (see [docs/FONTS.md](docs/FONTS.md))
-- X11 / Wayland / Win32 windows, resize, HiDPI scaling
+- X11 / Wayland / Win32 / Cocoa windows, resize, HiDPI scaling; ConPTY on Windows (see [docs/PLATFORMS.md](docs/PLATFORMS.md))
 - Lua 5.4 config (`~/.config/death-terminal/config.lua`, vendored Lua, sandboxed): typed options with file:line errors shown in the window, bundled themes, key bindings, shell/env/cwd, live reload on save or Ctrl+Shift+R; `deathterminal --print-default-config` (see [docs/CONFIG.md](docs/CONFIG.md))
 - Built-in SSH (libssh2): profiles + `~/.ssh/config`, ProxyJump, agent/key/keyboard-interactive/password auth, known_hosts checks, remote PTY with resize, `-L/-R/-D` forwards togglable at runtime (Ctrl+Shift+S), keepalive/reconnect; `zig build test-ssh` against a local sshd (see [docs/SSH.md](docs/SSH.md))
 - Lua plugins: sandboxed per-plugin states, permission grants in config.lua, hooks, command palette (Ctrl+Shift+P), optional status bar, toasts, timers, themes, three example plugins (see [docs/PLUGINS.md](docs/PLUGINS.md))
 - Tabs and split panes: layout tree, keyboard/mouse resize and focus, zoom, equalize, tab bar, confirm-close for running programs, startup layouts, plugin tab/pane events and actions (see [docs/TABS.md](docs/TABS.md))
 - CI (build + unit tests)
+- Packaging: `zig build release`, AppImage / .deb / .rpm, AUR, Windows zip (+ winget/MSI skeletons), macOS .app + Homebrew skeletons; 80/132-column DECCOLM
 
 **Not done yet** (tracked in [ISSUES.md](ISSUES.md))
-- Packaging, macOS (SSH is Linux-only for now)
+- Runtime testing on real Windows and macOS (Windows was checked under Wine; macOS only cross-compiles). The built-in SSH client is Linux-only
 
 ## 🧩 Architecture (Simplified)
 

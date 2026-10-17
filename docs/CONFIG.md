@@ -176,7 +176,8 @@ selection/clipboard/scrollbar options, key bindings, the status bar and plugins 
 plugin host restarts when a plugin's files, grants or settings changed; otherwise plugins get
 a `config_reload` event).
 
-Watching uses inotify, which is Linux-only. On other platforms only Ctrl+Shift+R reloads.
+Watching uses inotify on Linux, kqueue on macOS and change notifications on Windows (the
+last two compare modification times, and are untested on real hardware).
 
 ## Sandbox
 

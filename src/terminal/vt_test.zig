@@ -680,16 +680,44 @@ test "visibleText" {
     try t.expectEqualStrings("ab \ncd ", s);
 }
 
-test "DECCOLM clears, homes and resets margins without resizing" {
+test "DECCOLM switches 80/132, clears, homes and resets margins" {
     var term = try mk(5, 10);
     defer term.deinit();
-    try term.processOutput("junk\x1b[2;4r\x1b[5;5H\x1b[?3l");
+    try term.processOutput("junk\x1b[2;4r\x1b[5;5H\x1b[?3h");
+    try t.expectEqual(@as(u16, 132), term.cols);
     try t.expectEqual(@as(u16, 0), term.cursor_row);
     try t.expectEqual(@as(u16, 0), term.cursor_col);
     try t.expectEqual(@as(u16, 0), term.scroll_top);
     try t.expectEqual(@as(u16, 4), term.scroll_bottom);
     try t.expectEqual(@as(u21, ' '), term.screenRow(0)[0].char);
+    try term.processOutput("x\x1b[?3l");
+    try t.expectEqual(@as(u16, 80), term.cols);
+    try t.expectEqual(@as(u21, ' '), term.screenRow(0)[0].char);
+}
+
+test "DECCOLM honours ?40 and the allow setting" {
+    var term = try mk(5, 10);
+    defer term.deinit();
+    try term.processOutput("ab\x1b[?40l\x1b[?3h");
     try t.expectEqual(@as(u16, 10), term.cols);
+    try t.expectEqual(@as(u21, 'a'), term.screenRow(0)[0].char); // ignored entirely
+    try term.processOutput("\x1b[?40h\x1b[?3h");
+    try t.expectEqual(@as(u16, 132), term.cols);
+
+    var off = try mk(5, 10);
+    defer off.deinit();
+    off.allow_column_switch = false;
+    off.fullReset();
+    try off.processOutput("ab\x1b[?40h\x1b[?3h");
+    try t.expectEqual(@as(u16, 10), off.cols);
+
+    // GUI panes: side effects only, the layout keeps its width.
+    var gui = try mk(5, 10);
+    defer gui.deinit();
+    gui.deccolm_resizes = false;
+    try gui.processOutput("ab\x1b[?3h");
+    try t.expectEqual(@as(u16, 10), gui.cols);
+    try t.expectEqual(@as(u21, ' '), gui.screenRow(0)[0].char);
 }
 
 test "SGR 58 sets underline colour and 4:3 selects curly" {

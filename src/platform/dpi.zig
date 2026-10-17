@@ -1,4 +1,5 @@
 const std = @import("std");
+const env_mod = @import("env.zig");
 const builtin = @import("builtin");
 
 /// Clamp and snap a UI scale so 8×16 glyphs stay on integer pixel sizes.
@@ -32,7 +33,7 @@ pub fn parseXftDpi(resources: []const u8) ?f32 {
 
 fn parseEnv(name: []const u8) ?f32 {
     if (builtin.os.tag == .windows) return null;
-    const raw = std.posix.getenv(name) orelse return null;
+    const raw = env_mod.get(name) orelse return null;
     return normalize(std.fmt.parseFloat(f32, raw) catch return 1.0);
 }
 

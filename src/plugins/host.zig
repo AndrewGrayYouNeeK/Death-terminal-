@@ -9,6 +9,8 @@
 //! that the event loop applies, and they read state through `App` / `Info`.
 
 const std = @import("std");
+/// Plugin logs and data files: private to the user (no mode on Windows).
+const file_mode: std.fs.File.Mode = if (@import("builtin").os.tag == .windows) 0 else 0o600;
 const builtin = @import("builtin");
 const lua = @import("../scripting/lua.zig");
 const c = lua.c;
@@ -843,7 +845,7 @@ pub const Host = struct {
     // ------------------------------------------------------------ timers & jobs
 
     /// File descriptor that becomes readable when async results are ready.
-    pub fn wakeFd(self: *const Host) std.posix.fd_t {
+    pub fn wakeFd(self: *const Host) @import("../platform/io.zig").Fd {
         return self.queue.wakeFd();
     }
 
@@ -1026,7 +1028,7 @@ pub const Host = struct {
                 if (std.fmt.bufPrint(&ob, "{s}.1", .{path})) |old| std.fs.cwd().rename(path, old) catch {} else |_| {}
             }
         } else |_| {}
-        const f = std.fs.cwd().createFile(path, .{ .truncate = false, .mode = 0o600 }) catch return;
+        const f = std.fs.cwd().createFile(path, .{ .truncate = false, .mode = file_mode }) catch return;
         f.seekFromEnd(0) catch {};
         self.log_file = f;
     }
@@ -2011,7 +2013,7 @@ fn apiFs(p: *Plugin, L: *State) error{LuaMsg}!c_int {
         const data = try argStr(p, L, 3, what, "data");
         if (data.len > Limits.max_file) return p.raise("{s}: at most 16 MiB", .{what});
         if (std.fs.path.dirname(path)) |d| dir.makePath(d) catch |err| return fsErr(L, err);
-        const f = dir.createFile(path, .{ .truncate = op[0] == 'w', .mode = 0o600 }) catch |err| return fsErr(L, err);
+        const f = dir.createFile(path, .{ .truncate = op[0] == 'w', .mode = file_mode }) catch |err| return fsErr(L, err);
         defer f.close();
         if (op[0] == 'a') f.seekFromEnd(0) catch |err| return fsErr(L, err);
         f.writeAll(data) catch |err| return fsErr(L, err);

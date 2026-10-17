@@ -1,8 +1,14 @@
-//! C bindings for FreeType, HarfBuzz and fontconfig (Linux only).
+//! C bindings for FreeType and HarfBuzz (system libraries on Linux, built
+//! from source on Windows and macOS) and fontconfig (Linux only; elsewhere
+//! discovery.zig scans the font directories).
 
 const builtin = @import("builtin");
 
-pub const available = builtin.os.tag == .linux;
+pub const available = switch (builtin.os.tag) {
+    .linux, .windows, .macos => true,
+    else => false,
+};
+pub const have_fontconfig = builtin.os.tag == .linux;
 
 pub const c = if (available) @cImport({
     @cInclude("ft2build.h");
@@ -12,5 +18,5 @@ pub const c = if (available) @cImport({
     @cInclude("freetype/tttables.h");
     @cInclude("hb.h");
     @cInclude("hb-ft.h");
-    @cInclude("fontconfig/fontconfig.h");
+    if (have_fontconfig) @cInclude("fontconfig/fontconfig.h");
 }) else struct {};

@@ -157,8 +157,8 @@ pub fn resolve(a: std.mem.Allocator, name: []const u8, profiles: []const Profile
 /// `resolve` with ~/.ssh/config read from `config_file` ("" = none) and
 /// $HOME / $USER from the environment.
 pub fn resolveForConfig(arena: std.mem.Allocator, profiles: []const Profile, config_file: []const u8, keepalive_s: u16, name: []const u8) !Target {
-    const home = std.posix.getenv("HOME") orelse "/";
-    const user = std.posix.getenv("USER") orelse std.posix.getenv("LOGNAME") orelse "root";
+    const home = @import("../platform/env.zig").get("HOME") orelse "/";
+    const user = @import("../platform/env.zig").get("USER") orelse @import("../platform/env.zig").get("LOGNAME") orelse "root";
     var sc = ssh_config.SshConfig.init(arena);
     if (config_file.len > 0) sc.loadFile(config_file, home) catch {};
     return resolve(arena, name, profiles, &sc, .{ .home = home, .local_user = user, .keepalive_s = keepalive_s });
@@ -167,7 +167,7 @@ pub fn resolveForConfig(arena: std.mem.Allocator, profiles: []const Profile, con
 /// Host aliases from ~/.ssh/config (no wildcards), for the palette.
 pub fn configAliases(arena: std.mem.Allocator, config_file: []const u8, out: *std.ArrayList([]const u8)) void {
     if (config_file.len == 0) return;
-    const home = std.posix.getenv("HOME") orelse "/";
+    const home = @import("../platform/env.zig").get("HOME") orelse "/";
     var sc = ssh_config.SshConfig.init(arena);
     sc.loadFile(config_file, home) catch return;
     sc.aliases(out) catch {};

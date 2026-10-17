@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- DeathTerminal icon: a skull inside a terminal window. CC0 / same license as the project. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- terminal window -->
+  <rect x="24" y="40" width="464" height="432" rx="40" ry="40" fill="#0b0b0b" stroke="#e8e8e8" stroke-width="16"/>
+  <rect x="32" y="48" width="448" height="64" rx="32" ry="32" fill="#1c1c1c"/>
+  <rect x="32" y="88" width="448" height="24" fill="#1c1c1c"/>
+  <circle cx="84" cy="80" r="12" fill="#d93a3a"/>
+  <circle cx="124" cy="80" r="12" fill="#6b6b6b"/>
+  <circle cx="164" cy="80" r="12" fill="#6b6b6b"/>
+  <!-- skull -->
+  <path d="M256 140 C178 140 128 194 128 262 C128 306 150 336 176 352 L176 392 C176 404 186 412 198 412 L314 412 C326 412 336 404 336 392 L336 352 C362 336 384 306 384 262 C384 194 334 140 256 140 Z" fill="#e8e8e8"/>
+  <!-- eyes -->
+  <path d="M168 262 C168 236 188 224 210 224 C232 224 240 242 240 262 C240 286 222 298 202 298 C182 298 168 284 168 262 Z" fill="#0b0b0b"/>
+  <path d="M344 262 C344 236 324 224 302 224 C280 224 272 242 272 262 C272 286 290 298 310 298 C330 298 344 284 344 262 Z" fill="#0b0b0b"/>
+  <!-- nose -->
+  <path d="M256 304 L238 340 L274 340 Z" fill="#0b0b0b"/>
+  <!-- teeth -->
+  <rect x="206" y="364" width="10" height="48" fill="#0b0b0b"/>
+  <rect x="236" y="364" width="10" height="48" fill="#0b0b0b"/>
+  <rect x="266" y="364" width="10" height="48" fill="#0b0b0b"/>
+  <rect x="296" y="364" width="10" height="48" fill="#0b0b0b"/>
+  <!-- prompt -->
+  <path d="M66 418 L78 410 L112 440 L78 470 L66 462 L90 440 Z" fill="#d93a3a"/>
+  <rect x="116" y="446" width="44" height="12" fill="#d93a3a"/>
+</svg>

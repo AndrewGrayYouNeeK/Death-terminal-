@@ -439,7 +439,7 @@ fn authenticate(s: *c.LIBSSH2_SESSION, ep: Endpoint, ctx: *AuthCtx, opts: Option
 }
 
 fn tryAgent(s: *c.LIBSSH2_SESSION, user: [:0]const u8) bool {
-    if (std.posix.getenv("SSH_AUTH_SOCK") == null) return false;
+    if (@import("../platform/env.zig").get("SSH_AUTH_SOCK") == null) return false;
     const agent = c.libssh2_agent_init(s) orelse return false;
     defer c.libssh2_agent_free(agent);
     if (c.libssh2_agent_connect(agent) != 0) return false;

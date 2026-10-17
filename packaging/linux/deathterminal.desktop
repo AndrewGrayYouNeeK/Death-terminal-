@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=DeathTerminal
+GenericName=Terminal
+Comment=Brutalist GPU terminal emulator with AI suggestions, built-in SSH and Lua plugins
+Exec=deathterminal --gui
+Icon=deathterminal
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;shell;prompt;command;commandline;ssh;
+StartupNotify=true
+StartupWMClass=deathterminal
+Actions=new-window;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=deathterminal --gui

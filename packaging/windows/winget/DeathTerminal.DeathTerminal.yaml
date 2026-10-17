@@ -1,0 +1,7 @@
+# winget version manifest (skeleton). Submit the three files to
+# microsoft/winget-pkgs under manifests/d/DeathTerminal/DeathTerminal/0.1.0/.
+PackageIdentifier: DeathTerminal.DeathTerminal
+PackageVersion: 0.1.0
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0

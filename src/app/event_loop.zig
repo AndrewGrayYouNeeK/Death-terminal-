@@ -7,7 +7,7 @@ const renderer = @import("../renderer/vulkan_renderer.zig");
 const software = @import("../renderer/software.zig");
 const ai_controller = @import("ai_controller.zig");
 const ssh_target = @import("../ssh/target.zig");
-const ssh_control = @import("../ssh/control.zig");
+const ssh_control = if (builtin.os.tag == .linux) @import("../ssh/control.zig") else @import("../ssh/control_unsupported.zig");
 const palette_mod = ui_mod.palette_mod;
 const plugin_bridge = @import("plugin_bridge.zig");
 const spawn = @import("spawn.zig");
@@ -23,6 +23,8 @@ const ui_mod = @import("ui.zig");
 const color = @import("../terminal/color.zig");
 const config_watch = @import("config_watch.zig");
 const gui_mod = @import("gui.zig");
+const io = @import("../platform/io.zig");
+const win_misc = if (builtin.os.tag == .windows) @import("../platform/win_misc.zig") else struct {};
 
 /// Wait this long after the last change event before reloading, so an
 /// editor's write+rename save triggers one reload.
@@ -110,8 +112,13 @@ pub const EventLoop = struct {
         var stdin_raw = false;
         if (builtin.os.tag != .windows) {
             stdin_raw = try enableRawMode();
+        } else {
+            stdin_raw = win_misc.enableRawConsole();
         }
-        defer if (stdin_raw) disableRawMode() catch {};
+        defer if (stdin_raw) {
+            if (builtin.os.tag == .windows) win_misc.restoreConsole() else disableRawMode() catch {};
+        };
+        const stdin_fd: io.Fd = if (builtin.os.tag == .windows) win_misc.stdinSocket() catch io.none else posix.STDIN_FILENO;
 
         try installSignalHandlers();
 
@@ -125,12 +132,12 @@ pub const EventLoop = struct {
         std.debug.print("Headless terminal active. Ctrl+C goes to the shell; exit the shell (exit / Ctrl+D) to quit.\n", .{});
 
         while (!shutdown_requested.load(.seq_cst)) {
-            var poll_fds = [_]posix.pollfd{
-                .{ .fd = pty_fd, .events = posix.POLL.IN, .revents = 0 },
-                .{ .fd = posix.STDIN_FILENO, .events = posix.POLL.IN, .revents = 0 },
+            var poll_fds = [_]io.PollFd{
+                io.pollFd(pty_fd, io.POLL.IN),
+                io.pollFd(stdin_fd, io.POLL.IN),
             };
 
-            const ready = posix.poll(&poll_fds, if (dirty) 16 else HEADLESS_POLL_MS) catch 0;
+            const ready = io.poll(&poll_fds, if (dirty) 16 else HEADLESS_POLL_MS);
 
             if (dirty and nowNs() - last_draw >= 16 * std.time.ns_per_ms) {
                 try renderHeadless(term, vulkan_renderer);
@@ -147,7 +154,7 @@ pub const EventLoop = struct {
             }
 
             if (poll_fds[0].revents & posix.POLL.IN != 0) {
-                const n = posix.read(pty_fd, read_buf) catch |err| switch (err) {
+                const n = io.read(pty_fd, read_buf) catch |err| switch (err) {
                     error.WouldBlock => 0,
                     // Linux reports EIO on the master once the shell exits.
                     error.InputOutput => {
@@ -167,7 +174,7 @@ pub const EventLoop = struct {
             }
 
             if (poll_fds[1].revents & posix.POLL.IN != 0) {
-                const n = posix.read(posix.STDIN_FILENO, &input_buf) catch |err| switch (err) {
+                const n = io.read(stdin_fd, &input_buf) catch |err| switch (err) {
                     error.WouldBlock => 0,
                     else => return err,
                 };
@@ -183,10 +190,8 @@ pub const EventLoop = struct {
     }
 };
 
-pub fn setNonBlocking(fd: posix.fd_t) !void {
-    var fl_flags = try posix.fcntl(fd, posix.F.GETFL, 0);
-    fl_flags |= 1 << @bitOffsetOf(posix.O, "NONBLOCK");
-    _ = try posix.fcntl(fd, posix.F.SETFL, fl_flags);
+pub fn setNonBlocking(fd: io.Fd) !void {
+    try io.setNonBlocking(fd);
 }
 
 pub fn installSignalHandlers() !void {
@@ -241,6 +246,7 @@ pub fn attachPresent(vulkan_renderer: *renderer.VulkanRenderer, window: *window_
         .x11 => _ = vulkan_renderer.attachX11(window.x11DisplayPtr(), window.x11WindowId(), window.width, window.height),
         .wayland => _ = vulkan_renderer.attachWayland(window.waylandDisplayPtr(), window.waylandSurfacePtr(), window.width, window.height),
         .win32 => _ = vulkan_renderer.attachWin32(window.win32InstancePtr(), window.win32HwndPtr(), window.width, window.height),
+        .cocoa => _ = vulkan_renderer.attachMetal(window.metalLayerPtr(), window.width, window.height),
         .none => {},
     }
 }
@@ -412,6 +418,14 @@ pub fn uiOptions(cfg: *const config.Config) ui_mod.Options {
     };
 }
 
+/// DECCOLM policy: `allow` from config (?40 can still turn it off);
+/// `resizes` = the grid may change width (headless only).
+pub fn applyColumnSwitch(term: *terminal.Terminal, allow: bool, resizes: bool) void {
+    term.allow_column_switch = allow;
+    term.modes.allow_deccolm = allow;
+    term.deccolm_resizes = resizes;
+}
+
 /// New default cursor shape; also applied now unless an app chose one.
 pub fn applyCursorShape(term: *terminal.Terminal, shape: config.CursorShape) void {
     const s: terminal.CursorShape = switch (shape) {
@@ -494,7 +508,10 @@ pub fn installBindings(cfg: *const config.Config) void {
 /// Launch `command url` detached (double fork, no shell). The URL has
 /// already passed `urls.allowedTarget`.
 pub fn openUrl(command: []const u8, url: []const u8) void {
-    if (builtin.os.tag == .windows) return; // TODO: ShellExecuteW
+    if (builtin.os.tag == .windows) {
+        std.debug.print("  → open {s}\n", .{url});
+        return win_misc.openUrl(command, url);
+    }
     std.debug.print("  → open {s}\n", .{url});
     spawnDetached(&.{ command, url }, true);
 }
@@ -502,7 +519,7 @@ pub fn openUrl(command: []const u8, url: []const u8) void {
 /// Runs argv[0] (looked up in $PATH) detached from this process: double
 /// fork so it is reparented and never becomes our zombie.
 pub fn spawnDetached(args: []const []const u8, quiet: bool) void {
-    if (builtin.os.tag == .windows) return;
+    if (builtin.os.tag == .windows) return win_misc.spawnDetached(args);
     var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -622,6 +639,7 @@ test "headless frame emits UTF-8 and wide chars" {
 }
 
 test "raw mode keeps Ctrl+C away from signals" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     var t = std.mem.zeroes(posix.termios);
     t.lflag.ISIG = true;
     t.lflag.ICANON = true;

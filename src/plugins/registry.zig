@@ -12,6 +12,7 @@
 //!   state, log  $XDG_STATE_HOME/death-terminal/plugins.json, plugins.log
 
 const std = @import("std");
+const env_mod = @import("../platform/env.zig");
 const manifest = @import("manifest.zig");
 const permissions = @import("permissions.zig");
 const PluginConfig = @import("plugin_config.zig").PluginConfig;
@@ -26,7 +27,7 @@ pub const Paths = struct {
 
     /// `configured` is config.plugins_dir ("" = default); "~/" is expanded.
     pub fn resolve(a: std.mem.Allocator, configured: []const u8) !Paths {
-        return resolveEnv(a, configured, std.posix.getenv);
+        return resolveEnv(a, configured, env_mod.get);
     }
 
     pub fn resolveEnv(a: std.mem.Allocator, configured: []const u8, env: *const fn ([]const u8) ?[]const u8) !Paths {

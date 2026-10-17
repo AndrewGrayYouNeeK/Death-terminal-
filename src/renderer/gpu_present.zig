@@ -5,7 +5,24 @@ const loader_mod = @import("loader.zig");
 
 const CreateXlibSurfaceFn = if (builtin.os.tag == .linux) *const fn (vk.VkInstance, *const vk.raw.VkXlibSurfaceCreateInfoKHR, ?*const anyopaque, *vk.VkSurfaceKHR) callconv(.C) vk.VkResult else *const fn () callconv(.C) void;
 const CreateWaylandSurfaceFn = if (builtin.os.tag == .linux) *const fn (vk.VkInstance, *const vk.raw.VkWaylandSurfaceCreateInfoKHR, ?*const anyopaque, *vk.VkSurfaceKHR) callconv(.C) vk.VkResult else *const fn () callconv(.C) void;
-const CreateWin32SurfaceFn = if (builtin.os.tag == .windows) *const fn (vk.VkInstance, *const vk.raw.VkWin32SurfaceCreateInfoKHR, ?*const anyopaque, *vk.VkSurfaceKHR) callconv(.C) vk.VkResult else *const fn () callconv(.C) void;
+/// VkWin32SurfaceCreateInfoKHR with untyped handles (the C HWND/HINSTANCE
+/// types carry alignment that real handle values don't have).
+const Win32SurfaceInfo = extern struct {
+    sType: vk.raw.VkStructureType = vk.raw.VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
+    pNext: ?*const anyopaque = null,
+    flags: u32 = 0,
+    hinstance: ?*anyopaque,
+    hwnd: ?*anyopaque,
+};
+const CreateWin32SurfaceFn = *const fn (vk.VkInstance, *const Win32SurfaceInfo, ?*const anyopaque, *vk.VkSurfaceKHR) callconv(.C) vk.VkResult;
+/// VkMetalSurfaceCreateInfoEXT (VK_EXT_metal_surface, MoltenVK).
+const MetalSurfaceInfo = extern struct {
+    sType: vk.raw.VkStructureType = 1000217000, // VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT
+    pNext: ?*const anyopaque = null,
+    flags: u32 = 0,
+    pLayer: ?*const anyopaque,
+};
+const CreateMetalSurfaceFn = *const fn (vk.VkInstance, *const MetalSurfaceInfo, ?*const anyopaque, *vk.VkSurfaceKHR) callconv(.C) vk.VkResult;
 const DestroySurfaceFn = *const fn (vk.VkInstance, vk.VkSurfaceKHR, ?*const anyopaque) callconv(.C) void;
 const GetSurfaceSupportFn = *const fn (vk.VkPhysicalDevice, u32, vk.VkSurfaceKHR, *vk.raw.VkBool32) callconv(.C) vk.VkResult;
 const GetSurfaceCapsFn = *const fn (vk.VkPhysicalDevice, vk.VkSurfaceKHR, *vk.VkSurfaceCapabilitiesKHR) callconv(.C) vk.VkResult;
@@ -126,6 +143,7 @@ pub const GpuPresent = struct {
     vkCreateXlibSurfaceKHR: ?CreateXlibSurfaceFn = null,
     vkCreateWaylandSurfaceKHR: ?CreateWaylandSurfaceFn = null,
     vkCreateWin32SurfaceKHR: ?CreateWin32SurfaceFn = null,
+    vkCreateMetalSurfaceEXT: ?CreateMetalSurfaceFn = null,
     vkDestroySurfaceKHR: ?DestroySurfaceFn = null,
     vkGetPhysicalDeviceSurfaceSupportKHR: ?GetSurfaceSupportFn = null,
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR: ?GetSurfaceCapsFn = null,
@@ -224,10 +242,7 @@ pub const GpuPresent = struct {
             try self.beginAttach(h);
             errdefer self.deinit(h);
 
-            var info = std.mem.zeroes(vk.raw.VkWin32SurfaceCreateInfoKHR);
-            info.sType = vk.raw.VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
-            info.hinstance = @ptrCast(hinstance);
-            info.hwnd = @ptrCast(hwnd);
+            const info = Win32SurfaceInfo{ .hinstance = hinstance, .hwnd = hwnd };
 
             const create_surface = self.vkCreateWin32SurfaceKHR orelse return error.MissingCreateSurface;
             var vk_surface: vk.VkSurfaceKHR = null;
@@ -239,6 +254,21 @@ pub const GpuPresent = struct {
         } else {
             return error.UnsupportedPlatform;
         }
+    }
+
+    /// macOS: a CAMetalLayer through MoltenVK's VK_EXT_metal_surface.
+    pub fn attachMetal(self: *GpuPresent, h: Handles, layer: ?*anyopaque, width: u32, height: u32) !void {
+        if (layer == null) return error.NoNativeWindow;
+        try self.beginAttach(h);
+        errdefer self.deinit(h);
+        const create_surface = self.vkCreateMetalSurfaceEXT orelse return error.MissingCreateSurface;
+        const info = MetalSurfaceInfo{ .pLayer = layer };
+        var vk_surface: vk.VkSurfaceKHR = null;
+        if (create_surface(h.instance, &info, null, &vk_surface) != vk.VK_SUCCESS or vk_surface == null) {
+            return error.CreateSurfaceFailed;
+        }
+        self.surface = vk_surface;
+        try self.finishAttach(h, width, height);
     }
 
     fn beginAttach(self: *GpuPresent, h: Handles) !void {
@@ -385,6 +415,9 @@ pub const GpuPresent = struct {
         if (builtin.os.tag == .windows) {
             self.vkCreateWin32SurfaceKHR = l.load(inst, CreateWin32SurfaceFn, "vkCreateWin32SurfaceKHR");
         }
+        if (builtin.os.tag == .macos) {
+            self.vkCreateMetalSurfaceEXT = l.load(inst, CreateMetalSurfaceFn, "vkCreateMetalSurfaceEXT");
+        }
         self.vkDestroySurfaceKHR = l.load(inst, DestroySurfaceFn, "vkDestroySurfaceKHR");
         self.vkGetPhysicalDeviceSurfaceSupportKHR = l.load(inst, GetSurfaceSupportFn, "vkGetPhysicalDeviceSurfaceSupportKHR");
         self.vkGetPhysicalDeviceSurfaceCapabilitiesKHR = l.load(inst, GetSurfaceCapsFn, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
@@ -426,7 +459,8 @@ pub const GpuPresent = struct {
 
         const has_surface = self.vkCreateXlibSurfaceKHR != null or
             self.vkCreateWaylandSurfaceKHR != null or
-            self.vkCreateWin32SurfaceKHR != null;
+            self.vkCreateWin32SurfaceKHR != null or
+            self.vkCreateMetalSurfaceEXT != null;
         if (!has_surface or self.vkCreateSwapchainKHR == null or self.vkQueuePresentKHR == null) {
             std.debug.print("    → present procs xlib={} wayland={} win32={} swap={} present={}\n", .{
                 self.vkCreateXlibSurfaceKHR != null,

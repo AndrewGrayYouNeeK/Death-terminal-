@@ -3,6 +3,8 @@
 //! into ghost text, runs "explain last error" and keeps the status tag.
 
 const std = @import("std");
+const env_mod = @import("../platform/env.zig");
+const io = @import("../platform/io.zig");
 const posix = std.posix;
 const terminal = @import("../terminal/terminal.zig");
 const config = @import("../config/config.zig");
@@ -133,8 +135,8 @@ pub const Controller = struct {
         } else self.startEngine();
     }
 
-    pub fn wakeFd(self: *const Controller) posix.fd_t {
-        return if (self.engine) |e| e.wakeFd() else -1;
+    pub fn wakeFd(self: *const Controller) io.Fd {
+        return if (self.engine) |e| e.wakeFd() else io.none;
     }
 
     /// Milliseconds until `tick` has work (for the poll timeout).
@@ -180,7 +182,7 @@ pub const Controller = struct {
 
     fn shellName(self: *const Controller) []const u8 {
         if (self.settings.shell.len > 0) return self.settings.shell;
-        return posix.getenv("SHELL") orelse "sh";
+        return env_mod.get("SHELL") orelse "sh";
     }
 
     fn baseContext(self: *const Controller, arena: std.mem.Allocator, term: *const Terminal, input: []const u8) !context.Context {
@@ -402,8 +404,8 @@ const t = std.testing;
 fn waitFor(c: *Controller, ui: *Ui, term: *Terminal, comptime pred: fn (*Ui) bool) !void {
     const deadline = std.time.milliTimestamp() + 3000;
     while (std.time.milliTimestamp() < deadline) {
-        var fds = [_]posix.pollfd{.{ .fd = c.wakeFd(), .events = posix.POLL.IN, .revents = 0 }};
-        _ = try posix.poll(&fds, 50);
+        var fds = [_]io.PollFd{io.pollFd(c.wakeFd(), io.POLL.IN)};
+        _ = io.poll(&fds, 50);
         _ = try c.onWake(ui, term, std.time.milliTimestamp());
         if (pred(ui)) return;
     }

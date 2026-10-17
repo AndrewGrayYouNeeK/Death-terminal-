@@ -11,6 +11,8 @@
 //! dialogs: the UI shows a small status tag instead.
 
 const std = @import("std");
+const env_mod = @import("../platform/env.zig");
+const io = @import("../platform/io.zig");
 const posix = std.posix;
 const openai = @import("openai.zig");
 
@@ -80,8 +82,7 @@ pub const Engine = struct {
     result_err: ?openai.Error = null,
     result_dirty: bool = false,
 
-    wake_r: posix.fd_t,
-    wake_w: posix.fd_t,
+    wake_ch: io.Wake,
 
     status: Status = .ready,
     status_buf: [96]u8 = undefined,
@@ -94,14 +95,13 @@ pub const Engine = struct {
     pub fn init(allocator: std.mem.Allocator, opts: Options) !*Engine {
         const self = try allocator.create(Engine);
         errdefer allocator.destroy(self);
-        const fds = try posix.pipe2(.{ .NONBLOCK = true, .CLOEXEC = true });
+        const wake_ch = try io.Wake.init();
         self.* = .{
             .allocator = allocator,
             .opts_arena = std.heap.ArenaAllocator.init(allocator),
             .opts = undefined,
             .result = std.ArrayList(u8).init(allocator),
-            .wake_r = fds[0],
-            .wake_w = fds[1],
+            .wake_ch = wake_ch,
         };
         self.opts = try copyOptions(self.opts_arena.allocator(), opts);
         self.thread = try std.Thread.spawn(.{}, worker, .{self});
@@ -120,8 +120,7 @@ pub const Engine = struct {
         if (self.pending) |*p| p.deinit();
         self.result.deinit();
         self.opts_arena.deinit();
-        posix.close(self.wake_r);
-        posix.close(self.wake_w);
+        self.wake_ch.deinit();
         self.allocator.destroy(self);
     }
 
@@ -189,17 +188,13 @@ pub const Engine = struct {
     }
 
     /// Readable when `take` may have something.
-    pub fn wakeFd(self: *const Engine) posix.fd_t {
-        return self.wake_r;
+    pub fn wakeFd(self: *const Engine) io.Fd {
+        return self.wake_ch.fd();
     }
 
     /// Collect the latest streamed state of the newest job, if it changed.
     pub fn take(self: *Engine, allocator: std.mem.Allocator) !?Update {
-        var drain: [64]u8 = undefined;
-        while (true) {
-            const n = posix.read(self.wake_r, &drain) catch break;
-            if (n < drain.len) break;
-        }
+        self.wake_ch.drain();
         self.mutex.lock();
         defer self.mutex.unlock();
         if (!self.result_dirty or self.result_gen != self.gen) return null;
@@ -229,7 +224,7 @@ pub const Engine = struct {
     }
 
     fn wake(self: *Engine) void {
-        _ = posix.write(self.wake_w, "x") catch {};
+        self.wake_ch.signal();
     }
 
     const Sink = struct {
@@ -284,7 +279,7 @@ pub const Engine = struct {
                 err = error.Offline;
             } else {
                 @atomicStore(u64, &self.requests, self.requests + 1, .seq_cst);
-                const key: ?[]const u8 = if (opts.api_key_env.len > 0) posix.getenv(opts.api_key_env) else null;
+                const key: ?[]const u8 = if (opts.api_key_env.len > 0) env_mod.get(opts.api_key_env) else null;
                 openai.chatStream(self.allocator, .{
                     .endpoint = opts.endpoint,
                     .model = opts.model,
@@ -343,8 +338,8 @@ const t = std.testing;
 fn waitDone(e: *Engine, gen: u64, timeout_ms: i64) !Update {
     const deadline = std.time.milliTimestamp() + timeout_ms;
     while (std.time.milliTimestamp() < deadline) {
-        var fds = [_]posix.pollfd{.{ .fd = e.wakeFd(), .events = posix.POLL.IN, .revents = 0 }};
-        _ = try posix.poll(&fds, 50);
+        var fds = [_]io.PollFd{io.pollFd(e.wakeFd(), io.POLL.IN)};
+        _ = io.poll(&fds, 50);
         if (try e.take(t.allocator)) |u| {
             if (u.gen == gen and u.done) return u;
             t.allocator.free(u.text);
@@ -435,7 +430,7 @@ test "engine: the API key comes from the named environment variable" {
     t.allocator.free(u.text);
     srv.mutex.lock();
     defer srv.mutex.unlock();
-    const want = try std.fmt.allocPrint(t.allocator, "authorization: Bearer {s}", .{posix.getenv("HOME").?});
+    const want = try std.fmt.allocPrint(t.allocator, "authorization: Bearer {s}", .{env_mod.get("HOME").?});
     defer t.allocator.free(want);
     try t.expect(std.ascii.indexOfIgnoreCase(srv.requests.items[0], want) != null);
 }

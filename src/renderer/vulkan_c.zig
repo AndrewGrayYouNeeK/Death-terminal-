@@ -15,6 +15,10 @@ const c = if (builtin.os.tag == .linux) @cImport({
     @cDefine("VK_USE_PLATFORM_WIN32_KHR", "1");
     @cInclude("windows.h");
     @cInclude("vulkan/vulkan.h");
+}) else if (builtin.os.tag == .macos) @cImport({
+    @cDefine("VK_NO_PROTOTYPES", "1");
+    @cDefine("VK_USE_PLATFORM_METAL_EXT", "1");
+    @cInclude("vulkan/vulkan.h");
 }) else @cImport({
     @cDefine("VK_NO_PROTOTYPES", "1");
     @cInclude("vulkan/vulkan.h");
