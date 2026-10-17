@@ -1,7 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
-const Event = @import("window.zig").Event;
+const events = @import("events.zig");
+const Event = events.Event;
+const input = @import("../terminal/input.zig");
 
 const c = if (builtin.os.tag == .linux) @cImport({
     @cInclude("wayland-client.h");
@@ -18,6 +20,12 @@ pub const State = struct {
     seat: if (builtin.os.tag == .linux) ?*c.wl_seat else ?*anyopaque = null,
     output: if (builtin.os.tag == .linux) ?*c.wl_output else ?*anyopaque = null,
     keyboard: if (builtin.os.tag == .linux) ?*c.wl_keyboard else ?*anyopaque = null,
+    pointer: if (builtin.os.tag == .linux) ?*c.wl_pointer else ?*anyopaque = null,
+    pointer_x: f64 = 0,
+    pointer_y: f64 = 0,
+    pointer_held: input.MouseButton = .none,
+    mods: input.Mods = .{},
+    queue: events.EventQueue = .{},
     surface: if (builtin.os.tag == .linux) ?*c.wl_surface else ?*anyopaque = null,
     xdg_base: ?*anyopaque = null,
     xdg_surface: ?*anyopaque = null,
@@ -35,9 +43,6 @@ pub const State = struct {
     output_scale: i32 = 1,
     width: u32 = 0,
     height: u32 = 0,
-    input_scratch: [32]u8 = undefined,
-    input_len: u8 = 0,
-    has_input: bool = false,
     shm_fd: i32 = -1,
     shm_ptr: ?[]align(std.mem.page_size) u8 = null,
     shm_pool: if (builtin.os.tag == .linux) ?*c.wl_shm_pool else ?*anyopaque = null,
@@ -68,6 +73,14 @@ pub fn poll(st: *State) Event {
     return .none;
 }
 
+pub fn setTitle(st: *State, title: []const u8) void {
+    if (builtin.os.tag != .linux) return;
+    const t = st.xdg_toplevel orelse return;
+    const z = st.allocator.dupeZ(u8, title) catch return;
+    defer st.allocator.free(z);
+    c.dt_xdg_toplevel_set_title(@ptrCast(t), z.ptr);
+}
+
 pub fn presentRgba(st: *State, pixels: []const u32, width: u32, height: u32) void {
     if (builtin.os.tag == .linux) Linux.presentRgba(st, pixels, width, height);
 }
@@ -94,6 +107,15 @@ const Linux = if (builtin.os.tag == .linux) struct {
         .mode = outputMode,
         .done = outputDone,
         .scale = outputScale,
+    };
+    const pointer_listener = blk: {
+        var l = std.mem.zeroes(c.wl_pointer_listener);
+        l.enter = pointerEnter;
+        l.leave = pointerLeave;
+        l.motion = pointerMotion;
+        l.button = pointerButton;
+        l.axis = pointerAxis;
+        break :blk l;
     };
     const keyboard_listener = c.wl_keyboard_listener{
         .keymap = keyboardKeymap,
@@ -171,6 +193,7 @@ const Linux = if (builtin.os.tag == .linux) struct {
         st.xkb_keymap = null;
         st.xkb_ctx = null;
         if (st.keyboard) |kb| c.wl_keyboard_destroy(kb);
+        if (st.pointer) |ptr| c.wl_pointer_destroy(ptr);
         if (st.xdg_toplevel) |t| c.dt_xdg_toplevel_destroy(@ptrCast(t));
         if (st.xdg_surface) |s| c.dt_xdg_surface_destroy(@ptrCast(s));
         if (st.xdg_base) |b| c.dt_xdg_wm_base_destroy(@ptrCast(b));
@@ -205,10 +228,8 @@ const Linux = if (builtin.os.tag == .linux) struct {
             st.pending_close = false;
             return .close;
         }
-        if (st.has_input) {
-            st.has_input = false;
-            return .{ .input = st.input_scratch[0..st.input_len] };
-        }
+        const queued = st.queue.pop();
+        if (queued != .none) return queued;
         if (st.pending_resize) {
             st.pending_resize = false;
             return .{ .resize = .{ .width = st.width, .height = st.height } };
@@ -318,6 +339,10 @@ const Linux = if (builtin.os.tag == .linux) struct {
             st.keyboard = c.wl_seat_get_keyboard(seat);
             _ = c.wl_keyboard_add_listener(st.keyboard, &keyboard_listener, st);
         }
+        if (caps & c.WL_SEAT_CAPABILITY_POINTER != 0 and st.pointer == null) {
+            st.pointer = c.wl_seat_get_pointer(seat);
+            _ = c.wl_pointer_add_listener(st.pointer, &pointer_listener, st);
+        }
     }
 
     fn seatName(_: ?*anyopaque, _: ?*c.wl_seat, _: ?[*:0]const u8) callconv(.C) void {}
@@ -350,66 +375,103 @@ const Linux = if (builtin.os.tag == .linux) struct {
         st.xkb_state = xstate;
     }
 
-    fn keyboardEnter(_: ?*anyopaque, _: ?*c.wl_keyboard, _: u32, _: ?*c.wl_surface, _: ?*c.wl_array) callconv(.C) void {}
+    fn keyboardEnter(data: ?*anyopaque, _: ?*c.wl_keyboard, _: u32, _: ?*c.wl_surface, _: ?*c.wl_array) callconv(.C) void {
+        const st: *State = @ptrCast(@alignCast(data.?));
+        st.queue.pushFocus(true);
+    }
 
-    fn keyboardLeave(_: ?*anyopaque, _: ?*c.wl_keyboard, _: u32, _: ?*c.wl_surface) callconv(.C) void {}
+    fn keyboardLeave(data: ?*anyopaque, _: ?*c.wl_keyboard, _: u32, _: ?*c.wl_surface) callconv(.C) void {
+        const st: *State = @ptrCast(@alignCast(data.?));
+        st.queue.pushFocus(false);
+    }
 
     fn keyboardKey(data: ?*anyopaque, _: ?*c.wl_keyboard, _: u32, _: u32, key: u32, state: u32) callconv(.C) void {
         const st: *State = @ptrCast(@alignCast(data.?));
         if (state != c.WL_KEYBOARD_KEY_STATE_PRESSED) return;
         const xkb_key = key + 8;
         const xs = st.xkb_state orelse return;
-        var buf: [32]u8 = undefined;
-        const n = c.xkb_state_key_get_utf8(xs, xkb_key, &buf, buf.len);
         const sym = c.xkb_state_key_get_one_sym(xs, xkb_key);
-        if (sym == c.XKB_KEY_c or sym == c.XKB_KEY_C) {
-            const mods = c.xkb_state_mod_name_is_active(xs, "Control", c.XKB_STATE_MODS_EFFECTIVE);
-            if (mods == 1) {
-                st.pending_close = true;
-                return;
-            }
-        }
-        if (specialSym(sym)) |seq| {
-            const ncopy = @min(seq.len, st.input_scratch.len);
-            @memcpy(st.input_scratch[0..ncopy], seq[0..ncopy]);
-            st.input_len = @intCast(ncopy);
-            st.has_input = true;
+        if (events.keysymToKey(sym)) |k| {
+            var m = st.mods;
+            if (sym == c.XKB_KEY_ISO_Left_Tab) m.shift = true;
+            st.queue.pushKey(k, m);
             return;
         }
-        if (n > 0) {
-            const ncopy: usize = @intCast(n);
-            const use = @min(ncopy, st.input_scratch.len);
-            @memcpy(st.input_scratch[0..use], buf[0..use]);
-            st.input_len = @intCast(use);
-            st.has_input = true;
+        var buf: [32]u8 = undefined;
+        if (st.mods.ctrl and sym == c.XKB_KEY_space) {
+            st.queue.pushText("\x00", st.mods.alt);
+            return;
         }
+        // xkb applies Control to produce C0 bytes (Ctrl+C -> 0x03).
+        const n = c.xkb_state_key_get_utf8(xs, xkb_key, &buf, buf.len);
+        if (n > 0) st.queue.pushText(buf[0..@min(@as(usize, @intCast(n)), buf.len)], st.mods.alt);
     }
 
     fn keyboardMods(data: ?*anyopaque, _: ?*c.wl_keyboard, _: u32, mods_depressed: u32, mods_latched: u32, mods_locked: u32, group: u32) callconv(.C) void {
         const st: *State = @ptrCast(@alignCast(data.?));
         if (st.xkb_state) |xs| {
             _ = c.xkb_state_update_mask(xs, mods_depressed, mods_latched, mods_locked, 0, 0, group);
+            const eff = c.XKB_STATE_MODS_EFFECTIVE;
+            st.mods = .{
+                .shift = c.xkb_state_mod_name_is_active(xs, c.XKB_MOD_NAME_SHIFT, eff) == 1,
+                .ctrl = c.xkb_state_mod_name_is_active(xs, c.XKB_MOD_NAME_CTRL, eff) == 1,
+                .alt = c.xkb_state_mod_name_is_active(xs, c.XKB_MOD_NAME_ALT, eff) == 1,
+            };
         }
     }
 
-    fn keyboardRepeat(_: ?*anyopaque, _: ?*c.wl_keyboard, _: i32, _: i32) callconv(.C) void {}
-
-    fn specialSym(sym: u32) ?[]const u8 {
-        return switch (sym) {
-            c.XKB_KEY_Return, c.XKB_KEY_KP_Enter => "\r",
-            c.XKB_KEY_BackSpace => "\x7f",
-            c.XKB_KEY_Tab => "\t",
-            c.XKB_KEY_Escape => "\x1b",
-            c.XKB_KEY_Up => "\x1b[A",
-            c.XKB_KEY_Down => "\x1b[B",
-            c.XKB_KEY_Right => "\x1b[C",
-            c.XKB_KEY_Left => "\x1b[D",
-            c.XKB_KEY_Home => "\x1b[H",
-            c.XKB_KEY_End => "\x1b[F",
-            c.XKB_KEY_Delete => "\x1b[3~",
-            else => null,
-        };
+    fn fixedToPx(st: *const State, v: c.wl_fixed_t) i32 {
+        const logical = @as(f64, @floatFromInt(v)) / 256.0;
+        return @intFromFloat(logical * @as(f64, @floatFromInt(st.buffer_scale)));
     }
+
+    fn pointerEnter(data: ?*anyopaque, _: ?*c.wl_pointer, _: u32, _: ?*c.wl_surface, sx: c.wl_fixed_t, sy: c.wl_fixed_t) callconv(.C) void {
+        const st: *State = @ptrCast(@alignCast(data.?));
+        st.pointer_x = @floatFromInt(fixedToPx(st, sx));
+        st.pointer_y = @floatFromInt(fixedToPx(st, sy));
+    }
+
+    fn pointerLeave(_: ?*anyopaque, _: ?*c.wl_pointer, _: u32, _: ?*c.wl_surface) callconv(.C) void {}
+
+    fn pointerMotion(data: ?*anyopaque, _: ?*c.wl_pointer, _: u32, sx: c.wl_fixed_t, sy: c.wl_fixed_t) callconv(.C) void {
+        const st: *State = @ptrCast(@alignCast(data.?));
+        const x = fixedToPx(st, sx);
+        const y = fixedToPx(st, sy);
+        st.pointer_x = @floatFromInt(x);
+        st.pointer_y = @floatFromInt(y);
+        st.queue.pushMouse(.{ .action = .motion, .button = st.pointer_held, .x = x, .y = y, .mods = st.mods });
+    }
+
+    fn pointerButton(data: ?*anyopaque, _: ?*c.wl_pointer, _: u32, _: u32, button: u32, state: u32) callconv(.C) void {
+        const st: *State = @ptrCast(@alignCast(data.?));
+        const b: input.MouseButton = switch (button) {
+            0x110 => .left, // BTN_LEFT
+            0x111 => .right, // BTN_RIGHT
+            0x112 => .middle, // BTN_MIDDLE
+            else => return,
+        };
+        const pressed = state == c.WL_POINTER_BUTTON_STATE_PRESSED;
+        st.pointer_held = if (pressed) b else .none;
+        st.queue.pushMouse(.{
+            .action = if (pressed) .press else .release,
+            .button = b,
+            .x = @intFromFloat(st.pointer_x),
+            .y = @intFromFloat(st.pointer_y),
+            .mods = st.mods,
+        });
+    }
+
+    fn pointerAxis(data: ?*anyopaque, _: ?*c.wl_pointer, _: u32, axis: u32, value: c.wl_fixed_t) callconv(.C) void {
+        const st: *State = @ptrCast(@alignCast(data.?));
+        const vertical = axis == c.WL_POINTER_AXIS_VERTICAL_SCROLL;
+        const b: input.MouseButton = if (vertical)
+            (if (value < 0) .wheel_up else .wheel_down)
+        else
+            (if (value < 0) .wheel_left else .wheel_right);
+        st.queue.pushMouse(.{ .action = .press, .button = b, .x = @intFromFloat(st.pointer_x), .y = @intFromFloat(st.pointer_y), .mods = st.mods });
+    }
+
+    fn keyboardRepeat(_: ?*anyopaque, _: ?*c.wl_keyboard, _: i32, _: i32) callconv(.C) void {}
 } else struct {};
 
 test "wayland state defaults to inert" {

@@ -1,6 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const Event = @import("window.zig").Event;
+const events = @import("events.zig");
+const Event = events.Event;
+const input = @import("../terminal/input.zig");
 const dpi = @import("dpi.zig");
 
 const w = if (builtin.os.tag == .windows) @cImport({
@@ -17,9 +19,8 @@ pub const State = struct {
     pending_close: bool = false,
     pending_redraw: bool = false,
     pending_resize: bool = false,
-    input_scratch: [32]u8 = undefined,
-    input_len: u8 = 0,
-    has_input: bool = false,
+    queue: events.EventQueue = .{},
+    held: input.MouseButton = .none,
     class_atom: usize = 0,
     dib_pixels: []u32 = &.{},
 };
@@ -39,6 +40,10 @@ pub fn close(st: *State) void {
 pub fn poll(st: *State) Event {
     if (builtin.os.tag == .windows) return Win.poll(st);
     return .none;
+}
+
+pub fn setTitle(st: *State, title: []const u8) void {
+    if (builtin.os.tag == .windows) Win.setTitle(st, title);
 }
 
 pub fn presentRgba(st: *State, pixels: []const u32, width: u32, height: u32) void {
@@ -117,7 +122,7 @@ const Win = if (builtin.os.tag == .windows) struct {
             st.dib_pixels = &.{};
         }
         if (st.hwnd) |hwnd| {
-            _ = w.DestroyWindow(@ptrCast(hwnd));
+            _ = w.DestroyWindow(@ptrCast(@alignCast(hwnd)));
             st.hwnd = null;
         }
         st.* = .{};
@@ -134,10 +139,8 @@ const Win = if (builtin.os.tag == .windows) struct {
             st.pending_close = false;
             return .close;
         }
-        if (st.has_input) {
-            st.has_input = false;
-            return .{ .input = st.input_scratch[0..st.input_len] };
-        }
+        const queued = st.queue.pop();
+        if (queued != .none) return queued;
         if (st.pending_resize) {
             st.pending_resize = false;
             return .{ .resize = .{ .width = st.width, .height = st.height } };
@@ -151,7 +154,7 @@ const Win = if (builtin.os.tag == .windows) struct {
 
     fn presentRgba(st: *State, pixels: []const u32, width: u32, height: u32) void {
         const hwnd_ptr = st.hwnd orelse return;
-        const hwnd: w.HWND = @ptrCast(hwnd_ptr);
+        const hwnd: w.HWND = @ptrCast(@alignCast(hwnd_ptr));
         if (width == 0 or height == 0) return;
         const count = @as(usize, width) * @as(usize, height);
         if (pixels.len < count) return;
@@ -227,53 +230,115 @@ const Win = if (builtin.os.tag == .windows) struct {
                 return 0;
             },
             w.WM_CHAR => {
-                const cp: u21 = @intCast(wparam);
-                if (cp == 0x03) {
-                    st.pending_close = true;
-                    return 0;
-                }
+                const cp: u21 = @intCast(wparam & 0x1FFFFF);
+                // Backspace is sent from WM_KEYDOWN as DEL; drop its translated 0x08.
+                if (cp == 0x08 and (w.GetKeyState(w.VK_BACK) & 0x8000) != 0) return 0;
                 var buf: [8]u8 = undefined;
                 const n = std.unicode.utf8Encode(cp, &buf) catch 0;
-                if (n > 0) {
-                    @memcpy(st.input_scratch[0..n], buf[0..n]);
-                    st.input_len = @intCast(n);
-                    st.has_input = true;
-                }
+                if (n > 0) st.queue.pushText(buf[0..n], false);
                 return 0;
             },
-            w.WM_KEYDOWN => {
-                if (keySeq(wparam)) |seq| {
-                    const ncopy = @min(seq.len, st.input_scratch.len);
-                    @memcpy(st.input_scratch[0..ncopy], seq[0..ncopy]);
-                    st.input_len = @intCast(ncopy);
-                    st.has_input = true;
-                    return 0;
-                }
-                if (wparam == 'C' and (w.GetKeyState(w.VK_CONTROL) & 0x8000) != 0) {
-                    st.pending_close = true;
+            w.WM_SYSCHAR => {
+                // Alt+key arrives as WM_SYSCHAR: meta sends ESC.
+                const cp: u21 = @intCast(wparam & 0x1FFFFF);
+                var buf: [8]u8 = undefined;
+                const n = std.unicode.utf8Encode(cp, &buf) catch 0;
+                if (n > 0) st.queue.pushText(buf[0..n], true);
+                return 0;
+            },
+            w.WM_KEYDOWN, w.WM_SYSKEYDOWN => {
+                if (vkToKey(wparam)) |key| {
+                    st.queue.pushKey(key, currentMods());
                     return 0;
                 }
                 return w.DefWindowProcW(hwnd, msg, wparam, lparam);
+            },
+            w.WM_SETFOCUS => {
+                st.queue.pushFocus(true);
+                return 0;
+            },
+            w.WM_KILLFOCUS => {
+                st.queue.pushFocus(false);
+                return 0;
+            },
+            w.WM_LBUTTONDOWN, w.WM_LBUTTONUP, w.WM_MBUTTONDOWN, w.WM_MBUTTONUP, w.WM_RBUTTONDOWN, w.WM_RBUTTONUP => {
+                const b: input.MouseButton = switch (msg) {
+                    w.WM_LBUTTONDOWN, w.WM_LBUTTONUP => .left,
+                    w.WM_MBUTTONDOWN, w.WM_MBUTTONUP => .middle,
+                    else => .right,
+                };
+                const pressed = msg == w.WM_LBUTTONDOWN or msg == w.WM_MBUTTONDOWN or msg == w.WM_RBUTTONDOWN;
+                if (pressed) _ = w.SetCapture(hwnd) else _ = w.ReleaseCapture();
+                st.held = if (pressed) b else .none;
+                st.queue.pushMouse(.{ .action = if (pressed) .press else .release, .button = b, .x = lowX(lparam), .y = highY(lparam), .mods = currentMods() });
+                return 0;
+            },
+            w.WM_MOUSEMOVE => {
+                st.queue.pushMouse(.{ .action = .motion, .button = st.held, .x = lowX(lparam), .y = highY(lparam), .mods = currentMods() });
+                return 0;
+            },
+            w.WM_MOUSEWHEEL => {
+                const delta: i16 = @bitCast(@as(u16, @truncate(wparam >> 16)));
+                var pt = w.POINT{ .x = lowX(lparam), .y = highY(lparam) };
+                _ = w.ScreenToClient(hwnd, &pt);
+                st.queue.pushMouse(.{ .action = .press, .button = if (delta > 0) .wheel_up else .wheel_down, .x = pt.x, .y = pt.y, .mods = currentMods() });
+                return 0;
             },
             else => return w.DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
 
-    fn keySeq(wparam: w.WPARAM) ?[]const u8 {
+    fn lowX(lparam: w.LPARAM) i32 {
+        return @as(i16, @bitCast(@as(u16, @truncate(@as(usize, @bitCast(lparam))))));
+    }
+
+    fn highY(lparam: w.LPARAM) i32 {
+        return @as(i16, @bitCast(@as(u16, @truncate(@as(usize, @bitCast(lparam)) >> 16))));
+    }
+
+    fn currentMods() input.Mods {
+        return .{
+            .shift = (w.GetKeyState(w.VK_SHIFT) & 0x8000) != 0,
+            .ctrl = (w.GetKeyState(w.VK_CONTROL) & 0x8000) != 0,
+            .alt = (w.GetKeyState(w.VK_MENU) & 0x8000) != 0,
+        };
+    }
+
+    fn vkToKey(wparam: w.WPARAM) ?input.Key {
         return switch (wparam) {
-            w.VK_RETURN => "\r",
-            w.VK_BACK => "\x7f",
-            w.VK_TAB => "\t",
-            w.VK_ESCAPE => "\x1b",
-            w.VK_UP => "\x1b[A",
-            w.VK_DOWN => "\x1b[B",
-            w.VK_RIGHT => "\x1b[C",
-            w.VK_LEFT => "\x1b[D",
-            w.VK_HOME => "\x1b[H",
-            w.VK_END => "\x1b[F",
-            w.VK_DELETE => "\x1b[3~",
+            w.VK_UP => .up,
+            w.VK_DOWN => .down,
+            w.VK_RIGHT => .right,
+            w.VK_LEFT => .left,
+            w.VK_HOME => .home,
+            w.VK_END => .end,
+            w.VK_PRIOR => .page_up,
+            w.VK_NEXT => .page_down,
+            w.VK_INSERT => .insert,
+            w.VK_DELETE => .delete,
+            w.VK_F1 => .f1,
+            w.VK_F2 => .f2,
+            w.VK_F3 => .f3,
+            w.VK_F4 => .f4,
+            w.VK_F5 => .f5,
+            w.VK_F6 => .f6,
+            w.VK_F7 => .f7,
+            w.VK_F8 => .f8,
+            w.VK_F9 => .f9,
+            w.VK_F10 => .f10,
+            w.VK_F11 => .f11,
+            w.VK_F12 => .f12,
+            // Enter/Tab/Escape arrive as WM_CHAR after TranslateMessage.
+            w.VK_BACK => .backspace,
             else => null,
         };
+    }
+
+    fn setTitle(st: *State, title: []const u8) void {
+        const hwnd_ptr = st.hwnd orelse return;
+        const wide = std.unicode.utf8ToUtf16LeAllocZ(st.allocator, title) catch return;
+        defer st.allocator.free(wide);
+        _ = w.SetWindowTextW(@ptrCast(@alignCast(hwnd_ptr)), wide.ptr);
     }
 
     fn enableDpiAwareness() void {

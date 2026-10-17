@@ -20,7 +20,7 @@ test "ansi clear and color" {
     try std.testing.expectEqual(@as(u21, ' '), term.getCell(0, 0).?.char);
     try std.testing.expectEqual(@as(u16, 0), term.cursor_row);
 
-    try term.processOutput("\x1b[31mX");
+    try term.processOutput("\x1b[H\x1b[31mX");
     try std.testing.expectEqual(@as(u21, 'X'), term.getCell(0, 0).?.char);
     try std.testing.expectEqual(@as(u32, 0xCD0000), term.getCell(0, 0).?.fg_color);
 }

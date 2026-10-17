@@ -138,6 +138,9 @@ test {
     _ = @import("terminal/scrollback.zig");
     _ = @import("terminal/grid_test.zig");
     _ = @import("terminal/unicode.zig");
+    _ = @import("terminal/color.zig");
+    _ = @import("terminal/pty.zig");
+    _ = @import("terminal/input.zig");
     _ = @import("renderer/vulkan_renderer.zig");
     _ = @import("renderer/loader.zig");
     _ = @import("renderer/vulkan_c.zig");
@@ -148,6 +151,7 @@ test {
     _ = @import("renderer/software.zig");
     _ = @import("platform/window.zig");
     _ = @import("platform/dpi.zig");
+    _ = @import("platform/events.zig");
     _ = @import("platform/wayland_backend.zig");
     _ = @import("platform/win32_backend.zig");
     _ = @import("app/event_loop.zig");

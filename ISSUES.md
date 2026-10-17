@@ -50,10 +50,16 @@
 - [x] Wide characters (East Asian wide/fullwidth, emoji) as 2-column cells
 - [x] Combining marks stored on the base cell (up to 2; shaping waits for real fonts)
 - [ ] Non-ASCII glyphs (renderer draws a replacement box until real fonts land)
-- [ ] Scroll regions (DECSTBM), insert/delete line/char, erase char
-- [ ] Alternate screen (?1049), bracketed paste (?2004), mouse reporting
-- [ ] 256-color and true-color SGR
-- [ ] Device status / attribute replies (DSR, DA)
+- [x] Scroll regions (DECSTBM, SU/SD, IND/RI/NEL), insert/delete line/char, erase/repeat char, insert mode
+- [x] Tab stops (HTS/TBC/CHT/CBT), origin mode, DECAWM, DECSC/DECRC + CSI s/u, DEC special graphics
+- [x] Alternate screen (?1049/?1047/?47), bracketed paste (?2004), mouse reporting (?1000/?1002/?1003/?1006), focus events (?1004)
+- [x] Application cursor/keypad (DECCKM/DECKPAM), xterm modifier encoding for special keys
+- [x] 256-color and true-color SGR (`;` and `:` forms), faint/inverse/strikethrough/hidden
+- [x] Device status / attribute replies (DSR/CPR, DA1/DA2, DECRQM, XTVERSION, OSC 10/11 queries)
+- [x] OSC 0/2 window title, OSC 7 cwd, OSC 8 hyperlinks (parsed, bounded), DECSCUSR cursor shapes
+- [x] `TERM=xterm-256color`, `COLORTERM=truecolor` in the shell environment
+- [ ] DECCOLM 80/132 switching (side effects only), left/right margins (DECSLRM), double-size lines
+- [ ] Reflow on resize, underline colour/styles, blinking text
 - [x] Shell integration
 
 ### Phase 2 - Vulkan Rendering (High Priority)

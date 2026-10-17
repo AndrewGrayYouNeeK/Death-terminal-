@@ -264,7 +264,7 @@ pub const TextPipeline = struct {
         cols: u16,
         cursor_row: u16,
         cursor_col: u16,
-        cursor_visible: bool,
+        view: software.View,
         cell_w: f32,
         cell_h: f32,
     ) !u32 {
@@ -276,7 +276,7 @@ pub const TextPipeline = struct {
             cols,
             cursor_row,
             cursor_col,
-            cursor_visible,
+            view,
             @floatFromInt(self.extent.width),
             @floatFromInt(self.extent.height),
             cell_w,

@@ -1,70 +1,99 @@
+//! VT500-style escape sequence parser (after Paul Williams' state machine).
+//!
+//! The parser only tokenizes; `terminal.zig` interprets the actions. It
+//! decodes UTF-8 in the ground state, executes C0 controls inline (also in
+//! the middle of CSI sequences, like real terminals), and swallows DCS / SOS
+//! / PM / APC strings so their payload never reaches the screen.
+
 const std = @import("std");
 const unicode = @import("unicode.zig");
 
-/// ANSI escape sequence parser state
 pub const ParserState = enum {
     Ground,
     Escape,
+    EscapeIntermediate,
     CSI,
+    CSIIgnore,
     OSC,
-    DCS,
+    OSCEscape,
+    /// DCS, SOS, PM and APC payloads: ignored until ST.
+    IgnoreString,
+    IgnoreStringEscape,
 };
 
-/// CSI (Control Sequence Introducer) parameters
+pub const MAX_PARAMS = 32;
+/// OSC payloads longer than this are dropped (titles, hyperlinks, ...).
+pub const MAX_OSC_LEN = 8192;
+
+/// CSI parameters. Sub-parameters (`38:2::r:g:b`) are stored inline and
+/// flagged in `colon_mask` (bit i set = param i followed a ':').
 pub const CSIParams = struct {
-    params: [16]u32,
+    params: [MAX_PARAMS]u32,
     param_count: u8,
-    intermediate: ?u8,
+    colon_mask: u32,
+    /// Private marker: '?', '>', '=', '<' or 0.
+    private: u8,
+    /// Last intermediate byte (0x20..0x2F) or 0.
+    intermediate: u8,
 
     pub fn init() CSIParams {
-        return CSIParams{
-            .params = [_]u32{0} ** 16,
+        return .{
+            .params = [_]u32{0} ** MAX_PARAMS,
             .param_count = 0,
-            .intermediate = null,
+            .colon_mask = 0,
+            .private = 0,
+            .intermediate = 0,
         };
     }
 
-    pub fn addParam(self: *CSIParams, param: u32) void {
-        if (self.param_count < 16) {
+    pub fn addParam(self: *CSIParams, param: u32, after_colon: bool) void {
+        if (self.param_count < MAX_PARAMS) {
             self.params[self.param_count] = param;
+            if (after_colon) self.colon_mask |= @as(u32, 1) << @intCast(self.param_count);
             self.param_count += 1;
         }
     }
 
+    /// Param `index`, or `default` when absent.
     pub fn getParam(self: CSIParams, index: u8, default: u32) u32 {
-        if (index < self.param_count) {
-            return self.params[index];
-        }
+        if (index < self.param_count) return self.params[index];
         return default;
+    }
+
+    /// Param `index`, or `default` when absent or zero (cursor counts etc.).
+    pub fn getNonZero(self: CSIParams, index: u8, default: u32) u32 {
+        const v = self.getParam(index, 0);
+        return if (v == 0) default else v;
+    }
+
+    pub fn isSub(self: CSIParams, index: u8) bool {
+        if (index >= MAX_PARAMS) return false;
+        return (self.colon_mask >> @intCast(index)) & 1 != 0;
     }
 };
 
-/// ANSI escape sequence action
 pub const Action = union(enum) {
-    Print: u21, // Print character
-    Execute: u8, // Execute control character (C0/C1)
-    CSI: struct {
-        params: CSIParams,
-        final_byte: u8,
-    },
-    OSC: []const u8, // Operating System Command
-    Clear, // Clear screen
-    Bell, // Audible bell
-    Backspace,
-    Tab,
-    LineFeed,
-    CarriageReturn,
+    /// Printable codepoint.
+    Print: u21,
+    /// C0 control (BEL, BS, HT, LF, VT, FF, CR, SO, SI, ...).
+    Execute: u8,
+    /// ESC [intermediate] final.
+    Esc: struct { intermediate: u8, final: u8 },
+    CSI: struct { params: CSIParams, final_byte: u8 },
+    /// OSC payload. Borrowed from the parser; valid until the next `advance`.
+    OSC: []const u8,
 };
 
-/// ANSI escape sequence parser
 pub const Parser = struct {
     state: ParserState,
     params: CSIParams,
     osc_buffer: std.ArrayList(u8),
+    osc_overflow: bool = false,
     current_param: u32,
     saw_digit: bool,
+    next_is_sub: bool = false,
+    esc_intermediate: u8 = 0,
     allocator: std.mem.Allocator,
-    /// In-progress UTF-8 sequence (Ground state only).
     utf8_cp: u21 = 0,
     utf8_need: u2 = 0,
     utf8_lo: u8 = 0x80,
@@ -75,7 +104,7 @@ pub const Parser = struct {
     pending: ?Action = null,
 
     pub fn init(allocator: std.mem.Allocator) Parser {
-        return Parser{
+        return .{
             .state = .Ground,
             .params = CSIParams.init(),
             .osc_buffer = std.ArrayList(u8).init(allocator),
@@ -85,35 +114,60 @@ pub const Parser = struct {
         };
     }
 
-    pub fn takePending(self: *Parser) ?Action {
-        const a = self.pending;
-        self.pending = null;
-        return a;
-    }
-
     pub fn deinit(self: *Parser) void {
         self.osc_buffer.deinit();
     }
 
     pub fn reset(self: *Parser) void {
         self.state = .Ground;
-        self.params = CSIParams.init();
-        self.current_param = 0;
-        self.saw_digit = false;
+        self.clearParams();
         self.osc_buffer.clearRetainingCapacity();
         self.utf8_need = 0;
         self.pending = null;
     }
 
-    /// Parse next byte and return action if complete
+    pub fn takePending(self: *Parser) ?Action {
+        const a = self.pending;
+        self.pending = null;
+        return a;
+    }
+
+    fn clearParams(self: *Parser) void {
+        self.params = CSIParams.init();
+        self.current_param = 0;
+        self.saw_digit = false;
+        self.next_is_sub = false;
+    }
+
+    /// Feed one byte; returns a completed action, if any.
     pub fn advance(self: *Parser, byte: u8) !?Action {
-        switch (self.state) {
-            .Ground => return try self.handleGround(byte),
-            .Escape => return try self.handleEscape(byte),
-            .CSI => return try self.handleCSI(byte),
-            .OSC => return try self.handleOSC(byte),
-            .DCS => return try self.handleDCS(byte),
+        // CAN and SUB abort any sequence; ESC always starts a new one.
+        if (self.state != .Ground) {
+            if (byte == 0x18 or byte == 0x1A) {
+                self.state = .Ground;
+                return null;
+            }
+            if (byte == 0x1B and self.state != .OSC and self.state != .IgnoreString) {
+                self.enterEscape();
+                return null;
+            }
         }
+        return switch (self.state) {
+            .Ground => self.handleGround(byte),
+            .Escape => self.handleEscape(byte),
+            .EscapeIntermediate => self.handleEscapeIntermediate(byte),
+            .CSI => self.handleCSI(byte),
+            .CSIIgnore => self.handleCSIIgnore(byte),
+            .OSC => self.handleOSC(byte),
+            .OSCEscape => self.handleOSCEscape(byte),
+            .IgnoreString => self.handleIgnoreString(byte),
+            .IgnoreStringEscape => self.handleIgnoreStringEscape(byte),
+        };
+    }
+
+    fn enterEscape(self: *Parser) void {
+        self.state = .Escape;
+        self.esc_intermediate = 0;
     }
 
     fn handleGround(self: *Parser, byte: u8) !?Action {
@@ -128,7 +182,7 @@ pub const Parser = struct {
             }
             // Truncated sequence: emit U+FFFD, then process this byte afresh.
             self.utf8_need = 0;
-            self.pending = try self.groundStart(byte);
+            self.pending = self.groundStart(byte);
             return Action{ .Print = unicode.replacement_char };
         }
         return self.groundStart(byte);
@@ -142,15 +196,15 @@ pub const Parser = struct {
         return null;
     }
 
-    fn groundStart(self: *Parser, byte: u8) !?Action {
+    fn groundStart(self: *Parser, byte: u8) ?Action {
         return switch (byte) {
             0x1B => {
-                self.state = .Escape;
+                self.enterEscape();
                 return null;
             },
-            0x00...0x1A, 0x1C...0x1F => self.handleC0(byte),
+            0x00...0x1A, 0x1C...0x1F => Action{ .Execute = byte },
             0x20...0x7E => Action{ .Print = byte },
-            0x7F => Action{ .Execute = byte },
+            0x7F => null, // DEL is ignored
             // Lead bytes, with the valid range of the second byte so overlong
             // forms and surrogates are rejected (RFC 3629).
             0xC2...0xDF => self.beginUtf8(byte & 0x1F, 1, 0x80, 0xBF),
@@ -165,435 +219,173 @@ pub const Parser = struct {
         };
     }
 
-    fn handleC0(self: *Parser, byte: u8) ?Action {
-        _ = self;
-        return switch (byte) {
-            0x07 => Action.Bell,
-            0x08 => Action.Backspace,
-            0x09 => Action.Tab,
-            0x0A => Action.LineFeed,
-            0x0D => Action.CarriageReturn,
-            else => Action{ .Execute = byte },
-        };
-    }
-
     fn handleEscape(self: *Parser, byte: u8) !?Action {
-        return switch (byte) {
+        switch (byte) {
+            0x00...0x17, 0x19, 0x1C...0x1F => return Action{ .Execute = byte },
+            0x20...0x2F => {
+                self.esc_intermediate = byte;
+                self.state = .EscapeIntermediate;
+                return null;
+            },
             '[' => {
+                self.clearParams();
                 self.state = .CSI;
-                self.params = CSIParams.init();
-                self.current_param = 0;
-                self.saw_digit = false;
                 return null;
             },
             ']' => {
-                self.state = .OSC;
                 self.osc_buffer.clearRetainingCapacity();
+                self.osc_overflow = false;
+                self.state = .OSC;
                 return null;
             },
-            'P' => {
-                self.state = .DCS;
+            'P', 'X', '^', '_' => {
+                self.state = .IgnoreString;
                 return null;
             },
-            'c' => {
-                // RIS - Reset to Initial State
+            0x30...0x4F, 0x51...0x57, 0x59, 0x5A, 0x5C, 0x60...0x7E => {
                 self.state = .Ground;
-                return Action.Clear;
-            },
-            'D' => {
-                // IND - Index (move down with scroll)
-                self.state = .Ground;
-                return Action.LineFeed;
-            },
-            'M' => {
-                // RI - Reverse Index (move up with scroll)
-                self.state = .Ground;
-                return Action{ .CSI = .{
-                    .params = CSIParams.init(),
-                    .final_byte = 'A',
-                } };
+                return Action{ .Esc = .{ .intermediate = 0, .final = byte } };
             },
             else => {
                 self.state = .Ground;
                 return null;
             },
-        };
+        }
+    }
+
+    fn handleEscapeIntermediate(self: *Parser, byte: u8) !?Action {
+        switch (byte) {
+            0x00...0x17, 0x19, 0x1C...0x1F => return Action{ .Execute = byte },
+            0x20...0x2F => {
+                self.esc_intermediate = byte;
+                return null;
+            },
+            0x30...0x7E => {
+                self.state = .Ground;
+                return Action{ .Esc = .{ .intermediate = self.esc_intermediate, .final = byte } };
+            },
+            else => {
+                self.state = .Ground;
+                return null;
+            },
+        }
+    }
+
+    fn finishParam(self: *Parser) void {
+        self.params.addParam(self.current_param, self.next_is_sub);
+        self.current_param = 0;
+        self.saw_digit = false;
     }
 
     fn handleCSI(self: *Parser, byte: u8) !?Action {
         switch (byte) {
+            0x00...0x17, 0x19, 0x1C...0x1F => return Action{ .Execute = byte },
             '0'...'9' => {
-                self.current_param = self.current_param * 10 + (byte - '0');
+                if (self.params.intermediate != 0) {
+                    self.state = .CSIIgnore;
+                    return null;
+                }
+                self.current_param = std.math.mul(u32, self.current_param, 10) catch 65535;
+                self.current_param = @min(65535, self.current_param + (byte - '0'));
                 self.saw_digit = true;
                 return null;
             },
-            ';' => {
-                self.params.addParam(self.current_param);
-                self.current_param = 0;
-                self.saw_digit = false;
-                return null;
-            },
-            ':' => {
-                // Sub-parameter separator (not commonly used)
-                self.params.addParam(self.current_param);
-                self.current_param = 0;
-                self.saw_digit = false;
-                return null;
-            },
-            ' '...'/' => {
-                // Intermediate byte
-                self.params.intermediate = byte;
-                return null;
-            },
-            '?', '>', '=' => {
-                // DEC private / ANSI mode markers (CSI ? 2004 h, CSI > ...)
-                self.params.intermediate = byte;
-                return null;
-            },
-            '@'...'~' => {
-                // Final byte. Empty CSI (ESC[H) has no params so callers use defaults.
-                if (self.saw_digit or self.params.param_count > 0) {
-                    self.params.addParam(self.current_param);
+            ';', ':' => {
+                if (self.params.intermediate != 0) {
+                    self.state = .CSIIgnore;
+                    return null;
                 }
-                self.current_param = 0;
-                self.saw_digit = false;
-
-                const action = Action{
-                    .CSI = .{
-                        .params = self.params,
-                        .final_byte = byte,
-                    },
-                };
-
+                self.finishParam();
+                self.next_is_sub = byte == ':';
+                return null;
+            },
+            '<'...'?' => {
+                // Private marker: only valid before any parameter.
+                if (self.saw_digit or self.params.param_count > 0 or self.params.private != 0 or self.params.intermediate != 0) {
+                    self.state = .CSIIgnore;
+                    return null;
+                }
+                self.params.private = byte;
+                return null;
+            },
+            0x20...0x2F => {
+                self.params.intermediate = byte;
+                return null;
+            },
+            0x40...0x7E => {
+                if (self.saw_digit or self.params.param_count > 0) self.finishParam();
+                const action = Action{ .CSI = .{ .params = self.params, .final_byte = byte } };
                 self.state = .Ground;
-                self.params = CSIParams.init();
-
+                self.clearParams();
                 return action;
             },
-            else => {
-                // Invalid sequence, reset
-                self.state = .Ground;
-                self.params = CSIParams.init();
-                self.current_param = 0;
-                self.saw_digit = false;
-                return null;
-            },
+            else => return null, // DEL and high bytes are ignored
         }
+    }
+
+    fn handleCSIIgnore(self: *Parser, byte: u8) !?Action {
+        switch (byte) {
+            0x00...0x17, 0x19, 0x1C...0x1F => return Action{ .Execute = byte },
+            0x40...0x7E => self.state = .Ground,
+            else => {},
+        }
+        return null;
     }
 
     fn handleOSC(self: *Parser, byte: u8) !?Action {
         switch (byte) {
-            0x07 => {
-                // BEL terminates OSC
-                const action = Action{ .OSC = try self.osc_buffer.toOwnedSlice() };
-                self.state = .Ground;
-                return action;
-            },
+            0x07 => return self.finishOSC(),
             0x1B => {
-                // ESC might be starting ST (String Terminator: ESC \)
-                // We'll handle this in a simple way
-                if (self.osc_buffer.items.len > 0 and self.osc_buffer.getLast() == '\\') {
-                    _ = self.osc_buffer.pop();
-                    const action = Action{ .OSC = try self.osc_buffer.toOwnedSlice() };
-                    self.state = .Ground;
-                    return action;
-                }
-                try self.osc_buffer.append(byte);
+                self.state = .OSCEscape;
                 return null;
             },
+            0x00...0x06, 0x08...0x1A, 0x1C...0x1F => return null,
             else => {
-                try self.osc_buffer.append(byte);
+                if (self.osc_buffer.items.len >= MAX_OSC_LEN) {
+                    self.osc_overflow = true;
+                } else {
+                    try self.osc_buffer.append(byte);
+                }
                 return null;
             },
         }
     }
 
-    fn handleDCS(self: *Parser, byte: u8) !?Action {
-        // DCS (Device Control String) - not commonly used, just skip for now
-        if (byte == 0x1B) {
-            self.state = .Ground;
-        }
+    fn finishOSC(self: *Parser) ?Action {
+        self.state = .Ground;
+        if (self.osc_overflow) return null;
+        return Action{ .OSC = self.osc_buffer.items };
+    }
+
+    fn handleOSCEscape(self: *Parser, byte: u8) !?Action {
+        if (byte == '\\') return self.finishOSC();
+        // Any other byte aborts the OSC and starts a new escape sequence.
+        self.enterEscape();
+        return self.handleEscape(byte);
+    }
+
+    fn handleIgnoreString(self: *Parser, byte: u8) !?Action {
+        if (byte == 0x1B) self.state = .IgnoreStringEscape;
         return null;
+    }
+
+    fn handleIgnoreStringEscape(self: *Parser, byte: u8) !?Action {
+        if (byte == '\\') {
+            self.state = .Ground;
+            return null;
+        }
+        self.enterEscape();
+        return self.handleEscape(byte);
     }
 };
 
-/// Apply ANSI action to terminal
-pub fn applyAction(action: Action, terminal: anytype) !void {
-    switch (action) {
-        .Print => |ch| {
-            try terminal.putChar(ch);
-        },
-        .Execute => |byte| {
-            _ = byte;
-            // Handle other control characters
-        },
-        .CSI => |csi| {
-            try applyCSI(csi.params, csi.final_byte, terminal);
-        },
-        .OSC => |data| {
-            defer terminal.allocator.free(data);
-            try applyOSC(data, terminal);
-        },
-        .Clear => {
-            try terminal.clear();
-        },
-        .Bell => {
-            // Trigger visual/audio bell
-        },
-        .Backspace => {
-            try terminal.backspace();
-        },
-        .Tab => {
-            try terminal.tab();
-        },
-        .LineFeed => {
-            try terminal.lineFeed();
-        },
-        .CarriageReturn => {
-            try terminal.carriageReturn();
-        },
+// ---------------------------------------------------------------- tests
+
+fn feed(parser: *Parser, bytes: []const u8, out: *std.ArrayList(Action)) !void {
+    for (bytes) |b| {
+        if (try parser.advance(b)) |a| try out.append(a);
+        if (parser.takePending()) |a| try out.append(a);
     }
-}
-
-fn applyCSI(params: CSIParams, final_byte: u8, terminal: anytype) !void {
-    switch (final_byte) {
-        'A' => {
-            // CUU - Cursor Up
-            const n = params.getParam(0, 1);
-            try terminal.cursorUp(n);
-        },
-        'B' => {
-            // CUD - Cursor Down
-            const n = params.getParam(0, 1);
-            try terminal.cursorDown(n);
-        },
-        'C' => {
-            // CUF - Cursor Forward
-            const n = params.getParam(0, 1);
-            try terminal.cursorForward(n);
-        },
-        'D' => {
-            // CUB - Cursor Back
-            const n = params.getParam(0, 1);
-            try terminal.cursorBack(n);
-        },
-        'E' => {
-            // CNL - Cursor Next Line
-            const n = params.getParam(0, 1);
-            try terminal.cursorDown(n);
-            terminal.cursor_col = 0;
-        },
-        'F' => {
-            // CPL - Cursor Previous Line
-            const n = params.getParam(0, 1);
-            try terminal.cursorUp(n);
-            terminal.cursor_col = 0;
-        },
-        'G' => {
-            // CHA - Cursor Horizontal Absolute
-            const col = params.getParam(0, 1);
-            terminal.cursor_col = @min(col - 1, terminal.cols - 1);
-        },
-        'H', 'f' => {
-            // CUP - Cursor Position
-            const row = params.getParam(0, 1);
-            const col = params.getParam(1, 1);
-            terminal.moveCursor(@min(row - 1, terminal.rows - 1), @min(col - 1, terminal.cols - 1));
-        },
-        'J' => {
-            // ED - Erase in Display
-            const mode = params.getParam(0, 0);
-            try terminal.eraseDisplay(mode);
-        },
-        'K' => {
-            // EL - Erase in Line
-            const mode = params.getParam(0, 0);
-            try terminal.eraseLine(mode);
-        },
-        'S' => {
-            // SU - Scroll Up
-            const n = params.getParam(0, 1);
-            try terminal.scrollUp(n);
-        },
-        'T' => {
-            // SD - Scroll Down
-            const n = params.getParam(0, 1);
-            try terminal.scrollDown(n);
-        },
-        'm' => {
-            // SGR - Select Graphic Rendition
-            try applySGR(params, terminal);
-        },
-        's' => {
-            // SCP - Save Cursor Position
-            try terminal.saveCursor();
-        },
-        'u' => {
-            // RCP - Restore Cursor Position
-            try terminal.restoreCursor();
-        },
-        'h' => {
-            // SM - Set Mode
-            try terminal.setMode(params);
-        },
-        'l' => {
-            // RM - Reset Mode
-            try terminal.resetMode(params);
-        },
-        else => {
-            // Unknown or unimplemented sequence
-        },
-    }
-}
-
-fn applySGR(params: CSIParams, terminal: anytype) !void {
-    var i: u8 = 0;
-    while (i < params.param_count) : (i += 1) {
-        const param = params.params[i];
-        switch (param) {
-            0 => try terminal.resetAttributes(),
-            1 => try terminal.setBold(true),
-            3 => try terminal.setItalic(true),
-            4 => try terminal.setUnderline(true),
-            22 => try terminal.setBold(false),
-            23 => try terminal.setItalic(false),
-            24 => try terminal.setUnderline(false),
-            30...37 => try terminal.setFgColor(param - 30),
-            38 => {
-                if (i + 2 < params.param_count and params.params[i + 1] == 5) {
-                    try terminal.setFgColor(params.params[i + 2] % 16);
-                    i += 2;
-                } else if (i + 4 < params.param_count and params.params[i + 1] == 2) {
-                    const r = params.params[i + 2];
-                    const g = params.params[i + 3];
-                    const b = params.params[i + 4];
-                    terminal.current_fg = (r << 16) | (g << 8) | b;
-                    i += 4;
-                }
-            },
-            39 => try terminal.resetFgColor(),
-            40...47 => try terminal.setBgColor(param - 40),
-            48 => {
-                if (i + 2 < params.param_count and params.params[i + 1] == 5) {
-                    try terminal.setBgColor(params.params[i + 2] % 16);
-                    i += 2;
-                } else if (i + 4 < params.param_count and params.params[i + 1] == 2) {
-                    const r = params.params[i + 2];
-                    const g = params.params[i + 3];
-                    const b = params.params[i + 4];
-                    terminal.current_bg = (r << 16) | (g << 8) | b;
-                    i += 4;
-                }
-            },
-            49 => try terminal.resetBgColor(),
-            90...97 => try terminal.setFgColor(param - 90 + 8), // Bright colors
-            100...107 => try terminal.setBgColor(param - 100 + 8), // Bright colors
-            else => {},
-        }
-    }
-}
-
-fn applyOSC(data: []const u8, terminal: anytype) !void {
-    // OSC sequences typically format: number ; text
-    // Common ones: 0 (set title), 1 (set icon), 2 (set both)
-    if (data.len > 2 and data[1] == ';') {
-        const command = data[0];
-        const text = data[2..];
-        switch (command) {
-            '0', '1', '2' => {
-                try terminal.setTitle(text);
-            },
-            else => {},
-        }
-    }
-}
-
-test "Parser basic" {
-    const testing = std.testing;
-    var parser = Parser.init(testing.allocator);
-    defer parser.deinit();
-
-    // Test simple character
-    const action = try parser.advance('A');
-    try testing.expect(action != null);
-    if (action) |a| {
-        try testing.expect(a == .Print);
-        try testing.expectEqual(@as(u21, 'A'), a.Print);
-    }
-}
-
-test "Parser CSI" {
-    const testing = std.testing;
-    var parser = Parser.init(testing.allocator);
-    defer parser.deinit();
-
-    // Test CSI sequence: ESC [ 1 ; 2 H (cursor position)
-    _ = try parser.advance(0x1B); // ESC
-    _ = try parser.advance('['); // [
-    _ = try parser.advance('1');
-    _ = try parser.advance(';');
-    _ = try parser.advance('2');
-    const action = try parser.advance('H');
-
-    try testing.expect(action != null);
-    if (action) |a| {
-        try testing.expect(a == .CSI);
-        try testing.expectEqual(@as(u8, 'H'), a.CSI.final_byte);
-        try testing.expectEqual(@as(u32, 1), a.CSI.params.getParam(0, 0));
-        try testing.expectEqual(@as(u32, 2), a.CSI.params.getParam(1, 0));
-    }
-}
-
-test "Parser empty CUP uses no params" {
-    const testing = std.testing;
-    var parser = Parser.init(testing.allocator);
-    defer parser.deinit();
-
-    _ = try parser.advance(0x1B);
-    _ = try parser.advance('[');
-    const action = try parser.advance('H');
-    try testing.expect(action != null);
-    try testing.expectEqual(@as(u8, 0), action.?.CSI.params.param_count);
-}
-
-test "Parser CSI private mode DECSET" {
-    const testing = std.testing;
-    var parser = Parser.init(testing.allocator);
-    defer parser.deinit();
-
-    _ = try parser.advance(0x1B);
-    _ = try parser.advance('[');
-    _ = try parser.advance('?');
-    _ = try parser.advance('2');
-    _ = try parser.advance('0');
-    _ = try parser.advance('0');
-    _ = try parser.advance('4');
-    const action = try parser.advance('h');
-    try testing.expect(action != null);
-    try testing.expectEqual(@as(u8, 'h'), action.?.CSI.final_byte);
-    try testing.expectEqual(@as(u8, '?'), action.?.CSI.params.intermediate.?);
-    try testing.expectEqual(@as(u32, 2004), action.?.CSI.params.getParam(0, 0));
-}
-
-test "Parser control characters" {
-    const testing = std.testing;
-    var parser = Parser.init(testing.allocator);
-    defer parser.deinit();
-
-    // Test bell
-    const bell = try parser.advance(0x07);
-    try testing.expect(bell != null);
-    try testing.expect(bell.? == .Bell);
-
-    // Test line feed
-    const lf = try parser.advance(0x0A);
-    try testing.expect(lf != null);
-    try testing.expect(lf.? == .LineFeed);
-
-    // Test carriage return
-    const cr = try parser.advance(0x0D);
-    try testing.expect(cr != null);
-    try testing.expect(cr.? == .CarriageReturn);
 }
 
 fn collectPrints(parser: *Parser, bytes: []const u8, out: *std.ArrayList(u21)) !void {
@@ -603,13 +395,170 @@ fn collectPrints(parser: *Parser, bytes: []const u8, out: *std.ArrayList(u21)) !
     }
 }
 
+test "Parser basic" {
+    const testing = std.testing;
+    var parser = Parser.init(testing.allocator);
+    defer parser.deinit();
+    const action = try parser.advance('A');
+    try testing.expectEqual(@as(u21, 'A'), action.?.Print);
+}
+
+test "Parser CSI cursor position" {
+    const testing = std.testing;
+    var parser = Parser.init(testing.allocator);
+    defer parser.deinit();
+    var out = std.ArrayList(Action).init(testing.allocator);
+    defer out.deinit();
+    try feed(&parser, "\x1b[1;2H", &out);
+    try testing.expectEqual(@as(usize, 1), out.items.len);
+    const csi = out.items[0].CSI;
+    try testing.expectEqual(@as(u8, 'H'), csi.final_byte);
+    try testing.expectEqual(@as(u32, 1), csi.params.getParam(0, 0));
+    try testing.expectEqual(@as(u32, 2), csi.params.getParam(1, 0));
+}
+
+test "Parser CSI defaults, empty and zero params" {
+    const testing = std.testing;
+    var parser = Parser.init(testing.allocator);
+    defer parser.deinit();
+    var out = std.ArrayList(Action).init(testing.allocator);
+    defer out.deinit();
+    try feed(&parser, "\x1b[H\x1b[;5H\x1b[0A", &out);
+    try testing.expectEqual(@as(u8, 0), out.items[0].CSI.params.param_count);
+    try testing.expectEqual(@as(u32, 1), out.items[1].CSI.params.getNonZero(0, 1));
+    try testing.expectEqual(@as(u32, 5), out.items[1].CSI.params.getNonZero(1, 1));
+    try testing.expectEqual(@as(u32, 1), out.items[2].CSI.params.getNonZero(0, 1));
+}
+
+test "Parser private marker and intermediate" {
+    const testing = std.testing;
+    var parser = Parser.init(testing.allocator);
+    defer parser.deinit();
+    var out = std.ArrayList(Action).init(testing.allocator);
+    defer out.deinit();
+    try feed(&parser, "\x1b[?2004h\x1b[5 q\x1b[>c", &out);
+    try testing.expectEqual(@as(u8, '?'), out.items[0].CSI.params.private);
+    try testing.expectEqual(@as(u32, 2004), out.items[0].CSI.params.getParam(0, 0));
+    try testing.expectEqual(@as(u8, ' '), out.items[1].CSI.params.intermediate);
+    try testing.expectEqual(@as(u8, 'q'), out.items[1].CSI.final_byte);
+    try testing.expectEqual(@as(u8, '>'), out.items[2].CSI.params.private);
+}
+
+test "Parser colon sub-parameters" {
+    const testing = std.testing;
+    var parser = Parser.init(testing.allocator);
+    defer parser.deinit();
+    var out = std.ArrayList(Action).init(testing.allocator);
+    defer out.deinit();
+    try feed(&parser, "\x1b[38:2::10:20:30m", &out);
+    const p = out.items[0].CSI.params;
+    try testing.expectEqual(@as(u8, 6), p.param_count);
+    try testing.expect(!p.isSub(0));
+    try testing.expect(p.isSub(1) and p.isSub(5));
+    try testing.expectEqual(@as(u32, 30), p.getParam(5, 0));
+}
+
+test "Parser huge params saturate instead of overflowing" {
+    const testing = std.testing;
+    var parser = Parser.init(testing.allocator);
+    defer parser.deinit();
+    var out = std.ArrayList(Action).init(testing.allocator);
+    defer out.deinit();
+    try feed(&parser, "\x1b[99999999999999999999A", &out);
+    try testing.expectEqual(@as(u32, 65535), out.items[0].CSI.params.getParam(0, 0));
+}
+
+test "Parser executes C0 inside CSI" {
+    const testing = std.testing;
+    var parser = Parser.init(testing.allocator);
+    defer parser.deinit();
+    var out = std.ArrayList(Action).init(testing.allocator);
+    defer out.deinit();
+    try feed(&parser, "\x1b[1\r;2H", &out);
+    try testing.expectEqual(@as(u8, '\r'), out.items[0].Execute);
+    try testing.expectEqual(@as(u32, 2), out.items[1].CSI.params.getParam(1, 0));
+}
+
+test "Parser C0 controls" {
+    const testing = std.testing;
+    var parser = Parser.init(testing.allocator);
+    defer parser.deinit();
+    try testing.expectEqual(@as(u8, 0x07), (try parser.advance(0x07)).?.Execute);
+    try testing.expectEqual(@as(u8, 0x0A), (try parser.advance(0x0A)).?.Execute);
+    try testing.expectEqual(@as(u8, 0x0D), (try parser.advance(0x0D)).?.Execute);
+}
+
+test "Parser ESC with intermediate (charset, DECALN)" {
+    const testing = std.testing;
+    var parser = Parser.init(testing.allocator);
+    defer parser.deinit();
+    var out = std.ArrayList(Action).init(testing.allocator);
+    defer out.deinit();
+    try feed(&parser, "\x1b(0\x1b#8\x1b7", &out);
+    try testing.expectEqual(@as(u8, '('), out.items[0].Esc.intermediate);
+    try testing.expectEqual(@as(u8, '0'), out.items[0].Esc.final);
+    try testing.expectEqual(@as(u8, '#'), out.items[1].Esc.intermediate);
+    try testing.expectEqual(@as(u8, '7'), out.items[2].Esc.final);
+    try testing.expectEqual(@as(usize, 3), out.items.len);
+}
+
+test "Parser OSC terminated by BEL and by ST" {
+    const testing = std.testing;
+    var parser = Parser.init(testing.allocator);
+    defer parser.deinit();
+    var titles = std.ArrayList(u8).init(testing.allocator);
+    defer titles.deinit();
+    for ("\x1b]0;one\x07\x1b]2;two\x1b\\x") |b| {
+        if (try parser.advance(b)) |a| switch (a) {
+            .OSC => |d| {
+                try titles.appendSlice(d);
+                try titles.append('|');
+            },
+            .Print => |c| try titles.append(@intCast(c)),
+            else => {},
+        };
+    }
+    try testing.expectEqualStrings("0;one|2;two|x", titles.items);
+}
+
+test "Parser swallows DCS and APC payloads" {
+    const testing = std.testing;
+    var parser = Parser.init(testing.allocator);
+    defer parser.deinit();
+    var out = std.ArrayList(u21).init(testing.allocator);
+    defer out.deinit();
+    try collectPrints(&parser, "a\x1bP+q544e\x1b\\b\x1b_payload\x1b\\c", &out);
+    try testing.expectEqualSlices(u21, &.{ 'a', 'b', 'c' }, out.items);
+}
+
+test "Parser drops oversized OSC" {
+    const testing = std.testing;
+    var parser = Parser.init(testing.allocator);
+    defer parser.deinit();
+    _ = try parser.advance(0x1b);
+    _ = try parser.advance(']');
+    var i: usize = 0;
+    while (i < MAX_OSC_LEN + 10) : (i += 1) _ = try parser.advance('x');
+    try testing.expect((try parser.advance(0x07)) == null);
+    try testing.expectEqual(ParserState.Ground, parser.state);
+}
+
+test "Parser CAN aborts a sequence" {
+    const testing = std.testing;
+    var parser = Parser.init(testing.allocator);
+    defer parser.deinit();
+    var out = std.ArrayList(u21).init(testing.allocator);
+    defer out.deinit();
+    try collectPrints(&parser, "\x1b[12\x18A", &out);
+    try testing.expectEqualSlices(u21, &.{'A'}, out.items);
+}
+
 test "Parser decodes UTF-8" {
     const testing = std.testing;
     var parser = Parser.init(testing.allocator);
     defer parser.deinit();
     var out = std.ArrayList(u21).init(testing.allocator);
     defer out.deinit();
-
     try collectPrints(&parser, "h\xc3\xa9 \xe6\x97\xa5\xf0\x9f\x99\x82", &out);
     try testing.expectEqualSlices(u21, &.{ 'h', 0xE9, ' ', 0x65E5, 0x1F642 }, out.items);
 }
@@ -620,7 +569,6 @@ test "Parser UTF-8 split across chunks" {
     defer parser.deinit();
     var out = std.ArrayList(u21).init(testing.allocator);
     defer out.deinit();
-
     try collectPrints(&parser, "\xe6\x97", &out);
     try testing.expectEqual(@as(usize, 0), out.items.len);
     try collectPrints(&parser, "\xa5", &out);
@@ -633,7 +581,6 @@ test "Parser replaces invalid UTF-8" {
     defer parser.deinit();
     var out = std.ArrayList(u21).init(testing.allocator);
     defer out.deinit();
-
     // stray continuation, overlong C0 lead, truncated sequence followed by
     // ASCII, surrogate (ED A0 80), F5 lead, overlong E0 80 80
     try collectPrints(&parser, "\x80\xc0A\xe6\x97B\xed\xa0\x80\xf5\xe0\x80", &out);
@@ -645,11 +592,8 @@ test "Parser: ESC interrupting UTF-8 still starts a sequence" {
     const testing = std.testing;
     var parser = Parser.init(testing.allocator);
     defer parser.deinit();
-
-    const r = try parser.advance(0xC3);
-    try testing.expect(r == null);
+    try testing.expect((try parser.advance(0xC3)) == null);
     const a = try parser.advance(0x1B);
-    try testing.expect(a.? == .Print);
     try testing.expectEqual(unicode.replacement_char, a.?.Print);
     try testing.expect(parser.takePending() == null);
     try testing.expectEqual(ParserState.Escape, parser.state);
