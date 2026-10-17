@@ -59,7 +59,8 @@
 - [x] OSC 0/2 window title, OSC 7 cwd, OSC 8 hyperlinks (parsed, bounded), DECSCUSR cursor shapes
 - [x] `TERM=xterm-256color`, `COLORTERM=truecolor` in the shell environment
 - [ ] DECCOLM 80/132 switching (side effects only), left/right margins (DECSLRM), double-size lines
-- [ ] Reflow on resize, underline colour/styles, blinking text
+- [x] Reflow on resize (screen + scrollback), underline colour/styles
+- [ ] Blinking text
 - [x] Shell integration
 
 ### Phase 2 - Vulkan Rendering (High Priority)
@@ -73,8 +74,8 @@
 - [x] Window creation and management
 - [x] High-DPI display support
 - [x] Window resize handling
-- [ ] Frame synchronization
-- [ ] Performance optimization (batching, minimal state changes)
+- [x] Frame synchronization (2 frames in flight, fences/semaphores, fifo/mailbox/immediate)
+- [x] Performance optimization (damage tracking, one instanced draw, coalesced PTY reads; see docs/PERFORMANCE.md)
 
 ### Phase 3 - AI Integration (Medium Priority)
 - [ ] OpenAI-compatible HTTP/JSON client (default: local Ollama, configurable)
@@ -116,7 +117,7 @@
 ### Main Event Loop
 - [x] Event loop architecture
 - [x] Keyboard input handling
-- [ ] Mouse input handling
+- [x] Mouse input handling
 - [x] Rendering loop integration (GPU text pipeline with blit/XPutImage fallback)
 - [x] Event dispatching to subsystems
 - [x] Graceful shutdown handling

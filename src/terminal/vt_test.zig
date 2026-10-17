@@ -15,7 +15,7 @@ fn mk(rows: u16, cols: u16) !Terminal {
 fn rowText(term: *Terminal, row: u16) ![]u8 {
     var list = std.ArrayList(u8).init(t.allocator);
     errdefer list.deinit();
-    try terminal.appendRowText(term.buffer[@as(usize, row) * term.cols ..][0..term.cols], list.writer());
+    try terminal.appendRowText(term.screenRow(row), list.writer());
     const trimmed_len = std.mem.trimRight(u8, list.items, " ").len;
     list.shrinkRetainingCapacity(trimmed_len);
     return list.toOwnedSlice();
@@ -688,7 +688,7 @@ test "DECCOLM clears, homes and resets margins without resizing" {
     try t.expectEqual(@as(u16, 0), term.cursor_col);
     try t.expectEqual(@as(u16, 0), term.scroll_top);
     try t.expectEqual(@as(u16, 4), term.scroll_bottom);
-    try t.expectEqual(@as(u21, ' '), term.buffer[0].char);
+    try t.expectEqual(@as(u21, ' '), term.screenRow(0)[0].char);
     try t.expectEqual(@as(u16, 10), term.cols);
 }
 
@@ -696,12 +696,12 @@ test "SGR 58 sets underline colour and 4:3 selects curly" {
     var term = try mk(2, 10);
     defer term.deinit();
     try term.processOutput("\x1b[4:3;58:2::10:20:30mA\x1b[59;21mB\x1b[24mC");
-    try t.expect(term.buffer[0].underline);
-    try t.expectEqual(terminal.UnderlineStyle.curly, term.buffer[0].underline_style);
-    try t.expectEqual(color.rgb(10, 20, 30), term.buffer[0].underline_color);
-    try t.expectEqual(terminal.UnderlineStyle.double, term.buffer[1].underline_style);
-    try t.expectEqual(color.none, term.buffer[1].underline_color);
-    try t.expect(!term.buffer[2].underline);
+    try t.expect(term.screenRow(0)[0].underline);
+    try t.expectEqual(terminal.UnderlineStyle.curly, term.screenRow(0)[0].underline_style);
+    try t.expectEqual(color.rgb(10, 20, 30), term.screenRow(0)[0].underline_color);
+    try t.expectEqual(terminal.UnderlineStyle.double, term.screenRow(0)[1].underline_style);
+    try t.expectEqual(color.none, term.screenRow(0)[1].underline_color);
+    try t.expect(!term.screenRow(0)[2].underline);
 }
 
 test "OSC 52 set and query are queued for the front end" {
@@ -728,7 +728,9 @@ test "soft wrap is recorded and absolute lines survive scrolling" {
     const l0 = term.lineAt(0).?;
     try std.testing.expect(l0[3].soft_wrap);
     try std.testing.expectEqual(@as(u21, 'a'), l0[0].char);
-    try std.testing.expect(!term.lineAt(1).?[3].soft_wrap);
+    const l1 = term.lineAt(1).?;
+    try std.testing.expectEqual(@as(usize, 2), l1.len); // "ef", blanks trimmed
+    try std.testing.expect(!l1[l1.len - 1].soft_wrap);
     try std.testing.expectEqual(@as(u21, 'x'), term.lineAt(2).?[0].char);
     try std.testing.expect(term.lineAt(4) == null);
     try std.testing.expect(term.lineAt(-1) == null);
@@ -743,4 +745,83 @@ test "scrollback ring keeps the newest lines in order" {
     try std.testing.expectEqual(@as(u21, '3'), term.lineAt(2).?[0].char);
     try std.testing.expectEqual(@as(u21, '5'), term.lineAt(4).?[0].char);
     try std.testing.expectEqual(@as(u21, '6'), term.lineAt(5).?[0].char);
+}
+
+// ---------------------------------------------------------------- reflow
+
+test "reflow: narrowing re-wraps lines and pushes rows to scrollback" {
+    var term = try mk(3, 10);
+    defer term.deinit();
+    try term.processOutput("abcdefgh\r\n$ ");
+    try term.resize(3, 4);
+    // "abcdefgh" -> "abcd" / "efgh" (soft-wrapped); the top stays put and
+    // the cursor moves down.
+    try expectRow(&term, 0, "abcd");
+    try expectRow(&term, 1, "efgh");
+    try expectRow(&term, 2, "$");
+    try expectCursor(&term, 2, 2);
+    try t.expect(term.screenRow(0)[3].soft_wrap);
+    try t.expectEqual(@as(usize, 0), term.scrollbackLen());
+    // Narrower still: rows that no longer fit go to scrollback.
+    try term.resize(3, 2);
+    try expectRow(&term, 2, "$");
+    try t.expectEqual(@as(usize, 2), term.scrollbackLen());
+}
+
+test "reflow: widening joins soft-wrapped rows, including scrollback" {
+    var term = try mk(2, 4);
+    defer term.deinit();
+    try term.processOutput("0123456789\r\nxy");
+    // 10 chars over 4 columns = 3 rows + "xy": one row went to history.
+    try t.expect(term.scrollbackLen() >= 1);
+    try term.resize(2, 12);
+    try expectRow(&term, 0, "0123456789");
+    try expectRow(&term, 1, "xy");
+    try expectCursor(&term, 1, 2);
+    try t.expectEqual(@as(usize, 0), term.scrollbackLen());
+    try t.expect(!term.screenRow(0)[11].soft_wrap);
+}
+
+test "reflow: wide chars never split and round-trip" {
+    var term = try mk(4, 6);
+    defer term.deinit();
+    try term.processOutput("ab\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e");
+    try term.resize(4, 3);
+    try expectRow(&term, 0, "ab");
+    try expectRow(&term, 1, "\u{65e5}");
+    try expectRow(&term, 2, "\u{672c}");
+    try term.resize(4, 6);
+    try expectRow(&term, 0, "ab\u{65e5}\u{672c}");
+    try expectRow(&term, 1, "\u{8a9e}");
+    try term.resize(4, 8);
+    try expectRow(&term, 0, "ab\u{65e5}\u{672c}\u{8a9e}");
+}
+
+test "reflow: alternate screen is cropped, primary still reflows" {
+    var term = try mk(3, 8);
+    defer term.deinit();
+    try term.processOutput("12345678abc\x1b[?1049h\x1b[2;1HALT");
+    try term.resize(3, 4);
+    try expectRow(&term, 1, "ALT");
+    try term.processOutput("\x1b[?1049l");
+    try expectRow(&term, 0, "1234");
+    try expectRow(&term, 1, "5678");
+    try expectRow(&term, 2, "abc");
+    try expectCursor(&term, 2, 3);
+}
+
+test "scrolling rotates rows without corrupting content" {
+    var term = try mk(3, 4);
+    defer term.deinit();
+    try term.processOutput("a\r\nb\r\nc\r\nd\r\ne");
+    try expectRow(&term, 0, "c");
+    try expectRow(&term, 1, "d");
+    try expectRow(&term, 2, "e");
+    try term.processOutput("\x1b[1;2r\x1b[1;1H\x1bM"); // RI in a region: shift down
+    try expectRow(&term, 0, "");
+    try expectRow(&term, 1, "c");
+    try expectRow(&term, 2, "e");
+    try term.processOutput("\x1b[r\x1b[2;1H\x1b[J");
+    try expectRow(&term, 0, "");
+    try expectRow(&term, 1, "");
 }

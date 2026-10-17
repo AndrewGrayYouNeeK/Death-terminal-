@@ -20,6 +20,9 @@ pub const Atlas = struct {
     /// Bumped whenever the image is reallocated or cleared; the GPU side
     /// must re-create/re-upload everything when it changes.
     generation: u32 = 1,
+    /// Bumped only when glyphs are evicted (`reset`): rects handed out
+    /// before are invalid. Growing keeps rects, so it does not bump this.
+    epoch: u32 = 1,
     /// Region written since the last `takeDirty` (null = clean).
     dirty: ?Rect = null,
 
@@ -43,6 +46,7 @@ pub const Atlas = struct {
         @memset(self.pixels, 0);
         self.shelves.clearRetainingCapacity();
         self.generation +%= 1;
+        self.epoch +%= 1;
         self.dirty = null;
     }
 

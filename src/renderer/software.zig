@@ -16,6 +16,10 @@ pub const SoftwareRenderer = struct {
     width: u32,
     height: u32,
     dirty: bool,
+    /// Pixel rows [start, end) touched by the last render.
+    damage_y: [2]u32 = .{ 0, 0 },
+    /// Pixels hold a complete frame (partial updates are possible).
+    valid: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, cols: u16, rows: u16, cell: CellPx) !SoftwareRenderer {
         const width = @max(1, @as(u32, cols) * cell.w);
@@ -41,16 +45,63 @@ pub const SoftwareRenderer = struct {
         self.width = w;
         self.height = h;
         self.dirty = true;
+        self.valid = false;
         @memset(self.pixels, 0xFF000000);
     }
 
     pub fn render(self: *SoftwareRenderer, fr: *const frame_mod.Frame, atlas: *const Atlas) void {
         @memset(self.pixels, 0xFF000000 | (fr.clear & 0xFFFFFF));
-        for (fr.quads.items) |q| self.drawQuad(q, atlas);
+        for (fr.quads.items) |q| self.drawQuad(q, atlas, 0, self.height);
+        self.dirty = true;
+        self.damage_y = .{ 0, self.height };
+        self.valid = true;
+    }
+
+    /// Re-rasterise only the row bands the last `Frame.build` changed
+    /// (plus the old/new overlay). Falls back to `render` on full damage.
+    /// `damage_y` gets the touched pixel rows (empty when nothing changed).
+    pub fn renderDamage(self: *SoftwareRenderer, fr: *const frame_mod.Frame, atlas: *const Atlas) void {
+        if (!self.valid or fr.full_damage) return self.render(fr, atlas);
+        self.damage_y = .{ 0, 0 };
+        if (!fr.changed) return;
+        const rows = fr.dirty_rows.items.len;
+        const ch: f32 = @floatFromInt(@max(fr.key.cell_h, 1));
+        var band_dirty = self.allocator.alloc(bool, rows) catch return self.render(fr, atlas);
+        defer self.allocator.free(band_dirty);
+        @memcpy(band_dirty, fr.dirty_rows.items);
+        for (fr.overlay_px) |maybe| if (maybe) |rect| {
+            const r0: usize = @intFromFloat(@max(0, @floor(rect.y / ch)));
+            const r1: usize = @intFromFloat(@max(0, @ceil((rect.y + rect.h) / ch)));
+            var r = r0;
+            while (r < @min(r1, rows)) : (r += 1) band_dirty[r] = true;
+        };
+        const clear_px = 0xFF000000 | (fr.clear & 0xFFFFFF);
+        var r: usize = 0;
+        while (r < rows) {
+            if (!band_dirty[r]) {
+                r += 1;
+                continue;
+            }
+            var e = r + 1;
+            while (e < rows and band_dirty[e]) e += 1;
+            const y0: u32 = @min(self.height, @as(u32, @intFromFloat(@as(f32, @floatFromInt(r)) * ch)));
+            // The last band extends to the window edge (partial row).
+            const y1: u32 = if (e == rows) self.height else @min(self.height, @as(u32, @intFromFloat(@as(f32, @floatFromInt(e)) * ch)));
+            @memset(self.pixels[@as(usize, y0) * self.width .. @as(usize, y1) * self.width], clear_px);
+            var k = r;
+            while (k < e) : (k += 1) for (fr.rowQuads(k).bg) |q| self.drawQuad(q, atlas, y0, y1);
+            // Glyphs may overhang into neighbouring rows.
+            k = if (r > 0) r - 1 else 0;
+            while (k < @min(e + 1, rows)) : (k += 1) for (fr.rowQuads(k).fg) |q| self.drawQuad(q, atlas, y0, y1);
+            for (fr.overlayQuads()) |q| self.drawQuad(q, atlas, y0, y1);
+            if (self.damage_y[1] == 0) self.damage_y[0] = y0;
+            self.damage_y[1] = y1;
+            r = e;
+        }
         self.dirty = true;
     }
 
-    fn drawQuad(self: *SoftwareRenderer, q: frame_mod.Quad, atlas: *const Atlas) void {
+    fn drawQuad(self: *SoftwareRenderer, q: frame_mod.Quad, atlas: *const Atlas, clip_y0: u32, clip_y1: u32) void {
         const x0: i64 = @intFromFloat(@round(q.x));
         const y0: i64 = @intFromFloat(@round(q.y));
         const w: i64 = @intFromFloat(@round(q.w));
@@ -60,7 +111,7 @@ pub const SoftwareRenderer = struct {
         var dy: i64 = 0;
         while (dy < h) : (dy += 1) {
             const py = y0 + dy;
-            if (py < 0 or py >= self.height) continue;
+            if (py < clip_y0 or py >= clip_y1 or py >= self.height) continue;
             var dx: i64 = 0;
             while (dx < w) : (dx += 1) {
                 const px = x0 + dx;
@@ -127,6 +178,40 @@ test "software renderer draws glyph pixels in the fg colour over bg" {
     r.render(&fr, &f.atlas);
     try std.testing.expectEqual(@as(u32, 0xFF00FF00), r.pixels[8 * 16 / 2 * 0 + 3]);
     try std.testing.expectEqual(@as(u32, 0xFF0000FF), r.pixels[5 * 16 + 12]);
+}
+
+test "software damage render matches a full render" {
+    var f = try Fonts.init(std.testing.allocator, .{ .retro = true });
+    defer f.deinit();
+    var cells: [3 * 4]Cell = undefined;
+    for (&cells, 0..) |*c, i| {
+        c.* = Cell.init();
+        c.char = @intCast('a' + i);
+    }
+    var fr = frame_mod.Frame.init(std.testing.allocator);
+    defer fr.deinit();
+    var a = try SoftwareRenderer.init(std.testing.allocator, 4, 3, .{ .w = 8, .h = 16 });
+    defer a.deinit();
+    var b = try SoftwareRenderer.init(std.testing.allocator, 4, 3, .{ .w = 8, .h = 16 });
+    defer b.deinit();
+    try fr.build(&f, &cells, 3, 4, 0, 0, .{});
+    a.renderDamage(&fr, &f.atlas);
+    // Change one cell and move the cursor: only rows 0 and 1 are redrawn.
+    cells[5].char = 'Z';
+    cells[5].bg_color = 0x00FF00;
+    try fr.build(&f, &cells, 3, 4, 1, 2, .{});
+    try std.testing.expect(!fr.full_damage);
+    try std.testing.expectEqual(@as(usize, 2), fr.rows_rebuilt);
+    a.renderDamage(&fr, &f.atlas);
+    try std.testing.expectEqual(@as(u32, 0), a.damage_y[0]);
+    try std.testing.expectEqual(@as(u32, 32), a.damage_y[1]);
+    b.render(&fr, &f.atlas);
+    try std.testing.expectEqualSlices(u32, b.pixels, a.pixels);
+    // Nothing changed: nothing drawn.
+    try fr.build(&f, &cells, 3, 4, 1, 2, .{});
+    try std.testing.expect(!fr.changed);
+    a.renderDamage(&fr, &f.atlas);
+    try std.testing.expectEqual(@as(u32, 0), a.damage_y[1]);
 }
 
 test "blendOver mixes premultiplied coverage" {

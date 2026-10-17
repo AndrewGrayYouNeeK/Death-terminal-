@@ -70,6 +70,9 @@ const SearchState = struct {
     bad_regex: bool = false,
     matches: std.ArrayList(search.Match),
     current: ?usize = null,
+    /// Screen top when the matches were computed: lines above it were
+    /// history then and cannot have changed since.
+    searched_to: i64 = 0,
 };
 
 const Prompt = struct {
@@ -93,6 +96,11 @@ pub const Ui = struct {
     effects: std.ArrayList(Effect),
     last_total: u64 = 0,
     last_alt: bool = false,
+    last_layout: u32 = 0,
+    /// Hash of the selected text (lines >= sel_hash_from) when the user
+    /// last changed the selection; output that changes it clears it.
+    sel_hash: u64 = 0,
+    sel_hash_from: i64 = 0,
 
     pub fn init(allocator: std.mem.Allocator, opts: Options) Ui {
         return .{ .allocator = allocator, .opts = opts, .effects = std.ArrayList(Effect).init(allocator) };
@@ -127,7 +135,20 @@ pub const Ui = struct {
     // ------------------------------------------------------------ viewport
 
     pub fn viewTop(self: *const Ui, term: *const Terminal) i64 {
-        return term.screenTop() - @as(i64, @intCast(self.scroll));
+        return term.screenTop() - @as(i64, @intCast(self.scroll)) + self.viewShift(term);
+    }
+
+    /// While the search/paste bar would cover a used last row of the live
+    /// primary screen (typically the prompt), the view moves up one line so
+    /// that row stays visible above the bar.
+    fn viewShift(self: *const Ui, term: *const Terminal) i64 {
+        if (!self.overlayActive() or self.scroll != 0 or term.alt_active or term.rows < 2) return 0;
+        const last = term.rows - 1;
+        if (term.cursor_row == last) return 1;
+        for (term.screenRow(last)) |c| {
+            if (c.char != 0 and c.char != ' ') return 1;
+        }
+        return 0;
     }
 
     fn maxScroll(term: *const Terminal) usize {
@@ -143,6 +164,17 @@ pub const Ui = struct {
     /// Keep the view anchored to the same lines while output scrolls, and
     /// drop state that no longer applies. Call after feeding output.
     pub fn sync(self: *Ui, term: *const Terminal) void {
+        if (term.layout_gen != self.last_layout) {
+            // Resize reflowed the lines: absolute positions moved.
+            self.last_layout = term.layout_gen;
+            self.sel = null;
+            self.dragging = false;
+            self.scroll = 0;
+            self.last_total = term.scrollback.total;
+            self.last_alt = term.alt_active;
+            self.refreshSearch(term, true) catch {};
+            return;
+        }
         const total = term.scrollback.total;
         if (self.scroll > 0 and total > self.last_total) {
             self.scroll += @intCast(total - self.last_total);
@@ -154,15 +186,55 @@ pub const Ui = struct {
             self.sel = null;
             self.dragging = false;
             if (self.search != null) self.recomputeSearch(term) catch {};
+        } else if (self.search != null) {
+            self.refreshSearch(term, false) catch {};
         }
         if (self.sel) |s| {
-            if (s.ordered().start.line < term.historyTop() and s.ordered().end.line < term.historyTop()) self.sel = null;
+            if (s.ordered().start.line < term.historyTop() and s.ordered().end.line < term.historyTop()) {
+                self.sel = null;
+            } else if (!self.dragging and self.selHash(term, self.sel_hash_from) != self.sel_hash) {
+                // The selected text was overwritten.
+                self.sel = null;
+            }
         }
     }
 
+    fn selHash(self: *const Ui, term: *const Terminal, from: i64) u64 {
+        const s = self.sel orelse return 0;
+        if (!s.active) return 0;
+        const range = s.resolve(term, self.opts.word_chars);
+        var h = std.hash.Wyhash.init(0);
+        var line = @max(range.start.line, from);
+        while (line <= range.end.line) : (line += 1) {
+            const cells = term.lineAt(line) orelse {
+                h.update("\xff");
+                continue;
+            };
+            var c: u16 = 0;
+            while (c < term.cols) : (c += 1) {
+                if (!s.containsResolved(range, line, c)) continue;
+                const cell = if (c < cells.len) cells[c] else Cell.init();
+                const ch: u32 = if (cell.char == 0) ' ' else cell.char;
+                h.update(std.mem.asBytes(&ch));
+                h.update(&[_]u8{cell.width});
+            }
+        }
+        return h.final();
+    }
+
+    /// Remember the selected text after the user changed the selection.
+    fn noteSelection(self: *Ui, term: *const Terminal) void {
+        if (self.sel == null) return;
+        self.sel_hash_from = term.screenTop();
+        self.sel_hash = self.selHash(term, self.sel_hash_from);
+    }
+
     /// The user typed something for the shell: return to the live screen.
-    pub fn userTyped(self: *Ui) void {
+    /// Returns whether the view moved.
+    pub fn userTyped(self: *Ui) bool {
+        const moved = self.scroll != 0;
         self.scroll = 0;
+        return moved;
     }
 
     fn ensureVisible(self: *Ui, term: *const Terminal, line: i64) void {
@@ -187,6 +259,12 @@ pub const Ui = struct {
     /// reporting on and Shift not held) or to the caller's alternate-screen
     /// wheel handling.
     pub fn handleMouse(self: *Ui, term: *const Terminal, m: events.MouseInput, cell_w: u32, cell_h: u32, now_ms: i64) !bool {
+        const used = try self.handleMouseInner(term, m, cell_w, cell_h, now_ms);
+        if (used) self.noteSelection(term);
+        return used;
+    }
+
+    fn handleMouseInner(self: *Ui, term: *const Terminal, m: events.MouseInput, cell_w: u32, cell_h: u32, now_ms: i64) !bool {
         const reporting = term.modes.mouse != .off;
         if (reporting and !m.mods.shift) return false;
         switch (m.button) {
@@ -318,6 +396,7 @@ pub const Ui = struct {
                 var s = Selection.begin(.{ .line = if (term.alt_active) term.screenTop() else term.historyTop(), .col = 0 }, .normal);
                 s.update(.{ .line = term.screenTop() + rows - 1, .col = term.cols - 1 });
                 self.sel = s;
+                self.noteSelection(term);
                 try self.copySelection(term);
             },
             .clear_selection => self.sel = null,
@@ -497,8 +576,53 @@ pub const Ui = struct {
         self.search = null;
     }
 
+    /// Bring the matches up to date after output: matches in lines that
+    /// were history at the last search are kept (history is immutable),
+    /// evicted ones dropped, and everything from the logical line at the
+    /// old screen top down is searched again. The current match is kept
+    /// when it still exists; the view does not move. `full` re-searches
+    /// everything (after a reflow).
+    fn refreshSearch(self: *Ui, term: *const Terminal, full: bool) !void {
+        const st = &(self.search orelse return);
+        if (st.query.items.len == 0 or st.bad_regex) {
+            st.searched_to = term.screenTop();
+            return;
+        }
+        var s = search.Searcher.init(self.allocator, st.query.items, .{ .case_sensitive = st.case_sensitive, .regex = st.regex }) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            st.bad_regex = true;
+            return;
+        };
+        defer s.deinit();
+        const avail = if (term.alt_active) term.screenTop() else term.historyTop();
+        const from = if (full) avail else search.logicalStart(term, std.math.clamp(st.searched_to, avail, term.screenTop()), avail);
+        const cur: ?search.Match = if (st.current) |c| st.matches.items[c] else null;
+
+        var lo: usize = 0;
+        while (lo < st.matches.items.len and st.matches.items[lo].line < avail) lo += 1;
+        var hi: usize = lo;
+        while (hi < st.matches.items.len and st.matches.items[hi].line < from) hi += 1;
+        if (lo > 0) std.mem.copyForwards(search.Match, st.matches.items[0 .. hi - lo], st.matches.items[lo..hi]);
+        st.matches.shrinkRetainingCapacity(hi - lo);
+        try search.searchAll(&s, term, from, term.screenTop() + term.rows - 1, &st.matches);
+        st.searched_to = term.screenTop();
+
+        st.current = null;
+        if (st.matches.items.len == 0) return;
+        var idx: usize = st.matches.items.len - 1;
+        if (cur) |c| {
+            while (idx > 0 and st.matches.items[idx].line > c.line) idx -= 1;
+            for (st.matches.items, 0..) |m, i| if (std.meta.eql(m, c)) {
+                idx = i;
+                break;
+            };
+        }
+        st.current = idx;
+    }
+
     fn recomputeSearch(self: *Ui, term: *const Terminal) !void {
         const st = &(self.search orelse return);
+        st.searched_to = term.screenTop();
         // Refine around the current match while typing; otherwise start
         // from the bottom of the view.
         const anchor: i64 = if (st.current) |c| st.matches.items[c].line else self.viewTop(term) + term.rows - 1;
@@ -573,18 +697,23 @@ pub const Ui = struct {
 
         if (self.search) |st| {
             for (st.matches.items, 0..) |m, i| {
-                if (m.line < top or m.line >= top + rows) continue;
-                const row: usize = @intCast(m.line - top);
+                if (m.end_line < top or m.line >= top + rows) continue;
                 const mk: Mark = if (st.current != null and st.current.? == i) .current_match else .match;
-                var c = m.start;
-                while (c <= m.end and c < cols) : (c += 1) marks.items[row * cols + c] = mk;
+                var line = @max(m.line, top);
+                while (line <= @min(m.end_line, top + rows - 1)) : (line += 1) {
+                    const row: usize = @intCast(line - top);
+                    var c: u16 = if (line == m.line) m.start else 0;
+                    const last: u16 = if (line == m.end_line) m.end else cols - 1;
+                    while (c <= last and c < cols) : (c += 1) marks.items[row * cols + c] = mk;
+                }
             }
         }
 
+        const cur_row: i64 = @as(i64, term.cursor_row) + @as(i64, @intCast(@min(self.scroll, rows))) - self.viewShift(term);
         var out = Composed{
-            .cursor_row = term.cursor_row + @as(u16, @intCast(@min(self.scroll, rows))),
+            .cursor_row = @intCast(std.math.clamp(cur_row, 0, @as(i64, rows))),
             .cursor_col = term.cursor_col,
-            .cursor_visible = term.cursor_visible and self.scroll < rows and @as(usize, term.cursor_row) + self.scroll < rows,
+            .cursor_visible = term.cursor_visible and cur_row >= 0 and cur_row < rows,
         };
         if (self.opts.scrollbar and self.scroll > 0) {
             const hist: f32 = @floatFromInt(term.scrollback.len());
@@ -768,7 +897,7 @@ test "wheel scrolls history and a selection survives new output" {
     try testing.expectEqual(@as(usize, 0), ui.scroll);
     try testing.expect(try ui.handleAction(&term, .scroll_top));
     try testing.expectEqual(term.scrollback.len(), ui.scroll);
-    ui.userTyped();
+    _ = ui.userTyped();
     try testing.expectEqual(@as(usize, 0), ui.scroll);
 }
 
@@ -916,4 +1045,108 @@ test "ctrl+click opens allowlisted URLs and OSC 8 targets only" {
     try testing.expectEqual(@as(usize, 2), fx.len);
     try testing.expectEqualStrings("https://ziglang.org/x", fx[0].open_url);
     try testing.expectEqualStrings("https://example.com", fx[1].open_url);
+}
+
+test "selection clears when output overwrites the selected text" {
+    var term = try Terminal.initBuffer(testing.allocator, 3, 20, 10);
+    defer term.deinit();
+    try term.processOutput("keep this\r\nother");
+    var ui = Ui.init(testing.allocator, .{});
+    defer ui.deinit();
+    ui.sync(&term);
+    try drag(&ui, &term, 0, 0, 3, 0, .{}, 0);
+    try expectClipboard(&ui, .primary, "keep");
+    // Output elsewhere leaves it alone.
+    try term.processOutput(" more");
+    ui.sync(&term);
+    try testing.expect(ui.sel != null);
+    // Rewriting the selected cells clears it.
+    try term.processOutput("\x1b[1;1HKEEP");
+    ui.sync(&term);
+    try testing.expect(ui.sel == null);
+}
+
+test "selection survives scrolling but not a reflowing resize" {
+    var term = try Terminal.initBuffer(testing.allocator, 3, 20, 10);
+    defer term.deinit();
+    try term.processOutput("word one\r\n");
+    var ui = Ui.init(testing.allocator, .{});
+    defer ui.deinit();
+    ui.sync(&term);
+    try drag(&ui, &term, 0, 0, 3, 0, .{}, 0);
+    try term.processOutput("a\r\nb\r\nc\r\n");
+    ui.sync(&term);
+    try testing.expect(ui.sel != null); // scrolled into history, same text
+    try term.resize(3, 10);
+    ui.sync(&term);
+    try testing.expect(ui.sel == null);
+}
+
+test "search refreshes on new output and matches across wraps" {
+    var term = try Terminal.initBuffer(testing.allocator, 4, 10, 100);
+    defer term.deinit();
+    try term.processOutput("needle\r\n");
+    var ui = Ui.init(testing.allocator, .{});
+    defer ui.deinit();
+    ui.sync(&term);
+    _ = try ui.handleAction(&term, .search);
+    _ = try ui.handleText(&term, "needle");
+    try testing.expectEqual(@as(usize, 1), ui.matchCount());
+    // New output: a wrapped match ("xxxxxneedle" wraps at 10 cols).
+    try term.processOutput("xxxxxneedle\r\n");
+    ui.sync(&term);
+    try testing.expectEqual(@as(usize, 2), ui.matchCount());
+    const m = ui.search.?.matches.items[1];
+    try testing.expect(m.end_line == m.line + 1);
+    // Lots more output scrolls the first match into history; it stays.
+    for (0..6) |_| try term.processOutput("filler\r\n");
+    ui.sync(&term);
+    try testing.expectEqual(@as(usize, 2), ui.matchCount());
+    // A new match on the screen is picked up.
+    try term.processOutput("needle\r\n");
+    ui.sync(&term);
+    try testing.expectEqual(@as(usize, 3), ui.matchCount());
+    // Both halves of the wrapped match are highlighted when visible.
+    ui.scroll = 0;
+    ui.ensureVisible(&term, m.line);
+    var cells = std.ArrayList(Cell).init(testing.allocator);
+    defer cells.deinit();
+    var marks = std.ArrayList(Mark).init(testing.allocator);
+    defer marks.deinit();
+    _ = try ui.compose(&term, &cells, &marks);
+    const top = ui.viewTop(&term);
+    if (m.line >= top and m.end_line < top + term.rows - 1) {
+        const r0: usize = @intCast(m.line - top);
+        try testing.expect(marks.items[r0 * 10 + 9] != .none);
+        try testing.expect(marks.items[(r0 + 1) * 10 + 0] != .none);
+    }
+}
+
+test "search bar does not hide the prompt on the last row" {
+    var term = try Terminal.initBuffer(testing.allocator, 3, 20, 10);
+    defer term.deinit();
+    try term.processOutput("a\r\nb\r\n$ prompt");
+    var ui = Ui.init(testing.allocator, .{});
+    defer ui.deinit();
+    ui.sync(&term);
+    _ = try ui.handleAction(&term, .search);
+    var cells = std.ArrayList(Cell).init(testing.allocator);
+    defer cells.deinit();
+    var marks = std.ArrayList(Mark).init(testing.allocator);
+    defer marks.deinit();
+    const v = try ui.compose(&term, &cells, &marks);
+    // Row 1 now shows the prompt; the bar is on row 2.
+    try testing.expectEqual(@as(u21, '$'), cells.items[20].char);
+    try testing.expectEqual(@as(u21, 'F'), cells.items[40 + 1].char);
+    try testing.expectEqual(@as(u16, 1), v.cursor_row);
+    try testing.expect(v.cursor_visible);
+    _ = try ui.handleKey(&term, .escape, .{});
+    const w = try ui.compose(&term, &cells, &marks);
+    try testing.expectEqual(@as(u16, 2), w.cursor_row);
+    // With free rows below the prompt nothing moves.
+    try term.processOutput("\x1b[2J\x1b[H$ top");
+    _ = try ui.handleAction(&term, .search);
+    const x = try ui.compose(&term, &cells, &marks);
+    try testing.expectEqual(@as(u21, '$'), cells.items[0].char);
+    try testing.expectEqual(@as(u16, 0), x.cursor_row);
 }
