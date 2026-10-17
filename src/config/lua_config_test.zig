@@ -156,7 +156,7 @@ test "lua config: sandbox hides io, os.execute and require" {
         \\assert(io == nil, "io")
         \\assert(os.execute == nil, "os.execute")
         \\assert(os.remove == nil and require == nil and dofile == nil and loadfile == nil and debug == nil)
-        \\assert(os.getenv("HOME") ~= nil and type(os.time()) == "number")
+        \\assert(os.getenv("PATH") ~= nil and type(os.time()) == "number")
         \\assert(load(string.dump(function() end)) == nil, "binary chunks")
         \\config.font.size = 12
     , &d);
@@ -206,7 +206,7 @@ test "lua config: load() falls back to defaults on errors" {
     var tmp = t.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(.{ .sub_path = "config.lua", .data = "config.font.size = 14\nconfig.render.max_fps = -1\n" });
-    const path = try tmp.dir.realpathAlloc(t.allocator, "config.lua");
+    const path = try @import("../testutil.zig").tmpPath(t.allocator, &tmp, "config.lua");
     defer t.allocator.free(path);
     var d = config.Diagnostics.init(t.allocator);
     defer d.deinit();

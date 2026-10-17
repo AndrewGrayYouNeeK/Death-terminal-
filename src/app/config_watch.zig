@@ -201,7 +201,7 @@ test "watcher sees writes and renames over the file" {
     if (builtin.os.tag != .linux) return;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const dir = try @import("../testutil.zig").tmpPath(std.testing.allocator, &tmp, ".");
     defer std.testing.allocator.free(dir);
     const path = try std.fs.path.join(std.testing.allocator, &.{ dir, "config.lua" });
     defer std.testing.allocator.free(path);

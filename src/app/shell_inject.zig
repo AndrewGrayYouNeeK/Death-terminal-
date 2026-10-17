@@ -49,7 +49,8 @@ pub fn plan(arena: std.mem.Allocator, opts: pty.ShellOptions, program: []const u
             if (opts.args.len != 0) return opts;
             const args = try arena.alloc([]const u8, 2);
             args[0] = "--rcfile";
-            args[1] = try std.fs.path.join(arena, &.{ dir, "bashrc" });
+            // "/" like the other shells: MSYS/Cygwin bash on Windows wants it too.
+            args[1] = try std.fmt.allocPrint(arena, "{s}/bashrc", .{dir});
             out.args = args;
         },
         .zsh => {

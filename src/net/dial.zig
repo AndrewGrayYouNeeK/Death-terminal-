@@ -140,6 +140,20 @@ pub fn resolve(host: []const u8, port: u16, deadline_ms: i64, cancel: ?CancelFn)
 
 /// Connect to one address before `deadline_ms`. The socket comes back in
 /// blocking mode.
+/// shutdown(2) that never traps. On Windows std's posix.shutdown treats
+/// WSAEINVAL/WSAENOTSOCK as unreachable, and Wine returns them for a socket
+/// another thread is blocked reading. Errors don't matter to callers here.
+pub fn shutdownSocket(fd: posix.socket_t, how: posix.ShutdownHow) void {
+    if (builtin.os.tag == .windows) {
+        const ws2 = std.os.windows.ws2_32;
+        _ = ws2.shutdown(fd, switch (how) {
+            .recv => ws2.SD_RECEIVE,
+            .send => ws2.SD_SEND,
+            .both => ws2.SD_BOTH,
+        });
+    } else posix.shutdown(fd, how) catch {};
+}
+
 pub fn closeSocket(fd: posix.socket_t) void {
     if (builtin.os.tag == .windows) {
         _ = std.os.windows.ws2_32.closesocket(fd);

@@ -85,7 +85,7 @@ config is reloaded.
 | `selection.word_chars` | ``-_./~:@%+#?&=`` | Extra characters treated as part of a word on double-click |
 | `clipboard.paste_confirm` | `true` | Confirm multi-line pastes when bracketed paste is off |
 | `clipboard.osc52` | `"write"` | `off`, `write`, `read-write` |
-| `links.open_command` | `xdg-open` / `open` | Runs as `<cmd> <url>` for Ctrl+click, with no shell involved |
+| `links.open_command` | `xdg-open` / `open` (macOS) / `""` = ShellExecute (Windows) | Runs as `<cmd> <url>` for Ctrl+click, with no shell involved |
 | `keys` | — | `{ [chord] = action or false }`, applied over the defaults |
 | `default_keybindings` | `true` | `false` starts from an empty binding table |
 | `shell.program` | `""` | `""` uses `$SHELL`, falling back to `/bin/sh`. Names without `/` are searched in `$PATH` (**restart**) |

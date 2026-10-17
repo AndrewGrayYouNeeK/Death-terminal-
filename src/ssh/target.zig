@@ -174,7 +174,7 @@ pub fn configAliases(arena: std.mem.Allocator, config_file: []const u8, out: *st
 }
 
 fn defaultIdentities(a: std.mem.Allocator, ids: *std.ArrayList([]const u8), home: []const u8) !void {
-    for ([_][]const u8{ "id_ed25519", "id_ecdsa", "id_rsa" }) |n| try ids.append(try std.fs.path.join(a, &.{ home, ".ssh", n }));
+    for ([_][]const u8{ "id_ed25519", "id_ecdsa", "id_rsa" }) |n| try ids.append(try std.fmt.allocPrint(a, "{s}/.ssh/{s}", .{ home, n })); // same form as "~/" expansion
 }
 
 fn resolveJumps(a: std.mem.Allocator, list: []const u8, cfg: *ssh_config.SshConfig, env: Env, extra_id: ?[]const u8) ![]const Hop {

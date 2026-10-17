@@ -422,15 +422,16 @@ test "engine: the API key comes from the named environment variable" {
     const srv = try mock.MockServer.start(t.allocator, &replies);
     defer srv.deinit();
     var buf: [64]u8 = undefined;
-    // HOME is set in any sane test environment, so it stands in for a key variable here.
-    const e = try Engine.init(t.allocator, .{ .endpoint = srv.url(&buf), .model = "m", .api_key_env = "HOME" });
+    // HOME (SystemRoot on Windows) is always set, so it stands in for a key variable here.
+    const key_var = if (@import("builtin").os.tag == .windows) "SystemRoot" else "HOME";
+    const e = try Engine.init(t.allocator, .{ .endpoint = srv.url(&buf), .model = "m", .api_key_env = key_var });
     defer e.deinit();
     const g = try e.submit(.suggest, &msgs, 32, 0);
     const u = try waitDone(e, g, 3000);
     t.allocator.free(u.text);
     srv.mutex.lock();
     defer srv.mutex.unlock();
-    const want = try std.fmt.allocPrint(t.allocator, "authorization: Bearer {s}", .{env_mod.get("HOME").?});
+    const want = try std.fmt.allocPrint(t.allocator, "authorization: Bearer {s}", .{env_mod.get(key_var).?});
     defer t.allocator.free(want);
     try t.expect(std.ascii.indexOfIgnoreCase(srv.requests.items[0], want) != null);
 }

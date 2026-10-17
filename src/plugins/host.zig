@@ -1439,8 +1439,10 @@ fn apiStatusSet(p: *Plugin, L: *State) error{LuaMsg}!c_int {
     // One line, bounded.
     var clean: [200]u8 = undefined;
     var n: usize = 0;
-    for (text_in) |ch| {
+    for (text_in, 0..) |ch, i| {
         if (n == clean.len) break;
+        // CRLF (Windows command output) is one line break, like LF.
+        if (ch == '\r' and i + 1 < text_in.len and text_in[i + 1] == '\n') continue;
         clean[n] = if (ch < 0x20 or ch == 0x7f) ' ' else ch;
         n += 1;
     }

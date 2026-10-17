@@ -40,15 +40,32 @@ zig build release -Dtarget=x86_64-windows        # zig-out/release/*.zip
 
 ### Unit tests under Wine
 
-`zig build test -Dtarget=x86_64-windows -fwine` compiles (Wine 10 ships only
-`wine`, so put a `wine64` shim that execs `wine` on PATH). In the last run on
-Wine 10, 211 of the first 235 tests passed and 4 POSIX-only tests were
-skipped. The failures are uninvestigated: plugin host, registry and jobs tests,
-config file loading, and the Lua-config sandbox tests. Most report
-`error.Unexpected`. `ai.engine: a new submit cancels the running request` then
-hits a breakpoint exception and stops the run. `chatStream: timeout and cancel`
-is skipped on Windows because it hangs under Wine. Treat the Windows suite as
-not yet green; Linux is the gating platform.
+```sh
+# Wine 10 ships only `wine`; zig's -fwine runs `wine64`
+mkdir -p /tmp/wshim && printf '#!/bin/sh\nexec wine "$@"\n' > /tmp/wshim/wine64 && chmod +x /tmp/wshim/wine64
+PATH=/tmp/wshim:$PATH zig build test -Dtarget=x86_64-windows -fwine --summary all
+# one area: -Dtest-filter=plugins.host_test (repeatable)
+```
+
+Result on Wine 10: **332 passed, 2 skipped, 0 failed** (Linux runs 343,
+including the SSH suites, which are Linux-only).
+
+The two skips are POSIX-only code that Windows never runs:
+`resolveProgram` (PosixPty; ConPTY resolves the shell itself) and the
+termios raw-mode test (no termios on Windows).
+
+What was failing, and why:
+
+| Area | Cause | Fix |
+|---|---|---|
+| Plugin host, registry, config, Lua config (`error.Unexpected`) | Zig's Windows `realpath` asks the mount manager (IOCTL_MOUNTMGR_QUERY_POINTS), which Wine doesn't implement. Only tests call realpath. | `src/testutil.zig`: `tmpPath`/`cwdPath` build absolute paths from the cwd on Windows. |
+| Plugin dir, data and state paths | **Bug:** used `$HOME/.config/...`, so with HOME unset they became relative paths. | `%APPDATA%\death-terminal\plugins`, with data/state in `%LOCALAPPDATA%`; `~` is `%USERPROFILE%`. |
+| `config.example.lua` | **Bug:** set `links.open_command = "xdg-open"` on Windows. | `""` on Windows (ShellExecute default handler). |
+| AI `chatStream` timeout/cancel hang; engine "new submit cancels" crash | **Bug:** std.net reads sockets with ReadFile, which ignores SO_RCVTIMEO and retries on ERROR_OPERATION_ABORTED. Under Wine, `shutdown()` from another thread doesn't wake it either, and a shutdown during the read makes it fail with ERROR_IO_PENDING, which std treats as unreachable (the crash). | `src/net/relay.zig`: on Windows std talks to a loopback pair, and a relay thread copies bytes, polls cancel and deadline every 50 ms, and closes its end to end the stream. Cancel no longer calls shutdown on Windows. |
+| `io.wait` | **Bug:** one global WSA event shared by every thread, so one waiter could reset another's wake-up. | One event per call. |
+| Plugin status segments | CRLF from Windows commands showed as two spaces. | CRLF counts as one line break. |
+| bash `--rcfile` path, default SSH identity paths | Mixed `\` and `/`. | Always `/`, like the other shells and `~/` expansion. |
+| Jobs / async exec, Lua `os.getenv("HOME")`, engine API-key env tests | Tests assumed `sh`, `sleep` and `HOME`. | cmd.exe, `PATH` and `SystemRoot` on Windows. |
 
 ## macOS (untested at runtime)
 

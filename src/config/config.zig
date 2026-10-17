@@ -651,7 +651,7 @@ test "Config font keys from file and args" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(.{ .sub_path = "c.txt", .data = "font_family = \"Fira Code\"\nfont_size = 13.5\nline_height=1.2\nfont_ligatures = false\n" });
-    const path = try tmp.dir.realpathAlloc(testing.allocator, "c.txt");
+    const path = try @import("../testutil.zig").tmpPath(testing.allocator, &tmp, "c.txt");
     defer testing.allocator.free(path);
     try config.loadFromFile(path);
     try testing.expectEqualStrings("Fira Code", config.font_family);
@@ -683,7 +683,7 @@ test "Config selection, clipboard and keybind keys" {
     \\keybind = alt+c=copy
     \\
     });
-    const path = try tmp.dir.realpathAlloc(testing.allocator, "c.txt");
+    const path = try @import("../testutil.zig").tmpPath(testing.allocator, &tmp, "c.txt");
     defer testing.allocator.free(path);
     try config.loadFromFile(path);
     try testing.expect(config.copy_on_select);
@@ -712,14 +712,14 @@ test "Config performance keys" {
     \\read_budget_kb = 4
     \\
     });
-    const path = try tmp.dir.realpathAlloc(testing.allocator, "p.txt");
+    const path = try @import("../testutil.zig").tmpPath(testing.allocator, &tmp, "p.txt");
     defer testing.allocator.free(path);
     try config.loadFromFile(path);
     try testing.expectEqualStrings("mailbox", config.present_mode);
     try testing.expectEqual(@as(u16, 75), config.max_fps);
     try testing.expectEqual(@as(u32, 16), config.read_budget_kb);
     try tmp.dir.writeFile(.{ .sub_path = "v.txt", .data = "vsync = false\n" });
-    const vpath = try tmp.dir.realpathAlloc(testing.allocator, "v.txt");
+    const vpath = try @import("../testutil.zig").tmpPath(testing.allocator, &tmp, "v.txt");
     defer testing.allocator.free(vpath);
     try config.loadFromFile(vpath);
     try testing.expectEqualStrings("mailbox", config.present_mode);
@@ -730,7 +730,7 @@ test "Config legacy file through loadSource warns about deprecation" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(.{ .sub_path = "config.txt", .data = "font_size = 14\nmax_fps = 60\n" });
-    const path = try tmp.dir.realpathAlloc(testing.allocator, "config.txt");
+    const path = try @import("../testutil.zig").tmpPath(testing.allocator, &tmp, "config.txt");
     defer testing.allocator.free(path);
     var diags = Diagnostics.init(testing.allocator);
     defer diags.deinit();

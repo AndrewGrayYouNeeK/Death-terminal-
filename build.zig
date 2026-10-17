@@ -278,10 +278,17 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
+    const test_filters = blk: {
+        const raw = b.option([]const []const u8, "test-filter", "Only run unit tests whose name contains this (repeatable)") orelse break :blk &[_][]const u8{};
+        const list = b.allocator.alloc([]const u8, raw.len) catch @panic("OOM");
+        for (raw, list) |r, *l| l.* = r;
+        break :blk list;
+    };
     const unit_tests = b.addTest(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .filters = test_filters,
     });
     addPlatform(b, unit_tests, target);
     addFonts(b, unit_tests);

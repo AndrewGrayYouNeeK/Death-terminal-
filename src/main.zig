@@ -291,6 +291,8 @@ fn printHelp() !void {
 }
 
 test {
+    _ = @import("testutil.zig");
+    _ = @import("net/relay.zig");
     _ = @import("terminal/terminal.zig");
     _ = @import("terminal/ansi_parser.zig");
     _ = @import("terminal/scrollback.zig");

@@ -1,6 +1,7 @@
 //! Plugin host tests: sandbox, permissions, hook dispatch, error isolation.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const io = @import("../platform/io.zig");
 const t = std.testing;
 const host_mod = @import("host.zig");
@@ -35,7 +36,7 @@ const Fixture = struct {
     fn init() !*Fixture {
         const f = try t.allocator.create(Fixture);
         f.* = .{ .tmp = std.testing.tmpDir(.{}), .root = undefined };
-        f.root = try f.tmp.dir.realpathAlloc(t.allocator, ".");
+        f.root = try @import("../testutil.zig").tmpPath(t.allocator, &f.tmp, ".");
         return f;
     }
 
@@ -480,12 +481,17 @@ test "async: exec results arrive through the wake fd" {
     defer f.deinit();
     try f.start(&.{.{
         "runner",
-        \\dt.exec({ "sh", "-c", "echo out; exit 4" }, { cwd = "/" }, function(r)
-        \\  dt.status.set("r", string.format("%s|%d|%s", tostring(r.ok), r.code, r.stdout))
-        \\end)
+        if (builtin.os.tag == .windows)
+            \\dt.exec({ "cmd.exe", "/d", "/c", "echo out&exit /b 4" }, { cwd = "C:\\" }, function(r)
+            \\  dt.status.set("r", string.format("%s|%d|%s", tostring(r.ok), r.code, r.stdout))
+            \\end)
+        else
+            \\dt.exec({ "sh", "-c", "echo out; exit 4" }, { cwd = "/" }, function(r)
+            \\  dt.status.set("r", string.format("%s|%d|%s", tostring(r.ok), r.code, r.stdout))
+            \\end)
         ,
         &.{.exec},
-        .{ .name = "", .allow = allow(&.{.exec}), .exec = &.{"sh"} },
+        .{ .name = "", .allow = allow(&.{.exec}), .exec = &.{if (builtin.os.tag == .windows) "cmd.exe" else "sh"} },
     }});
     const h = f.host;
     try t.expectEqual(host_mod.Status.running, f.plugin(0).status);
@@ -503,7 +509,7 @@ test "examples: the bundled plugins load and do their job" {
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
     const aa = arena.allocator();
-    const dir = std.fs.cwd().realpathAlloc(aa, "plugins") catch return error.SkipZigTest;
+    const dir = @import("../testutil.zig").cwdPath(aa, &.{"plugins"}) catch return error.SkipZigTest;
     const f = try Fixture.init();
     defer f.deinit();
     const paths = registry.Paths{
@@ -559,7 +565,7 @@ test "examples: the bundled plugins load and do their job" {
     try t.expect(!f.noticeContains("after"));
 
     // git_branch: the repo's branch shows up once the cwd is known.
-    const repo = try std.fs.cwd().realpathAlloc(aa, ".");
+    const repo = try @import("../testutil.zig").cwdPath(aa, &.{"."});
     f.host.setInfo(.cwd, repo);
     f.host.emit(.cwd, .{ .map = &.{.{ .key = "cwd", .value = V{ .string = repo } }} });
     const deadline = std.time.milliTimestamp() + 5000;

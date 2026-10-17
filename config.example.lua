@@ -69,7 +69,7 @@ config.selection.copy_on_select = false     -- also copy selections to CLIPBOARD
 config.selection.word_chars = "-_./~:@%+#?&="  -- extra word characters for double-click
 config.clipboard.paste_confirm = true       -- confirm multi-line pastes without bracketed paste
 config.clipboard.osc52 = "write"            -- programs may: off | write | read-write the clipboard
-config.links.open_command = dt.os == "macos" and "open" or "xdg-open"
+config.links.open_command = dt.os == "macos" and "open" or dt.os == "windows" and "" or "xdg-open"  -- "" = default handler
 
 -- Key bindings -------------------------------------------------------------
 -- Chords are modifiers (ctrl, shift, alt) plus a key name: letters,

@@ -196,7 +196,7 @@ test "known_hosts: match, mismatch, unknown, port-specific names, append" {
         "@revoked * ecdsa-sha2-nistp256 " ++ ec ++ "\n" ++
         "[127.0.0.1]:2222 ssh-ed25519 " ++ ed ++ "\n" ++
         "box.lan ecdsa-sha2-nistp256 " ++ ec }); // no trailing newline
-    const path = try tmp.dir.realpathAlloc(t.allocator, "known_hosts");
+    const path = try @import("../testutil.zig").tmpPath(t.allocator, &tmp, "known_hosts");
     defer t.allocator.free(path);
 
     var kh = try KnownHosts.open(s, path);

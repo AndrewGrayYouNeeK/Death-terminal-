@@ -328,9 +328,13 @@ fn waitFor(q: *Queue, n: usize, out: *std.ArrayList(Done)) !void {
 test "exec jobs report output, exit codes and timeouts" {
     const q = try Queue.create();
     defer q.release();
-    try startExec(q, 1, .{ .argv = &.{ "sh", "-c", "echo hi; echo err >&2; exit 3" } });
-    try startExec(q, 2, .{ .argv = &.{ "sleep", "5" }, .timeout_ms = 100 });
-    try startExec(q, 3, .{ .argv = &.{"/nonexistent/prog"} });
+    const win = builtin.os.tag == .windows;
+    // Windows has no sh/sleep; cmd.exe does the same job (busy loop instead of sleep).
+    const say: []const []const u8 = if (win) &.{ "cmd.exe", "/d", "/c", "echo hi&>&2 echo err&exit /b 3" } else &.{ "sh", "-c", "echo hi; echo err >&2; exit 3" };
+    const slow: []const []const u8 = if (win) &.{ "cmd.exe", "/d", "/c", "for /l %i in (1,1,100000000) do @rem" } else &.{ "sleep", "5" };
+    try startExec(q, 1, .{ .argv = say });
+    try startExec(q, 2, .{ .argv = slow, .timeout_ms = 100 });
+    try startExec(q, 3, .{ .argv = &.{if (win) "C:\\nonexistent\\prog.exe" else "/nonexistent/prog"} });
     var out = std.ArrayList(Done).init(std.testing.allocator);
     defer {
         for (out.items) |*d| d.deinit();
@@ -340,8 +344,9 @@ test "exec jobs report output, exit codes and timeouts" {
     for (out.items) |d| switch (d.id) {
         1 => {
             try std.testing.expectEqual(@as(i64, 3), d.status);
-            try std.testing.expectEqualStrings("hi\n", d.body);
-            try std.testing.expectEqualStrings("err\n", d.stderr);
+            const nl = if (win) "\r\n" else "\n";
+            try std.testing.expectEqualStrings("hi" ++ nl, d.body);
+            try std.testing.expectEqualStrings("err" ++ nl, d.stderr);
             try std.testing.expectEqual(@as(usize, 0), d.err.len);
         },
         2 => try std.testing.expect(std.mem.startsWith(u8, d.err, "timed out")),

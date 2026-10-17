@@ -25,6 +25,11 @@ First versioned release. Everything below (milestones 1–12) ships in it.
 
 ### Fixed
 - AI "offline" with endpoints that answer HTTP/1.0 or `Connection: close` and label an SSE stream as `application/json` (or send no Content-Type): the body is now sniffed (`data:` vs `{`), so these replies are parsed instead of failing as bad JSON. Close-delimited and Content-Length bodies are covered by tests
+- Windows: AI requests can now time out and be cancelled. std's socket reads (ReadFile) ignore SO_RCVTIMEO and can't be interrupted, so requests go through a small relay thread
+- Windows: plugin directories are under `%APPDATA%` and `%LOCALAPPDATA%` instead of a relative `.config` path when HOME is unset
+- Windows: `config.example.lua` no longer sets `links.open_command = "xdg-open"`
+- Windows: each wait in the event layer gets its own socket event, so concurrent waiters don't steal each other's wake-ups
+- Plugin status text treats CRLF as one line break
 
 ### Added
 - Windows: ConPTY PTY (pwsh → powershell → %COMSPEC%, or `config.shell.program`), socket-based event loop with zero idle CPU, Win32 clipboard and `ShellExecuteW` URL opening, FreeType + HarfBuzz built from source with a Windows font-folder scan, config in `%APPDATA%\death-terminal`, config watching, exe icon + version info. Cross-compiles with `zig build -Dtarget=x86_64-windows`; checked under Wine 10 (GUI, Vulkan, fonts, input) — see docs/PLATFORMS.md for what could not be verified

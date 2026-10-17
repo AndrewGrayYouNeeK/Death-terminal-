@@ -219,8 +219,8 @@ pub fn loadFile(cfg: *Config, path: []const u8, opts: cfg_mod.LoadOptions, diags
 
 /// Path with $HOME shown as "~" (what error messages print).
 pub fn displayName(buf: []u8, path: []const u8) []const u8 {
-    if (env_mod.get("HOME")) |home| {
-        if (home.len > 1 and std.mem.startsWith(u8, path, home) and path.len > home.len and path[home.len] == '/') {
+    if (env_mod.home()) |home| {
+        if (home.len > 1 and std.mem.startsWith(u8, path, home) and path.len > home.len and std.fs.path.isSep(path[home.len])) {
             return std.fmt.bufPrint(buf, "~{s}", .{path[home.len..]}) catch path;
         }
     }

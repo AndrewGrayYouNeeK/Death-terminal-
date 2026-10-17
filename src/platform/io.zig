@@ -149,7 +149,6 @@ const Win = if (is_windows) struct {
     const FD_ACCEPT: i32 = 8;
     const FD_CLOSE: i32 = 32;
 
-    var event: ?windows.HANDLE = null;
 
     /// Compact the live entries, poll them without blocking; if nothing is
     /// ready, arm an event on every socket and sleep until a socket event,
@@ -170,9 +169,11 @@ const Win = if (is_windows) struct {
         var ready = pollNow(live);
         if (ready == 0 and timeout_ms != 0) {
             if (with_messages and GetQueueStatus(QS_ALLINPUT) != 0) return 0;
-            if (event == null) event = ws2.WSACreateEvent();
-            const ev = event.?;
-            _ = ws2.WSAResetEvent(ev);
+            // One event per call: several threads wait at once (jobs, AI
+            // worker, relays), and a shared event would let one thread reset
+            // another's wake-up.
+            const ev = ws2.WSACreateEvent();
+            defer _ = ws2.WSACloseEvent(ev);
             for (live) |f| _ = ws2.WSAEventSelect(f.fd, ev, FD_READ | FD_ACCEPT | FD_CLOSE);
             const ms: windows.DWORD = if (timeout_ms < 0) windows.INFINITE else @intCast(timeout_ms);
             const handles = [1]windows.HANDLE{ev};
