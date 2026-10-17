@@ -400,6 +400,10 @@ const X11 = if (builtin.os.tag == .linux) struct {
                 var keysym: x11.KeySym = 0;
                 const n = x11.XLookupString(&ev.xkey, &buf, buf.len, &keysym, null);
                 const m = mods(ev.xkey.state);
+                if (events.zoomForKeysym(@intCast(keysym), m.ctrl)) |z| {
+                    q.pushZoom(z);
+                    return;
+                }
                 if (events.keysymToKey(@intCast(keysym))) |key| {
                     var km = m;
                     if (keysym == 0xfe20) km.shift = true; // ISO_Left_Tab

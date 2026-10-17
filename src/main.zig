@@ -118,6 +118,10 @@ fn printHelp() !void {
         \\    --gui            Open a native window (Wayland/X11/Win32; falls back to headless)
         \\    --scale <n>      UI scale 1–4 (default: auto from DPI / compositor / env)
         \\    --backend <name>  Window backend: auto | x11 | wayland | win32
+        \\    --font <retro|default>  Font renderer (retro = built-in 8x8 bitmap)
+        \\    --font-family <name>    Font family via fontconfig (default: bundled JetBrains Mono)
+        \\    --font-size <pt>        Font size in points (default: 11; Ctrl+= / Ctrl+- / Ctrl+0 zoom)
+        \\    --line-height <n>       Cell height multiplier (default: 1.0)
         \\
         \\FEATURES:
         \\    • AI-powered autocomplete
@@ -152,6 +156,13 @@ test {
     _ = @import("platform/window.zig");
     _ = @import("platform/dpi.zig");
     _ = @import("platform/events.zig");
+    _ = @import("font/atlas.zig");
+    _ = @import("font/box.zig");
+    _ = @import("font/discovery.zig");
+    _ = @import("font/face_set.zig");
+    _ = @import("font/retro.zig");
+    _ = @import("font/fonts.zig");
+    _ = @import("renderer/frame.zig");
     _ = @import("platform/wayland_backend.zig");
     _ = @import("platform/win32_backend.zig");
     _ = @import("app/event_loop.zig");

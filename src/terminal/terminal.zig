@@ -35,6 +35,10 @@ pub const Cell = struct {
     combining: [max_combining]u21 = .{0} ** max_combining,
     /// OSC 8 hyperlink: 0 = none, otherwise index+1 into `Terminal.links`.
     link: u16 = 0,
+    /// Underline style when `underline` is set (SGR 4:n / 21).
+    underline_style: UnderlineStyle = .single,
+    /// SGR 58 underline colour, or `color.none` to use the foreground.
+    underline_color: u32 = color.none,
 
     pub const max_combining = 2;
 
@@ -84,6 +88,8 @@ fn writeCodepoint(writer: anytype, cp: u21) !void {
     try writer.writeAll(buf[0..n]);
 }
 
+pub const UnderlineStyle = enum(u3) { single, double, curly, dotted, dashed };
+
 /// Current graphic rendition ("pen") applied to newly written cells.
 pub const Pen = struct {
     fg: u32 = color.default_fg,
@@ -97,6 +103,8 @@ pub const Pen = struct {
     hidden: bool = false,
     strikethrough: bool = false,
     link: u16 = 0,
+    underline_style: UnderlineStyle = .single,
+    underline_color: u32 = color.none,
 };
 
 pub const CursorShape = enum { block, underline, bar };
@@ -340,6 +348,8 @@ pub const Terminal = struct {
             .hidden = p.hidden,
             .strikethrough = p.strikethrough,
             .link = p.link,
+            .underline_style = p.underline_style,
+            .underline_color = p.underline_color,
         };
     }
 
@@ -1231,18 +1241,30 @@ pub const Terminal = struct {
                 4 => {
                     // 4:0 = no underline, 4:1..5 = styles
                     if (i + 1 < p.param_count and p.isSub(i + 1)) {
-                        self.pen.underline = p.params[i + 1] != 0;
+                        const style = p.params[i + 1];
+                        self.pen.underline = style != 0;
+                        self.pen.underline_style = switch (style) {
+                            2 => .double,
+                            3 => .curly,
+                            4 => .dotted,
+                            5 => .dashed,
+                            else => .single,
+                        };
                         i += 1;
                         while (i + 1 < p.param_count and p.isSub(i + 1)) i += 1;
                     } else {
                         self.pen.underline = true;
+                        self.pen.underline_style = .single;
                     }
                 },
                 5, 6 => self.pen.blink = true,
                 7 => self.pen.inverse = true,
                 8 => self.pen.hidden = true,
                 9 => self.pen.strikethrough = true,
-                21 => self.pen.underline = true, // double underline
+                21 => {
+                    self.pen.underline = true;
+                    self.pen.underline_style = .double;
+                },
                 22 => {
                     self.pen.bold = false;
                     self.pen.faint = false;
@@ -1267,7 +1289,12 @@ pub const Terminal = struct {
                     i = r.last;
                 },
                 49 => self.pen.bg = color.default_bg,
-                58 => i = extendedColor(p, i).last, // underline color: parsed, not rendered
+                58 => {
+                    const r = extendedColor(p, i);
+                    if (r.color) |c| self.pen.underline_color = c;
+                    i = r.last;
+                },
+                59 => self.pen.underline_color = color.none,
                 90...97 => self.pen.fg = color.ansi16[v - 90 + 8],
                 100...107 => self.pen.bg = color.ansi16[v - 100 + 8],
                 else => {

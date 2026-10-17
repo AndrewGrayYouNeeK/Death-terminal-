@@ -21,6 +21,8 @@ pub const State = struct {
     pending_resize: bool = false,
     queue: events.EventQueue = .{},
     held: input.MouseButton = .none,
+    /// Drop the WM_CHAR that follows a zoom shortcut.
+    swallow_char: bool = false,
     class_atom: usize = 0,
     dib_pixels: []u32 = &.{},
 };
@@ -231,6 +233,10 @@ const Win = if (builtin.os.tag == .windows) struct {
             },
             w.WM_CHAR => {
                 const cp: u21 = @intCast(wparam & 0x1FFFFF);
+                if (st.swallow_char) {
+                    st.swallow_char = false;
+                    return 0;
+                }
                 // Backspace is sent from WM_KEYDOWN as DEL; drop its translated 0x08.
                 if (cp == 0x08 and (w.GetKeyState(w.VK_BACK) & 0x8000) != 0) return 0;
                 var buf: [8]u8 = undefined;
@@ -247,6 +253,19 @@ const Win = if (builtin.os.tag == .windows) struct {
                 return 0;
             },
             w.WM_KEYDOWN, w.WM_SYSKEYDOWN => {
+                if ((w.GetKeyState(w.VK_CONTROL) & 0x8000) != 0) {
+                    const z: ?i8 = switch (wparam) {
+                        0xBB, w.VK_ADD => 1, // VK_OEM_PLUS
+                        0xBD, w.VK_SUBTRACT => -1, // VK_OEM_MINUS
+                        0x30, w.VK_NUMPAD0 => 0,
+                        else => null,
+                    };
+                    if (z) |step| {
+                        st.queue.pushZoom(step);
+                        st.swallow_char = true;
+                        return 0;
+                    }
+                }
                 if (vkToKey(wparam)) |key| {
                     st.queue.pushKey(key, currentMods());
                     return 0;

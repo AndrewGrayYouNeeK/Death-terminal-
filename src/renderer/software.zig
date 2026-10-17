@@ -1,234 +1,28 @@
+//! CPU fallback renderer: rasterizes a `frame.Frame` (quads + glyph atlas)
+//! into a packed 0xAARRGGBB framebuffer for SHM / XPutImage / GDI present.
+
 const std = @import("std");
-const terminal = @import("../terminal/terminal.zig");
-const Cell = terminal.Cell;
+const frame_mod = @import("frame.zig");
+const Atlas = @import("../font/atlas.zig").Atlas;
 
-const dpi = @import("../platform/dpi.zig");
-
-/// Per-frame cursor and screen state shared by the CPU and GPU renderers.
-pub const View = struct {
-    cursor_visible: bool = true,
-    cursor_shape: terminal.CursorShape = .block,
-    /// DECSCNM: swap foreground and background for the whole screen.
-    reverse_video: bool = false,
-
-    pub fn fromTerminal(term: *const terminal.Terminal) View {
-        return .{
-            .cursor_visible = term.cursor_visible,
-            .cursor_shape = term.cursor_shape,
-            .reverse_video = term.modes.reverse_video,
-        };
-    }
-};
-
-/// Colors for a cell after attributes, reverse video, and a block cursor.
-pub fn cellColors(cell: Cell, view: View, block_cursor: bool) struct { fg: u32, bg: u32 } {
-    const c = cell.resolvedColors();
-    var fg = c.fg;
-    var bg = c.bg;
-    if (view.reverse_video != block_cursor) {
-        const tmp = fg;
-        fg = bg;
-        bg = tmp;
-    }
-    return .{ .fg = fg, .bg = bg };
-}
-
-/// Thin overlay rectangles (underline, strikethrough, bar/underline
-/// cursor) in cell-relative fractions.
-pub const Overlay = struct { x: f32, y: f32, w: f32, h: f32 };
-pub const underline_rect = Overlay{ .x = 0, .y = 14.0 / 16.0, .w = 1, .h = 1.0 / 16.0 };
-pub const strike_rect = Overlay{ .x = 0, .y = 7.0 / 16.0, .w = 1, .h = 1.0 / 16.0 };
-pub const cursor_bar_rect = Overlay{ .x = 0, .y = 0, .w = 1.0 / 8.0, .h = 1 };
-pub const cursor_underline_rect = Overlay{ .x = 0, .y = 14.0 / 16.0, .w = 1, .h = 2.0 / 16.0 };
-
-pub const CELL_W: u32 = 8;
-pub const CELL_H: u32 = 16;
+pub const View = frame_mod.View;
+pub const cellColors = frame_mod.cellColors;
 
 pub const CellPx = struct { w: u32, h: u32 };
 
-pub fn cellPx(scale: f32) CellPx {
-    const s = dpi.normalize(scale);
-    return .{
-        .w = @max(1, @as(u32, @intFromFloat(@round(@as(f32, CELL_W) * s)))),
-        .h = @max(1, @as(u32, @intFromFloat(@round(@as(f32, CELL_H) * s)))),
-    };
-}
-
-/// 8x8 glyphs for ASCII 32..126. Each row is a bitfield; LSB is the leftmost pixel.
-const FONT8: [95][8]u8 = .{
-    .{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
-    .{ 0x18, 0x3C, 0x3C, 0x18, 0x18, 0x00, 0x18, 0x00 },
-    .{ 0x36, 0x36, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
-    .{ 0x36, 0x36, 0x7F, 0x36, 0x7F, 0x36, 0x36, 0x00 },
-    .{ 0x0C, 0x3E, 0x03, 0x1E, 0x30, 0x1F, 0x0C, 0x00 },
-    .{ 0x00, 0x63, 0x33, 0x18, 0x0C, 0x66, 0x63, 0x00 },
-    .{ 0x1C, 0x36, 0x1C, 0x6E, 0x3B, 0x33, 0x6E, 0x00 },
-    .{ 0x06, 0x06, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00 },
-    .{ 0x18, 0x0C, 0x06, 0x06, 0x06, 0x0C, 0x18, 0x00 },
-    .{ 0x06, 0x0C, 0x18, 0x18, 0x18, 0x0C, 0x06, 0x00 },
-    .{ 0x00, 0x66, 0x3C, 0xFF, 0x3C, 0x66, 0x00, 0x00 },
-    .{ 0x00, 0x0C, 0x0C, 0x3F, 0x0C, 0x0C, 0x00, 0x00 },
-    .{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C, 0x06 },
-    .{ 0x00, 0x00, 0x00, 0x3F, 0x00, 0x00, 0x00, 0x00 },
-    .{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C, 0x00 },
-    .{ 0x60, 0x30, 0x18, 0x0C, 0x06, 0x03, 0x01, 0x00 },
-    .{ 0x3E, 0x63, 0x73, 0x7B, 0x6F, 0x67, 0x3E, 0x00 },
-    .{ 0x0C, 0x0E, 0x0C, 0x0C, 0x0C, 0x0C, 0x3F, 0x00 },
-    .{ 0x1E, 0x33, 0x30, 0x1C, 0x06, 0x33, 0x3F, 0x00 },
-    .{ 0x1E, 0x33, 0x30, 0x1C, 0x30, 0x33, 0x1E, 0x00 },
-    .{ 0x38, 0x3C, 0x36, 0x33, 0x7F, 0x30, 0x78, 0x00 },
-    .{ 0x3F, 0x03, 0x1F, 0x30, 0x30, 0x33, 0x1E, 0x00 },
-    .{ 0x1C, 0x06, 0x03, 0x1F, 0x33, 0x33, 0x1E, 0x00 },
-    .{ 0x3F, 0x33, 0x30, 0x18, 0x0C, 0x0C, 0x0C, 0x00 },
-    .{ 0x1E, 0x33, 0x33, 0x1E, 0x33, 0x33, 0x1E, 0x00 },
-    .{ 0x1E, 0x33, 0x33, 0x3E, 0x30, 0x18, 0x0E, 0x00 },
-    .{ 0x00, 0x0C, 0x0C, 0x00, 0x00, 0x0C, 0x0C, 0x00 },
-    .{ 0x00, 0x0C, 0x0C, 0x00, 0x00, 0x0C, 0x0C, 0x06 },
-    .{ 0x18, 0x0C, 0x06, 0x03, 0x06, 0x0C, 0x18, 0x00 },
-    .{ 0x00, 0x00, 0x3F, 0x00, 0x00, 0x3F, 0x00, 0x00 },
-    .{ 0x06, 0x0C, 0x18, 0x30, 0x18, 0x0C, 0x06, 0x00 },
-    .{ 0x1E, 0x33, 0x30, 0x18, 0x0C, 0x00, 0x0C, 0x00 },
-    .{ 0x3E, 0x63, 0x7B, 0x7B, 0x7B, 0x03, 0x1E, 0x00 },
-    .{ 0x0C, 0x1E, 0x33, 0x33, 0x3F, 0x33, 0x33, 0x00 },
-    .{ 0x3F, 0x66, 0x66, 0x3E, 0x66, 0x66, 0x3F, 0x00 },
-    .{ 0x3C, 0x66, 0x03, 0x03, 0x03, 0x66, 0x3C, 0x00 },
-    .{ 0x1F, 0x36, 0x66, 0x66, 0x66, 0x36, 0x1F, 0x00 },
-    .{ 0x7F, 0x46, 0x16, 0x1E, 0x16, 0x46, 0x7F, 0x00 },
-    .{ 0x7F, 0x46, 0x16, 0x1E, 0x16, 0x06, 0x0F, 0x00 },
-    .{ 0x3C, 0x66, 0x03, 0x03, 0x73, 0x66, 0x7C, 0x00 },
-    .{ 0x33, 0x33, 0x33, 0x3F, 0x33, 0x33, 0x33, 0x00 },
-    .{ 0x1E, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x1E, 0x00 },
-    .{ 0x78, 0x30, 0x30, 0x30, 0x33, 0x33, 0x1E, 0x00 },
-    .{ 0x67, 0x66, 0x36, 0x1E, 0x36, 0x66, 0x67, 0x00 },
-    .{ 0x0F, 0x06, 0x06, 0x06, 0x46, 0x66, 0x7F, 0x00 },
-    .{ 0x63, 0x77, 0x7F, 0x6B, 0x63, 0x63, 0x63, 0x00 },
-    .{ 0x63, 0x67, 0x6F, 0x7B, 0x73, 0x63, 0x63, 0x00 },
-    .{ 0x1C, 0x36, 0x63, 0x63, 0x63, 0x36, 0x1C, 0x00 },
-    .{ 0x3F, 0x66, 0x66, 0x3E, 0x06, 0x06, 0x0F, 0x00 },
-    .{ 0x1E, 0x33, 0x33, 0x33, 0x3B, 0x1E, 0x38, 0x00 },
-    .{ 0x3F, 0x66, 0x66, 0x3E, 0x36, 0x66, 0x67, 0x00 },
-    .{ 0x1E, 0x33, 0x07, 0x0E, 0x38, 0x33, 0x1E, 0x00 },
-    .{ 0x3F, 0x2D, 0x0C, 0x0C, 0x0C, 0x0C, 0x1E, 0x00 },
-    .{ 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x3F, 0x00 },
-    .{ 0x33, 0x33, 0x33, 0x33, 0x33, 0x1E, 0x0C, 0x00 },
-    .{ 0x63, 0x63, 0x63, 0x6B, 0x7F, 0x77, 0x63, 0x00 },
-    .{ 0x63, 0x63, 0x36, 0x1C, 0x1C, 0x36, 0x63, 0x00 },
-    .{ 0x33, 0x33, 0x33, 0x1E, 0x0C, 0x0C, 0x1E, 0x00 },
-    .{ 0x7F, 0x63, 0x31, 0x18, 0x4C, 0x66, 0x7F, 0x00 },
-    .{ 0x1E, 0x06, 0x06, 0x06, 0x06, 0x06, 0x1E, 0x00 },
-    .{ 0x03, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x40, 0x00 },
-    .{ 0x1E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x1E, 0x00 },
-    .{ 0x08, 0x1C, 0x36, 0x63, 0x00, 0x00, 0x00, 0x00 },
-    .{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF },
-    .{ 0x0C, 0x0C, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00 },
-    .{ 0x00, 0x00, 0x1E, 0x30, 0x3E, 0x33, 0x6E, 0x00 },
-    .{ 0x07, 0x06, 0x06, 0x3E, 0x66, 0x66, 0x3B, 0x00 },
-    .{ 0x00, 0x00, 0x1E, 0x33, 0x03, 0x33, 0x1E, 0x00 },
-    .{ 0x38, 0x30, 0x30, 0x3E, 0x33, 0x33, 0x6E, 0x00 },
-    .{ 0x00, 0x00, 0x1E, 0x33, 0x3F, 0x03, 0x1E, 0x00 },
-    .{ 0x1C, 0x36, 0x06, 0x0F, 0x06, 0x06, 0x0F, 0x00 },
-    .{ 0x00, 0x00, 0x6E, 0x33, 0x33, 0x3E, 0x30, 0x1F },
-    .{ 0x07, 0x06, 0x36, 0x6E, 0x66, 0x66, 0x67, 0x00 },
-    .{ 0x0C, 0x00, 0x0E, 0x0C, 0x0C, 0x0C, 0x1E, 0x00 },
-    .{ 0x30, 0x00, 0x30, 0x30, 0x30, 0x33, 0x33, 0x1E },
-    .{ 0x07, 0x06, 0x66, 0x36, 0x1E, 0x36, 0x67, 0x00 },
-    .{ 0x0E, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x1E, 0x00 },
-    .{ 0x00, 0x00, 0x33, 0x7F, 0x7F, 0x6B, 0x63, 0x00 },
-    .{ 0x00, 0x00, 0x1F, 0x33, 0x33, 0x33, 0x33, 0x00 },
-    .{ 0x00, 0x00, 0x1E, 0x33, 0x33, 0x33, 0x1E, 0x00 },
-    .{ 0x00, 0x00, 0x3B, 0x66, 0x66, 0x3E, 0x06, 0x0F },
-    .{ 0x00, 0x00, 0x6E, 0x33, 0x33, 0x3E, 0x30, 0x78 },
-    .{ 0x00, 0x00, 0x3B, 0x6E, 0x66, 0x06, 0x0F, 0x00 },
-    .{ 0x00, 0x00, 0x3E, 0x03, 0x1E, 0x30, 0x1F, 0x00 },
-    .{ 0x08, 0x0C, 0x3E, 0x0C, 0x0C, 0x2C, 0x18, 0x00 },
-    .{ 0x00, 0x00, 0x33, 0x33, 0x33, 0x33, 0x6E, 0x00 },
-    .{ 0x00, 0x00, 0x33, 0x33, 0x33, 0x1E, 0x0C, 0x00 },
-    .{ 0x00, 0x00, 0x63, 0x6B, 0x7F, 0x7F, 0x36, 0x00 },
-    .{ 0x00, 0x00, 0x63, 0x36, 0x1C, 0x36, 0x63, 0x00 },
-    .{ 0x00, 0x00, 0x33, 0x33, 0x33, 0x3E, 0x30, 0x1F },
-    .{ 0x00, 0x00, 0x3F, 0x19, 0x0C, 0x26, 0x3F, 0x00 },
-    .{ 0x38, 0x0C, 0x0C, 0x07, 0x0C, 0x0C, 0x38, 0x00 },
-    .{ 0x18, 0x18, 0x18, 0x00, 0x18, 0x18, 0x18, 0x00 },
-    .{ 0x07, 0x0C, 0x0C, 0x38, 0x0C, 0x0C, 0x07, 0x00 },
-    .{ 0x6E, 0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
-};
-
-pub const ATLAS_COLS: u32 = 16;
-pub const ATLAS_ROWS: u32 = 8;
-pub const GLYPH_PX: u32 = 8;
-
-/// Atlas slot of the replacement glyph drawn for every codepoint the 8x8
-/// font can't render (non-ASCII, U+FFFD, and the lead cell of wide chars).
-/// Wide-char spacer cells hold ' ' and draw blank.
-pub const REPLACEMENT_INDEX: u32 = 95;
-const REPLACEMENT_BITS: [8]u8 = .{ 0x7E, 0x42, 0x5A, 0x52, 0x4A, 0x42, 0x7E, 0x00 };
-
-pub fn glyphBits(cp: u21) [8]u8 {
-    if (cp >= 32 and cp <= 126) return FONT8[cp - 32];
-    return REPLACEMENT_BITS;
-}
-
-pub fn atlasIndex(cp: u21) u32 {
-    if (cp >= 32 and cp <= 126) return cp - 32;
-    return REPLACEMENT_INDEX;
-}
-
-pub fn atlasPixelSize() struct { w: u32, h: u32 } {
-    return .{ .w = ATLAS_COLS * GLYPH_PX, .h = ATLAS_ROWS * GLYPH_PX };
-}
-
-/// Pack 8x8 coverage glyphs into an R8 atlas (255 = on).
-pub fn writeAtlasR8(out: []u8) void {
-    const size = atlasPixelSize();
-    const n = @as(usize, size.w) * @as(usize, size.h);
-    std.debug.assert(out.len >= n);
-    @memset(out[0..n], 0);
-    var i: u32 = 0;
-    while (i < 96) : (i += 1) {
-        const cp: u21 = if (i < 95) @as(u21, 32 + @as(u8, @intCast(i))) else 0;
-        const bits = glyphBits(cp);
-        const gx = i % ATLAS_COLS;
-        const gy = i / ATLAS_COLS;
-        var row: u32 = 0;
-        while (row < GLYPH_PX) : (row += 1) {
-            var col: u32 = 0;
-            while (col < GLYPH_PX) : (col += 1) {
-                const on = (bits[row] & (@as(u8, 1) << @intCast(col))) != 0;
-                const x = gx * GLYPH_PX + col;
-                const y = gy * GLYPH_PX + row;
-                out[y * size.w + x] = if (on) 255 else 0;
-            }
-        }
-    }
-}
-
-/// CPU rasterizer: terminal cells → packed 0xAARRGGBB framebuffer.
 pub const SoftwareRenderer = struct {
     allocator: std.mem.Allocator,
     pixels: []u32,
     width: u32,
     height: u32,
     dirty: bool,
-    scale: f32,
-    cell_w: u32,
-    cell_h: u32,
 
-    pub fn init(allocator: std.mem.Allocator, cols: u16, rows: u16, scale: f32) !SoftwareRenderer {
-        const cell = cellPx(scale);
-        const width = @as(u32, cols) * cell.w;
-        const height = @as(u32, rows) * cell.h;
+    pub fn init(allocator: std.mem.Allocator, cols: u16, rows: u16, cell: CellPx) !SoftwareRenderer {
+        const width = @max(1, @as(u32, cols) * cell.w);
+        const height = @max(1, @as(u32, rows) * cell.h);
         const pixels = try allocator.alloc(u32, width * height);
         @memset(pixels, 0xFF000000);
-        return .{
-            .allocator = allocator,
-            .pixels = pixels,
-            .width = width,
-            .height = height,
-            .dirty = true,
-            .scale = dpi.normalize(scale),
-            .cell_w = cell.w,
-            .cell_h = cell.h,
-        };
+        return .{ .allocator = allocator, .pixels = pixels, .width = width, .height = height, .dirty = true };
     }
 
     pub fn deinit(self: *SoftwareRenderer) void {
@@ -236,204 +30,106 @@ pub const SoftwareRenderer = struct {
         self.pixels = &.{};
     }
 
-    pub fn resize(self: *SoftwareRenderer, cols: u16, rows: u16, scale: f32) !void {
-        const cell = cellPx(scale);
-        const width = @as(u32, cols) * cell.w;
-        const height = @as(u32, rows) * cell.h;
-        self.scale = dpi.normalize(scale);
-        self.cell_w = cell.w;
-        self.cell_h = cell.h;
-        if (width == self.width and height == self.height) return;
-        const pixels = try self.allocator.alloc(u32, width * height);
+    /// Resize to an exact pixel size (the window size).
+    pub fn resizePixels(self: *SoftwareRenderer, width: u32, height: u32) !void {
+        const w = @max(1, width);
+        const h = @max(1, height);
+        if (w == self.width and h == self.height) return;
+        const pixels = try self.allocator.alloc(u32, w * h);
         self.allocator.free(self.pixels);
         self.pixels = pixels;
-        self.width = width;
-        self.height = height;
+        self.width = w;
+        self.height = h;
         self.dirty = true;
         @memset(self.pixels, 0xFF000000);
     }
 
-    pub fn renderGrid(
-        self: *SoftwareRenderer,
-        cells: []const Cell,
-        rows: u16,
-        cols: u16,
-        cursor_row: u16,
-        cursor_col: u16,
-        view: View,
-    ) void {
-        @memset(self.pixels, 0xFF000000);
-        var row: u16 = 0;
-        while (row < rows) : (row += 1) {
-            var col: u16 = 0;
-            while (col < cols) : (col += 1) {
-                const idx = @as(usize, row) * @as(usize, cols) + col;
-                if (idx >= cells.len) break;
-                const at_cursor = view.cursor_visible and row == cursor_row and col == cursor_col;
-                blit(self, col, row, cells[idx], view, at_cursor);
+    pub fn render(self: *SoftwareRenderer, fr: *const frame_mod.Frame, atlas: *const Atlas) void {
+        @memset(self.pixels, 0xFF000000 | (fr.clear & 0xFFFFFF));
+        for (fr.quads.items) |q| self.drawQuad(q, atlas);
+        self.dirty = true;
+    }
+
+    fn drawQuad(self: *SoftwareRenderer, q: frame_mod.Quad, atlas: *const Atlas) void {
+        const x0: i64 = @intFromFloat(@round(q.x));
+        const y0: i64 = @intFromFloat(@round(q.y));
+        const w: i64 = @intFromFloat(@round(q.w));
+        const h: i64 = @intFromFloat(@round(q.h));
+        const tu0: i64 = @intFromFloat(q.u);
+        const tv0: i64 = @intFromFloat(q.v);
+        var dy: i64 = 0;
+        while (dy < h) : (dy += 1) {
+            const py = y0 + dy;
+            if (py < 0 or py >= self.height) continue;
+            var dx: i64 = 0;
+            while (dx < w) : (dx += 1) {
+                const px = x0 + dx;
+                if (px < 0 or px >= self.width) continue;
+                const idx: usize = @intCast(py * @as(i64, self.width) + px);
+                switch (q.kind) {
+                    .solid => self.pixels[idx] = 0xFF000000 | (q.rgb & 0xFFFFFF),
+                    .mono, .colored => {
+                        const tx = tu0 + dx;
+                        const ty = tv0 + dy;
+                        if (tx < 0 or ty < 0 or tx >= atlas.size or ty >= atlas.size) continue;
+                        const t = atlas.texel(@intCast(tx), @intCast(ty));
+                        if (t[3] == 0) continue;
+                        const src: [4]u32 = if (q.kind == .mono) .{
+                            ((q.rgb >> 16) & 0xFF) * t[3] / 255,
+                            ((q.rgb >> 8) & 0xFF) * t[3] / 255,
+                            (q.rgb & 0xFF) * t[3] / 255,
+                            t[3],
+                        } else .{ t[0], t[1], t[2], t[3] };
+                        self.pixels[idx] = blendOver(self.pixels[idx], src);
+                    },
+                }
             }
         }
-        self.dirty = true;
     }
 };
 
-fn blit(self: *SoftwareRenderer, col: u16, row: u16, cell: Cell, view: View, at_cursor: bool) void {
-    const cw = self.cell_w;
-    const ch = self.cell_h;
-    const ox = @as(u32, col) * cw;
-    const oy = @as(u32, row) * ch;
-    const colors = cellColors(cell, view, at_cursor and view.cursor_shape == .block);
-    const fg = (colors.fg & 0x00FFFFFF) | 0xFF000000;
-    const bg = (colors.bg & 0x00FFFFFF) | 0xFF000000;
-    const bits = glyphBits(if (cell.hidden) ' ' else cell.char);
-    var gy: u32 = 0;
-    while (gy < ch) : (gy += 1) {
-        const src_y = gy * GLYPH_PX / ch;
-        const row_bits = bits[src_y];
-        var gx: u32 = 0;
-        while (gx < cw) : (gx += 1) {
-            const src_x = gx * GLYPH_PX / cw;
-            const on = (row_bits & (@as(u8, 1) << @intCast(src_x))) != 0;
-            const px = ox + gx;
-            const py = oy + gy;
-            if (px >= self.width or py >= self.height) continue;
-            self.pixels[py * self.width + px] = if (on) fg else bg;
-        }
-    }
-    if (cell.underline and !cell.hidden) fillOverlay(self, ox, oy, underline_rect, fg);
-    if (cell.strikethrough and !cell.hidden) fillOverlay(self, ox, oy, strike_rect, fg);
-    if (at_cursor) {
-        const cursor_color = (cellColors(cell, view, false).fg & 0x00FFFFFF) | 0xFF000000;
-        switch (view.cursor_shape) {
-            .block => {},
-            .bar => fillOverlay(self, ox, oy, cursor_bar_rect, cursor_color),
-            .underline => fillOverlay(self, ox, oy, cursor_underline_rect, cursor_color),
-        }
-    }
+/// Premultiplied `src` (r,g,b,a 0-255) over opaque 0xAARRGGBB `dst`.
+fn blendOver(dst: u32, src: [4]u32) u32 {
+    const inv = 255 - src[3];
+    const r = src[0] + ((dst >> 16) & 0xFF) * inv / 255;
+    const g = src[1] + ((dst >> 8) & 0xFF) * inv / 255;
+    const b = src[2] + (dst & 0xFF) * inv / 255;
+    const rr: u32 = @min(r, 255);
+    const gg: u32 = @min(g, 255);
+    const bb: u32 = @min(b, 255);
+    return 0xFF000000 | (rr << 16) | (gg << 8) | bb;
 }
 
-fn overlayPx(frac: f32, total: u32) u32 {
-    return @intFromFloat(@round(frac * @as(f32, @floatFromInt(total))));
-}
-
-pub fn fillOverlay(self: *SoftwareRenderer, ox: u32, oy: u32, r: Overlay, argb: u32) void {
-    const x0 = ox + overlayPx(r.x, self.cell_w);
-    const y0 = oy + overlayPx(r.y, self.cell_h);
-    const w = @max(1, overlayPx(r.w, self.cell_w));
-    const h = @max(1, overlayPx(r.h, self.cell_h));
-    var y = y0;
-    while (y < y0 + h and y < self.height) : (y += 1) {
-        var x = x0;
-        while (x < x0 + w and x < self.width) : (x += 1) self.pixels[y * self.width + x] = argb;
-    }
-}
+const Fonts = @import("../font/fonts.zig").Fonts;
+const Cell = @import("../terminal/terminal.zig").Cell;
 
 test "software renderer allocates framebuffer" {
-    var r = try SoftwareRenderer.init(std.testing.allocator, 4, 2, 1.0);
+    var r = try SoftwareRenderer.init(std.testing.allocator, 10, 2, .{ .w = 8, .h = 16 });
     defer r.deinit();
-    try std.testing.expectEqual(@as(u32, 32), r.width);
+    try std.testing.expectEqual(@as(u32, 80), r.width);
     try std.testing.expectEqual(@as(u32, 32), r.height);
+    try r.resizePixels(100, 50);
+    try std.testing.expectEqual(@as(usize, 5000), r.pixels.len);
 }
 
-test "software renderer honors scale 2" {
-    var r = try SoftwareRenderer.init(std.testing.allocator, 4, 2, 2.0);
-    defer r.deinit();
-    try std.testing.expectEqual(@as(u32, 64), r.width);
-    try std.testing.expectEqual(@as(u32, 64), r.height);
-    try std.testing.expectEqual(@as(u32, 16), r.cell_w);
-    try std.testing.expectEqual(@as(u32, 32), r.cell_h);
-}
-
-test "cellPx scales integer sizes" {
-    try std.testing.expectEqual(@as(u32, 16), cellPx(2.0).w);
-    try std.testing.expectEqual(@as(u32, 32), cellPx(2.0).h);
-}
-
-test "atlas packs ASCII coverage" {
-    var atlas: [128 * 64]u8 = undefined;
-    writeAtlasR8(&atlas);
-    const idx = atlasIndex('A');
-    const gx = idx % ATLAS_COLS;
-    const gy = idx / ATLAS_COLS;
-    var lit: usize = 0;
-    var row: u32 = 0;
-    while (row < GLYPH_PX) : (row += 1) {
-        var col: u32 = 0;
-        while (col < GLYPH_PX) : (col += 1) {
-            const x = gx * GLYPH_PX + col;
-            const y = gy * GLYPH_PX + row;
-            if (atlas[y * (ATLAS_COLS * GLYPH_PX) + x] != 0) lit += 1;
-        }
-    }
-    try std.testing.expect(lit > 8);
-}
-
-test "software renderer draws ASCII glyph" {
-    var r = try SoftwareRenderer.init(std.testing.allocator, 2, 1, 1.0);
-    defer r.deinit();
+test "software renderer draws glyph pixels in the fg colour over bg" {
+    var f = try Fonts.init(std.testing.allocator, .{ .retro = true });
+    defer f.deinit();
     var cells = [_]Cell{ Cell.init(), Cell.init() };
-    cells[0].char = 'A';
-    cells[0].fg_color = 0xFFFFFF;
-    cells[0].bg_color = 0x000000;
-    r.renderGrid(&cells, 1, 2, 0, 1, .{});
-
-    var lit: usize = 0;
-    for (r.pixels[0 .. CELL_W * CELL_H]) |px| {
-        if (px == 0xFFFFFFFF) lit += 1;
-    }
-    try std.testing.expect(lit > 8);
-}
-
-test "non-ASCII maps to the replacement glyph; wide spacer is blank" {
-    const t = std.testing;
-    try t.expectEqual(REPLACEMENT_INDEX, atlasIndex(0x65E5));
-    try t.expectEqual(REPLACEMENT_INDEX, atlasIndex(0xE9));
-    try t.expectEqual(REPLACEMENT_INDEX, atlasIndex(0xFFFD));
-    try t.expectEqual(@as(u32, 0), atlasIndex(' '));
-
-    var r = try SoftwareRenderer.init(t.allocator, 2, 1, 1.0);
+    cells[0].char = 0x2588; // full block
+    cells[0].fg_color = 0x00FF00;
+    cells[1].bg_color = 0x0000FF;
+    var fr = frame_mod.Frame.init(std.testing.allocator);
+    defer fr.deinit();
+    try fr.build(&f, &cells, 1, 2, 0, 0, .{ .cursor_visible = false });
+    var r = try SoftwareRenderer.init(std.testing.allocator, 2, 1, .{ .w = 8, .h = 16 });
     defer r.deinit();
-    var cells = [_]Cell{ Cell.init(), Cell.init() };
-    cells[0].char = 0x65E5;
-    cells[0].width = 2;
-    cells[1].width = 0; // spacer keeps char ' '
-    r.renderGrid(&cells, 1, 2, 0, 0, .{ .cursor_visible = false });
-
-    var lead_lit: usize = 0;
-    var spacer_lit: usize = 0;
-    var y: u32 = 0;
-    while (y < r.height) : (y += 1) {
-        var x: u32 = 0;
-        while (x < r.width) : (x += 1) {
-            if (r.pixels[y * r.width + x] == 0xFFFFFFFF) {
-                if (x < r.cell_w) lead_lit += 1 else spacer_lit += 1;
-            }
-        }
-    }
-    try t.expect(lead_lit > 0);
-    try t.expectEqual(@as(usize, 0), spacer_lit);
+    r.render(&fr, &f.atlas);
+    try std.testing.expectEqual(@as(u32, 0xFF00FF00), r.pixels[8 * 16 / 2 * 0 + 3]);
+    try std.testing.expectEqual(@as(u32, 0xFF0000FF), r.pixels[5 * 16 + 12]);
 }
 
-test "software renderer draws underline, strikethrough and bar cursor" {
-    const t = std.testing;
-    var r = try SoftwareRenderer.init(t.allocator, 2, 1, 1.0);
-    defer r.deinit();
-    var cells = [_]Cell{ Cell.init(), Cell.init() };
-    cells[0].underline = true;
-    cells[0].strikethrough = true;
-    r.renderGrid(&cells, 1, 2, 0, 1, .{ .cursor_shape = .bar });
-    const white: u32 = 0xFFFFFFFF;
-    try t.expectEqual(white, r.pixels[14 * r.width + 3]); // underline row
-    try t.expectEqual(white, r.pixels[7 * r.width + 3]); // strike row
-    try t.expectEqual(white, r.pixels[5 * r.width + 8]); // bar cursor at col 1, x=8
-    try t.expectEqual(@as(u32, 0xFF000000), r.pixels[5 * r.width + 12]); // rest of cell 1 is not inverted
-}
-
-test "inverse and reverse video swap colors" {
-    const t = std.testing;
-    var cell = Cell.init();
-    try t.expectEqual(@as(u32, 0x000000), cellColors(cell, .{ .reverse_video = true }, false).fg);
-    cell.inverse = true;
-    try t.expectEqual(@as(u32, 0x000000), cellColors(cell, .{}, false).fg);
-    try t.expectEqual(@as(u32, 0xFFFFFF), cellColors(cell, .{}, true).fg);
+test "blendOver mixes premultiplied coverage" {
+    try std.testing.expectEqual(@as(u32, 0xFF808080), blendOver(0xFF000000, .{ 128, 128, 128, 128 }));
+    try std.testing.expectEqual(@as(u32, 0xFFFFFFFF), blendOver(0xFF123456, .{ 255, 255, 255, 255 }));
 }

@@ -29,7 +29,7 @@ PTY ↔ Terminal Core ↔ Renderer (Vulkan)
 | AI autocomplete | `src/ai/` | Stub (planned: OpenAI-compatible HTTP/JSON, default local Ollama) |
 | SSH tunneling | `src/ssh/` | Stub (planned: libssh2) |
 | Lua scripting | `src/scripting/` | Stub (Lua not linked yet) |
-| Configuration | `src/config/` | Reads `~/.config/death-terminal/config.txt` with flat `key = value` lines (`rows`, `cols`, `ai_enabled`, `ai_endpoint`, `scrollback_lines`). `config.example.lua` is the target format for the Lua milestone and is not read yet. |
+| Configuration | `src/config/` | Reads `~/.config/death-terminal/config.txt` with flat `key = value` lines (`rows`, `cols`, `ai_enabled`, `ai_endpoint`, `scrollback_lines`, `font`, `font_family`, `font_size`, `line_height`, `font_ligatures`). `config.example.lua` is the target format for the Lua milestone and is not read yet. |
 
 ## Build Requirements
 
@@ -37,6 +37,7 @@ PTY ↔ Terminal Core ↔ Renderer (Vulkan)
 - Vulkan SDK (`libvulkan-dev` on Linux)
 - Mesa Vulkan ICD (`mesa-vulkan-drivers`) for instance/device tests without a GPU
 - X11 (`libx11-dev`) and/or Wayland (`libwayland-dev`, `libxkbcommon-dev`)
+- Fonts: `libfreetype-dev`, `libharfbuzz-dev`, `libfontconfig-dev` (Linux). Fallback fonts for tests/screenshots: `fonts-noto-cjk`, `fonts-noto-color-emoji`
 - Lua 5.4 (not required yet; needed once scripting lands)
 
 ```bash
