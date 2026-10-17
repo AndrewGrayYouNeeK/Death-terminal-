@@ -70,6 +70,9 @@ pub const Action = enum {
     ai_prev,
     /// Ask the AI to explain (and fix) the last failed command.
     ai_explain,
+    /// SSH palette: profiles (open in a new window), and this session's
+    /// forwards (toggle) and reconnect.
+    ssh_palette,
 
     pub fn parse(name: []const u8) ?Action {
         inline for (@typeInfo(Action).Enum.fields) |f| {
@@ -239,6 +242,7 @@ pub const Bindings = struct {
         "alt+bracketright=ai_next",
         "alt+bracketleft=ai_prev",
         "ctrl+shift+a=ai_explain",
+        "ctrl+shift+s=ssh_palette",
     };
 
     pub fn defaults() Bindings {

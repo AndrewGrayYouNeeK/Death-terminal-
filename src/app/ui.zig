@@ -10,6 +10,7 @@ const std = @import("std");
 const terminal = @import("../terminal/terminal.zig");
 const selection = @import("../terminal/selection.zig");
 const search = @import("../terminal/search.zig");
+pub const ssh_palette = @import("ssh_palette.zig");
 const urls = @import("../terminal/urls.zig");
 const input = @import("../terminal/input.zig");
 const events = @import("../platform/events.zig");
@@ -54,6 +55,8 @@ pub const Effect = union(enum) {
     request_paste: struct { target: events.ClipTarget, purpose: events.PastePurpose },
     /// Allowlisted URL to hand to the opener (owned).
     open_url: []u8,
+    /// Something picked in the SSH palette (Ctrl+Shift+S).
+    ssh: ssh_palette.Pick,
 };
 
 pub const Composed = struct {
@@ -129,12 +132,15 @@ pub const Ui = struct {
     ghost: ?Ghost = null,
     /// Short AI status tag for the top-right corner ("AI offline"), owned.
     ai_status: ?[]u8 = null,
+    /// The SSH palette, while open (filled by the event loop).
+    ssh_palette: ?ssh_palette.Palette = null,
 
     pub fn init(allocator: std.mem.Allocator, opts: Options) Ui {
         return .{ .allocator = allocator, .opts = opts, .effects = std.ArrayList(Effect).init(allocator) };
     }
 
     pub fn deinit(self: *Ui) void {
+        self.closeSshPalette();
         self.closeSearch();
         self.clearNotice();
         self.clearGhost();
@@ -155,6 +161,10 @@ pub const Ui = struct {
             .set_clipboard => |c| self.allocator.free(c.text),
             .open_url => |u| self.allocator.free(u),
             .request_paste => {},
+            .ssh => |pk| switch (pk) {
+                .open => |n| self.allocator.free(n),
+                else => {},
+            },
         };
         if (list.ptr != self.effects.items.ptr) self.allocator.free(list);
     }
@@ -461,7 +471,7 @@ pub const Ui = struct {
                 const n = g.alternatives.items.len;
                 g.index = if (a == .ai_next) (g.index + 1) % n else (g.index + n - 1) % n;
             },
-            .none, .zoom_in, .zoom_out, .zoom_reset, .reload_config, .ai_explain => return false,
+            .none, .zoom_in, .zoom_out, .zoom_reset, .reload_config, .ai_explain, .ssh_palette => return false,
         }
         return true;
     }
@@ -530,6 +540,10 @@ pub const Ui = struct {
     /// Text typed while an overlay (paste prompt / search) is open. Returns
     /// false when no overlay wants it (send it to the PTY).
     pub fn handleText(self: *Ui, term: *const Terminal, bytes: []const u8) !bool {
+        if (self.ssh_palette) |*p| {
+            try self.paletteResult(try p.handleText(bytes));
+            return true;
+        }
         if (self.prompt != null) {
             if (bytes.len == 1) switch (bytes[0]) {
                 'y', 'Y', '\r' => try self.answerPrompt(true),
@@ -580,6 +594,10 @@ pub const Ui = struct {
 
     /// Special keys while an overlay is open; false = not consumed.
     pub fn handleKey(self: *Ui, term: *const Terminal, key: input.Key, mods: input.Mods) !bool {
+        if (self.ssh_palette) |*p| {
+            try self.paletteResult(try p.handleKey(key));
+            return true;
+        }
         if (self.prompt != null) {
             switch (key) {
                 .enter, .kp_enter => try self.answerPrompt(true),
@@ -850,6 +868,35 @@ pub const Ui = struct {
         return self.prompt != null or self.search != null;
     }
 
+    // ------------------------------------------------------- ssh palette
+
+    /// Opens (or returns the open) SSH palette; the caller fills it.
+    pub fn openSshPalette(self: *Ui, title: []const u8) !*ssh_palette.Palette {
+        if (self.ssh_palette == null) {
+            self.closeSearch();
+            self.ssh_palette = try ssh_palette.Palette.init(self.allocator, title);
+        }
+        return &self.ssh_palette.?;
+    }
+
+    pub fn closeSshPalette(self: *Ui) void {
+        if (self.ssh_palette) |*p| p.deinit();
+        self.ssh_palette = null;
+    }
+
+    fn paletteResult(self: *Ui, r: ssh_palette.Result) !void {
+        switch (r) {
+            .none => {},
+            .close => self.closeSshPalette(),
+            .pick => |pk| {
+                errdefer if (pk == .open) self.allocator.free(pk.open);
+                try self.effects.append(.{ .ssh = pk });
+                // Toggling keeps the list open (it is refreshed); the rest close it.
+                if (pk != .toggle) self.closeSshPalette();
+            },
+        }
+    }
+
     // ------------------------------------------------------------ search
 
     fn openSearch(self: *Ui, term: *const Terminal) !void {
@@ -1058,6 +1105,12 @@ pub const Ui = struct {
         if (self.notice != null) {
             const shown = self.layoutNotice(rows, cols, cells.items, marks.items);
             if (out.cursor_row < shown) out.cursor_visible = false;
+        }
+
+        if (self.ssh_palette) |*p| {
+            p.draw(cells.items, rows, cols);
+            @memset(marks.items, .none);
+            out.cursor_visible = false;
         }
 
         if (self.overlayActive() and rows > 0) {

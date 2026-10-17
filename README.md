@@ -47,10 +47,11 @@ Context-aware, not just history-based.
 - Smooth under extreme output (logs, builds, streaming data)
 - Designed for future effects + massive scrollback
 
-### 🔐 Built-in SSH + Tunneling *(planned)*
-- libssh2-based connections with persistent profiles
-- Port forwarding made first-class
-- Reads your existing `~/.ssh/config`
+### 🔐 Built-in SSH + Tunneling
+- `deathterminal --ssh <profile|user@host>`: libssh2 (vendored) with Lua profiles (`config.ssh.profiles`) and your existing `~/.ssh/config` (Host/HostName/User/Port/IdentityFile/ProxyJump/Include)
+- ssh-agent, keys (incl. encrypted), keyboard-interactive and password, all prompted in-terminal; secrets never logged or stored
+- known_hosts verification: accept/once/reject for new hosts, hard block on changed keys
+- `-L` / `-R` / `-D` (SOCKS) forwards per profile, toggled live from the Ctrl+Shift+S palette; keepalives and reconnect (see [docs/SSH.md](docs/SSH.md))
 
 ### 🔧 Lua Scripting Engine *(planned)*
 - Lua 5.4 for config, hooks, and automation
@@ -113,10 +114,11 @@ See [QUICKSTART.md](QUICKSTART.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for deta
 - Real fonts: FreeType/HarfBuzz/fontconfig, bold/italic faces, CJK + colour emoji fallback, procedural box drawing, underline styles/colours, runtime zoom, optional retro 8×8 font (see [docs/FONTS.md](docs/FONTS.md))
 - X11 / Wayland / Win32 windows, resize, HiDPI scaling
 - Lua 5.4 config (`~/.config/death-terminal/config.lua`, vendored Lua, sandboxed): typed options with file:line errors shown in the window, bundled themes, key bindings, shell/env/cwd, live reload on save or Ctrl+Shift+R; `deathterminal --print-default-config` (see [docs/CONFIG.md](docs/CONFIG.md))
+- Built-in SSH (libssh2): profiles + `~/.ssh/config`, ProxyJump, agent/key/keyboard-interactive/password auth, known_hosts checks, remote PTY with resize, `-L/-R/-D` forwards togglable at runtime (Ctrl+Shift+S), keepalive/reconnect; `zig build test-ssh` against a local sshd (see [docs/SSH.md](docs/SSH.md))
 - CI (build + unit tests)
 
 **Not done yet** (tracked in [ISSUES.md](ISSUES.md))
-- SSH, Lua plugins/hooks, tabs/splits, packaging, macOS
+- Lua plugins/hooks, tabs/splits, packaging, macOS (SSH is Linux-only for now)
 
 ## 🧩 Architecture (Simplified)
 

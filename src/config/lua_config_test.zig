@@ -195,11 +195,11 @@ test "lua config: config.example.lua is valid and matches the defaults" {
     inline for (.{ "rows", "cols", "scale", "backend", "headless", "font_size", "line_height", "font_retro", "font_ligatures", "cursor_shape", "max_fps", "read_budget_kb", "scrollback_lines", "scrollbar", "scroll_lines", "copy_on_select", "paste_confirm", "default_keybindings", "ai_enabled", "ai_timeout_ms", "ai_debounce_ms", "ai_max_tokens", "ai_explain_max_tokens", "ai_history", "ai_output_lines", "shell_integration", "ssh_enabled", "ssh_keepalive_s" }) |name| {
         try t.expectEqual(@field(def, name), @field(cfg, name));
     }
-    inline for (.{ "font_family", "theme", "present_mode", "osc52", "word_chars", "url_open_command", "shell_program", "shell_cwd", "ai_endpoint", "ai_model", "ai_api_key_env", "ai_accept_key", "ssh_config_file" }) |name| {
+    inline for (.{ "font_family", "theme", "present_mode", "osc52", "word_chars", "url_open_command", "shell_program", "shell_cwd", "ai_endpoint", "ai_model", "ai_api_key_env", "ai_accept_key", "ssh_config_file", "ssh_known_hosts" }) |name| {
         try t.expectEqualStrings(@field(def, name), @field(cfg, name));
     }
     try t.expectEqual(def.palette().hash(), cfg.palette().hash());
-    try t.expectEqual(@as(usize, 0), cfg.shell_args.items.len + cfg.shell_env.items.len);
+    try t.expectEqual(@as(usize, 0), cfg.shell_args.items.len + cfg.shell_env.items.len + cfg.ssh_profiles.items.len);
 }
 
 test "lua config: load() falls back to defaults on errors" {
@@ -253,4 +253,79 @@ test "lua config: ai options are validated" {
     defer ok.deinit();
     try t.expectEqual(@as(usize, 0), d2.errorCount());
     try t.expectEqualStrings("OPENAI_API_KEY", ok.ai_api_key_env);
+}
+
+test "lua config: ssh.profiles" {
+    var d = config.Diagnostics.init(t.allocator);
+    defer d.deinit();
+    var cfg = loadStr(
+        \\config.ssh.profiles = {
+        \\  work = {
+        \\    host = "build.example.com", port = 2222, user = "andrew",
+        \\    identity_file = "~/.ssh/id_work", jump = "bastion,me@hop2:2200",
+        \\    env = { LANG = "en_US.UTF-8" }, command = "tmux new -A -s main",
+        \\    theme = "dracula", keepalive_s = 15, reconnect = true,
+        \\    forwards = { "L 8080:localhost:80", { "D 1080", enabled = false }, "R 9000:localhost:3000" },
+        \\  },
+        \\}
+        \\config.ssh.profiles.lab = { host = "lab" }
+        \\config.ssh.profiles.lab = { host = "lab2" }
+        \\config.ssh.known_hosts = "~/.ssh/known_hosts2"
+    , &d);
+    defer cfg.deinit();
+    d.print();
+    try t.expectEqual(@as(usize, 0), d.items.items.len);
+    try t.expectEqual(@as(usize, 2), cfg.ssh_profiles.items.len);
+    const w = cfg.ssh_profiles.items[0];
+    try t.expectEqualStrings("work", w.name);
+    try t.expectEqualStrings("build.example.com", w.host);
+    try t.expectEqual(@as(u16, 2222), w.port);
+    try t.expectEqualStrings("bastion,me@hop2:2200", w.jump);
+    try t.expectEqualStrings("LANG=en_US.UTF-8", w.env[0]);
+    try t.expectEqualStrings("dracula", w.theme);
+    try t.expectEqual(@as(?u16, 15), w.keepalive_s);
+    try t.expect(w.reconnect);
+    try t.expectEqual(@as(usize, 3), w.forwards.len);
+    try t.expect(w.forwards[0].enabled and !w.forwards[1].enabled);
+    try t.expectEqual(@as(u16, 1080), w.forwards[1].bind_port);
+    try t.expectEqualStrings("lab2", cfg.ssh_profiles.items[1].host);
+    try t.expectEqualStrings("~/.ssh/known_hosts2", cfg.ssh_known_hosts);
+}
+
+test "lua config: ssh.profiles mistakes are reported" {
+    var d = config.Diagnostics.init(t.allocator);
+    defer d.deinit();
+    var cfg = loadStr(
+        \\config.ssh.profiles.a = { host = "x", prot = 22 }
+        \\config.ssh.profiles.b = { port = 70000 }
+        \\config.ssh.profiles.c = { forwards = { "L 8080:localhost" } }
+        \\config.ssh.profiles.d = { theme = "nope" }
+        \\config.ssh.profiles.e = { host = "a b" }
+        \\config.ssh.profiles.f = "host"
+        \\config.ssh.profiles.ok = { host = "fine" }
+    , &d);
+    defer cfg.deinit();
+    try t.expectEqual(@as(usize, 6), d.errorCount());
+    try t.expect(d.contains("test.lua:1: ssh.profiles.a: unknown option 'prot'"));
+    try t.expect(d.contains("ssh.profiles.b.port: expected a whole number from 1 to 65535"));
+    try t.expect(d.contains("ssh.profiles.c.forwards[1]"));
+    try t.expect(d.contains("ssh.profiles.d.theme: unknown theme"));
+    try t.expect(d.contains("ssh.profiles.e.host"));
+    try t.expect(d.contains("ssh.profiles.f: expected a table"));
+    try t.expectEqual(@as(usize, 1), cfg.ssh_profiles.items.len);
+}
+
+test "--ssh applies the profile's theme and opens a window" {
+    var d = config.Diagnostics.init(t.allocator);
+    defer d.deinit();
+    var cfg = loadStr("config.theme = \"nord\"\nconfig.ssh.profiles.prod = { host = \"p\", theme = \"death\" }", &d);
+    defer cfg.deinit();
+    try cfg.loadFromArgs(&.{ "dt", "--ssh", "other" });
+    try t.expectEqualStrings("nord", cfg.theme);
+    try t.expect(!cfg.headless);
+    try cfg.loadFromArgs(&.{ "dt", "--ssh", "prod" });
+    try t.expectEqualStrings("death", cfg.theme);
+    cfg.headless = true;
+    try cfg.loadFromArgs(&.{ "dt", "--headless", "--ssh", "prod" });
+    try t.expect(cfg.headless);
 }

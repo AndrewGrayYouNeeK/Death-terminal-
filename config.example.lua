@@ -76,7 +76,8 @@ config.links.open_command = dt.os == "macos" and "open" or "xdg-open"
 -- Actions: copy, paste, paste_selection, search, scroll_page_up,
 -- scroll_page_down, scroll_line_up, scroll_line_down, scroll_top,
 -- scroll_bottom, zoom_in, zoom_out, zoom_reset, select_all,
--- clear_selection, reload_config. `false` removes a binding.
+-- clear_selection, reload_config, ai_accept, ai_dismiss, ai_next, ai_prev,
+-- ai_explain, ssh_palette (Ctrl+Shift+S). `false` removes a binding.
 config.default_keybindings = true    -- false = start from an empty table
 -- config.keys["ctrl+shift+t"] = "search"
 -- config.keys["ctrl+shift+c"] = false
@@ -102,10 +103,30 @@ config.ai.history = 5                -- previous commands (with exit codes) sent
 config.ai.output_lines = 20          -- lines of recent output sent as context
 config.ai.accept_key = "tab"         -- accepts the ghost text (Esc dismisses)
 
--- SSH (used from the libssh2 milestone) ------------------------------------
+-- SSH (built in, libssh2; see docs/SSH.md) --------------------------------
+-- `deathterminal --gui --ssh <profile | ~/.ssh/config alias | user@host[:port]>`
+-- or Ctrl+Shift+S in a window to pick a profile.
 config.ssh.enabled = true
-config.ssh.config_file = "~/.ssh/config"
+config.ssh.config_file = "~/.ssh/config"      -- Host aliases read from here ("" = none)
+config.ssh.known_hosts = "~/.ssh/known_hosts" -- checked; accepted keys are appended
 config.ssh.keepalive_s = 30          -- seconds; 0 = off
+-- config.ssh.profiles = {
+--   work = {
+--     host = "build.example.com",     -- default: the profile name (may be a ~/.ssh/config alias)
+--     port = 22, user = "andrew",
+--     identity_file = "~/.ssh/id_ed25519",
+--     jump = "bastion.example.com",   -- ProxyJump: "[user@]host[:port]", comma-separated
+--     env = { LANG = "en_US.UTF-8" }, -- sent if the server's AcceptEnv allows it
+--     command = "tmux new -A -s main",-- typed into the remote shell once it starts
+--     theme = "dracula",              -- theme for this window
+--     forwards = {                    -- toggle at runtime with Ctrl+Shift+S
+--       "L 8080:localhost:80",        -- local:  localhost:8080 -> remote's localhost:80
+--       "R 9000:localhost:3000",      -- remote: server's :9000 -> our localhost:3000
+--       { "D 1080", enabled = false },-- SOCKS4/5 proxy on localhost:1080 (starts off)
+--     },
+--     keepalive_s = 15, reconnect = true,
+--   },
+-- }
 
 -- Lua tricks ---------------------------------------------------------------
 -- if os.getenv("SSH_CONNECTION") then config.theme = "death" end

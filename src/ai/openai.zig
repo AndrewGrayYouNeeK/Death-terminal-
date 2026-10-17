@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const posix = std.posix;
+const dial = @import("../net/dial.zig");
 
 pub const Message = struct {
     role: []const u8,
@@ -106,7 +107,12 @@ pub fn chatStream(allocator: std.mem.Allocator, req: Request, cancel: *Cancel, s
     if (cancel.isCancelled()) return error.Cancelled;
     const deadline = std.time.milliTimestamp() + req.timeout_ms;
 
+    // Our own connection, so name lookup and connect obey the deadline
+    // (std.http would block in tcpConnectToHost).
+    const conn = try openConnection(&client, uri, req.timeout_ms, deadline, cancel);
+
     var r = client.open(.POST, uri, .{
+        .connection = conn,
         .server_header_buffer = &header_buf,
         .keep_alive = false,
         .redirect_behavior = .not_allowed,
@@ -160,6 +166,80 @@ pub fn chatStream(allocator: std.mem.Allocator, req: Request, cancel: *Cancel, s
     }
     // Non-streaming reply.
     try handlePayload(allocator, whole.items, sink);
+}
+
+fn cancelCheck(ctx: *anyopaque) bool {
+    const c: *Cancel = @ptrCast(@alignCast(ctx));
+    return c.isCancelled();
+}
+
+/// Connect (and for https, handshake) within the deadline and register
+/// the connection with `client`'s pool, which closes it when the request
+/// is done.
+fn openConnection(client: *std.http.Client, uri: std.Uri, timeout_ms: u32, deadline: i64, cancel: *Cancel) Error!*std.http.Client.Connection {
+    const Conn = std.http.Client.Connection;
+    const protocol: Conn.Protocol = if (std.ascii.eqlIgnoreCase(uri.scheme, "http"))
+        .plain
+    else if (std.ascii.eqlIgnoreCase(uri.scheme, "https"))
+        .tls
+    else
+        return error.BadEndpoint;
+    var host_buf: [256]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&host_buf);
+    const host_c = uri.host orelse return error.BadEndpoint;
+    var host = host_c.toRawMaybeAlloc(fba.allocator()) catch return error.BadEndpoint;
+    // "[::1]" -> "::1"
+    if (host.len > 2 and host[0] == '[' and host[host.len - 1] == ']') host = host[1 .. host.len - 1];
+    const port: u16 = uri.port orelse if (protocol == .tls) 443 else 80;
+
+    const left = deadline - std.time.milliTimestamp();
+    if (left <= 0) return error.Timeout;
+    const fd = dial.connect(host, port, @intCast(left), .{ .ctx = cancel, .f = cancelCheck }) catch |err| return switch (err) {
+        error.Timeout => error.Timeout,
+        error.Cancelled => error.Cancelled,
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.Offline,
+    };
+    var fd_owned = true;
+    errdefer if (fd_owned) posix.close(fd);
+    if (!cancel.attach(fd)) return error.Cancelled;
+    defer cancel.detach();
+    setTimeout(fd, timeout_ms);
+    const stream = std.net.Stream{ .handle = fd };
+
+    const allocator = client.allocator;
+    const node = try allocator.create(std.http.Client.ConnectionPool.Node);
+    errdefer allocator.destroy(node);
+    node.* = .{ .data = .{
+        .stream = stream,
+        .tls_client = undefined,
+        .protocol = protocol,
+        .host = try allocator.dupe(u8, host),
+        .port = port,
+    } };
+    errdefer allocator.free(node.data.host);
+    if (protocol == .tls) {
+        {
+            client.ca_bundle_mutex.lock();
+            defer client.ca_bundle_mutex.unlock();
+            if (client.next_https_rescan_certs) {
+                client.ca_bundle.rescan(allocator) catch return error.BadEndpoint;
+                client.next_https_rescan_certs = false;
+            }
+        }
+        const tls = try allocator.create(std.crypto.tls.Client);
+        errdefer allocator.destroy(tls);
+        tls.* = std.crypto.tls.Client.init(stream, client.ca_bundle, host) catch {
+            if (cancel.isCancelled()) return error.Cancelled;
+            if (std.time.milliTimestamp() >= deadline - 20) return error.Timeout;
+            return error.BadResponse;
+        };
+        tls.allow_truncation_attacks = true;
+        node.data.tls_client = tls;
+    }
+    client.connection_pool.addUsed(node);
+    fd_owned = false;
+    return &node.data;
 }
 
 fn setTimeout(fd: posix.socket_t, ms: u32) void {
@@ -404,4 +484,33 @@ test "chatStream: sink can stop the stream early" {
     var cancel = Cancel{};
     try chatStream(std.testing.allocator, testRequest(srv.url(&ub), &.{.{ .role = "user", .content = "x" }}), &cancel, Collect{ .out = &out, .limit = 2 });
     try std.testing.expectEqualStrings("ab", out.items);
+}
+
+test "chatStream: connect phase obeys the timeout (unroutable host, slow DNS)" {
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    var cancel = Cancel{};
+    const msgs = [_]Message{.{ .role = "user", .content = "x" }};
+    var req = testRequest("http://192.0.2.1:9/v1", &msgs);
+    req.timeout_ms = 300;
+    const start = std.time.milliTimestamp();
+    const r = chatStream(std.testing.allocator, req, &cancel, Collect{ .out = &out });
+    try std.testing.expect(r == error.Timeout or r == error.Offline);
+    try std.testing.expect(std.time.milliTimestamp() - start < 1000);
+
+    const saved = dial.lookup;
+    dial.lookup = struct {
+        fn f(host: []const u8, port: u16, o: *dial.AddrList) anyerror!void {
+            _ = host;
+            _ = port;
+            _ = o;
+            std.time.sleep(700 * std.time.ns_per_ms);
+            return error.UnknownHostName;
+        }
+    }.f;
+    defer dial.lookup = saved;
+    req = testRequest("http://never-resolves.invalid/v1", &msgs);
+    req.timeout_ms = 200;
+    try std.testing.expectError(error.Timeout, chatStream(std.testing.allocator, req, &cancel, Collect{ .out = &out }));
+    std.time.sleep(800 * std.time.ns_per_ms);
 }

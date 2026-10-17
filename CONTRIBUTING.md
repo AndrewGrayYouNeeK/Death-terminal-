@@ -92,7 +92,7 @@ src/
 ├── renderer/             # Vulkan rendering subsystem
 ├── terminal/             # Terminal emulation, PTY handling
 ├── ai/                   # AI suggestions: OpenAI-compatible HTTP/JSON client, redaction, worker
-├── ssh/                  # SSH tunneling and connections
+├── ssh/                  # Built-in SSH client (libssh2), ~/.ssh/config, forwards
 └── scripting/            # Lua engine and API bindings
 ```
 
@@ -226,13 +226,16 @@ MoltenVK setup and common troubleshooting steps.
 - Make AI features opt-in and configurable
 - Respect user privacy
 
-### SSH Tunneling (`src/ssh/`)
+### SSH (`src/ssh/`)
 
-- Use established SSH libraries (libssh2)
-- Never log credentials or keys
-- Validate host keys
-- Support standard SSH configurations
-- Handle connection drops and retries
+- libssh2 1.11.1 is vendored (`vendor/libssh2-1.11.1`); `src/ssh/libssh2_extra.c` holds the
+  few helpers that need its private headers. Don't patch the vendored sources
+- Never log credentials or keys; read secrets with `Tty.readLine(.., echo=false, ..)` into
+  fixed buffers and `secureZero` them
+- Validate host keys; known_hosts is only ever appended to
+- Pure logic (ssh_config, targets, forwards, SOCKS) gets unit tests; anything that talks to a
+  server goes in `tests/ssh/run.py`, run with `zig build test-ssh` (needs openssh-server,
+  passwordless sudo and python3; it starts throwaway sshd instances on 127.0.0.1:2222-2234)
 
 ### Lua Scripting (`src/scripting/`)
 

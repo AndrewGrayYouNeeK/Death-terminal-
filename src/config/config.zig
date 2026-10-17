@@ -10,6 +10,7 @@ const builtin = @import("builtin");
 const color = @import("../terminal/color.zig");
 pub const themes = @import("themes.zig");
 pub const lua_config = @import("lua_config.zig");
+pub const SshProfile = @import("../ssh/target.zig").Profile;
 
 pub const CursorShape = enum { block, underline, bar };
 
@@ -118,10 +119,16 @@ pub const Config = struct {
     ai_accept_key: []const u8 = "tab",
     /// Load the OSC 133 shell integration into bash/zsh/fish.
     shell_integration: bool = true,
-    /// SSH placeholders for the libssh2 milestone.
+    /// Built-in SSH client (docs/SSH.md).
     ssh_enabled: bool = true,
+    /// OpenSSH client config read for Host aliases ("" = none).
     ssh_config_file: []const u8 = "~/.ssh/config",
+    /// Keepalive interval for sessions (0 = off); profiles may override.
     ssh_keepalive_s: u16 = 30,
+    /// Where host keys are checked and accepted ones are appended.
+    ssh_known_hosts: []const u8 = "~/.ssh/known_hosts",
+    /// `config.ssh.profiles`, in definition order.
+    ssh_profiles: std.ArrayList(SshProfile),
     scrollback_lines: usize = 10_000,
     headless: bool = true,
     scale: f32 = 0,
@@ -186,6 +193,7 @@ pub const Config = struct {
             .keybinds = std.ArrayList([]const u8).init(allocator),
             .shell_args = std.ArrayList([]const u8).init(allocator),
             .shell_env = std.ArrayList([]const u8).init(allocator),
+            .ssh_profiles = std.ArrayList(SshProfile).init(allocator),
         };
     }
 
@@ -193,6 +201,7 @@ pub const Config = struct {
         self.keybinds.deinit();
         self.shell_args.deinit();
         self.shell_env.deinit();
+        self.ssh_profiles.deinit();
         self.arena.deinit();
         self.allocator.destroy(self.arena);
     }
@@ -353,6 +362,18 @@ pub const Config = struct {
                 // Loaded before the CLI flags by `load` (see main.zig).
                 if (i + 1 >= args.len) return error.MissingConfigPath;
                 i += 1;
+            } else if (std.mem.eql(u8, arg, "--ssh")) {
+                // A window for an SSH session (main.zig runs the client).
+                if (i + 1 >= args.len) return error.MissingSshTarget;
+                i += 1;
+                const explicit_headless = for (args[1..]) |x| {
+                    if (std.mem.eql(u8, x, "--headless")) break true;
+                } else false;
+                if (!explicit_headless) self.headless = false;
+                // The profile's theme override (re-applied on every reload).
+                for (self.ssh_profiles.items) |p| {
+                    if (std.mem.eql(u8, p.name, args[i]) and p.theme.len > 0) self.theme = p.theme;
+                }
             }
         }
     }

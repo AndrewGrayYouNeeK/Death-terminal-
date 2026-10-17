@@ -32,6 +32,7 @@ deps/
 vendor/*
 # Vendored sources that are part of the build
 !vendor/lua-5.4.7/
+!vendor/libssh2-1.11.1/
 
 # Distribution
 dist/
@@ -47,3 +48,5 @@ vgcore.*
 
 # Vulkan validation layers output
 vk_validation_*.txt
+__pycache__/
+*.pyc

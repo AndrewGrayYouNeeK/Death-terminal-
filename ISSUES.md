@@ -90,20 +90,23 @@
 - [x] Offline mode handling ("AI offline" badge, backoff)
 - [x] Configuration for AI endpoints (`config.ai.*`)
 - [x] Rate limiting and error handling (one request at a time, backoff)
-- [ ] Connect timeout (std.http has none; only the worker thread waits)
+- [x] Connect timeout: DNS + connect obey `ai.timeout_ms` (src/net/dial.zig)
 - [ ] Multi-line suggestions; keep-alive connections
 
-### Phase 4 - SSH Tunneling (Medium Priority)
-- [ ] SSH library integration (libssh2)
-- [ ] Connection manager implementation
-- [ ] SSH profile management
-- [ ] Authentication handling (keys, passwords)
-- [ ] Host key verification
-- [ ] Port forwarding implementation
-- [ ] Tunnel lifecycle management
-- [ ] Connection retry logic
-- [ ] Standard SSH config file support
-- [ ] Security: credential handling (no logging)
+### Phase 4 - SSH (Medium Priority)
+- [x] SSH library integration (libssh2 1.11.1 vendored, system libcrypto) — src/ssh/, docs/SSH.md
+- [x] Connection manager: `--ssh` windows run `--ssh-session`; ProxyJump hops via direct-tcpip
+- [x] SSH profile management (`config.ssh.profiles`, Ctrl+Shift+S palette)
+- [x] Authentication: agent, keys (incl. encrypted), keyboard-interactive, password, prompted in-terminal
+- [x] Host key verification (known_hosts; accept/once/reject; hard block on changed/revoked)
+- [x] Port forwarding -L / -R / -D (SOCKS4/4a/5), runtime toggles (palette, `--ssh-ctl`)
+- [x] Keepalives, dead-peer detection, reconnect with backoff
+- [x] Standard SSH config file support (Host/HostName/User/Port/IdentityFile/ProxyJump/Include)
+- [x] Security: secrets wiped, never logged or stored; known_hosts append-only
+- [x] Integration tests against a local sshd (`zig build test-ssh`)
+- [ ] SSH certificates (@cert-authority), `Match`, agent/X11 forwarding, SFTP
+- [ ] Recursive ProxyJump for hops; partial-success (multi-factor) chains get no special UI
+- [ ] macOS/Windows builds of the SSH client (Linux only for now)
 
 ### Phase 5 - Lua Scripting (Lower Priority)
 - [x] Lua state initialization (vendored Lua 5.4.7, built by zig)

@@ -15,11 +15,13 @@ const Config = cfg_mod.Config;
 const Diagnostics = cfg_mod.Diagnostics;
 const themes = @import("themes.zig");
 const events = @import("../platform/events.zig");
+const ssh_forward = @import("../ssh/forward.zig");
+const SshProfile = cfg_mod.SshProfile;
 
 const prelude_src = @embedFile("prelude.lua");
 pub const version = "0.1.0";
 
-pub const Kind = enum { section, boolean, integer, number, string, color, choice, theme, keys, string_map, string_list, palette };
+pub const Kind = enum { section, boolean, integer, number, string, color, choice, theme, keys, string_map, string_list, palette, ssh_profiles };
 
 const Ref = union(enum) {
     boolean: *bool,
@@ -172,6 +174,8 @@ pub const schema = [_]Field{
     .{ .path = "ssh.enabled", .kind = .boolean, .ref = ref(.boolean, "ssh_enabled") },
     .{ .path = "ssh.config_file", .kind = .string, .ref = ref(.string, "ssh_config_file") },
     .{ .path = "ssh.keepalive_s", .kind = .integer, .min = 0, .max = 3600, .ref = ref(.u16, "ssh_keepalive_s") },
+    .{ .path = "ssh.known_hosts", .kind = .string, .ref = ref(.string, "ssh_known_hosts") },
+    .{ .path = "ssh.profiles", .kind = .ssh_profiles },
 };
 
 pub fn field(path: []const u8) ?*const Field {
@@ -205,6 +209,7 @@ pub fn displayName(buf: []u8, path: []const u8) []const u8 {
 const Ctx = struct {
     cfg: *Config,
     buf: [1024]u8 = undefined,
+    msg_len: usize = 0,
     desc: [160]u8 = undefined,
     keys_reset: bool = false,
 };
@@ -369,10 +374,11 @@ fn setValue(ctx: *Ctx, L: *State, path: []const u8, idx: c_int) ?[]const u8 {
             };
             f.ref.?(cfg).string.* = t.name;
         },
-        .keys, .string_map, .palette, .string_list => {
+        .keys, .string_map, .palette, .string_list, .ssh_profiles => {
             if (c.lua_type(L, idx) != c.LUA_TTABLE) {
                 const what = switch (f.kind) {
                     .keys => "a table like { [\"ctrl+shift+t\"] = \"search\" }",
+                    .ssh_profiles => "a table like { work = { host = \"build.example.com\", user = \"me\" } }",
                     .string_map => "a table like { NAME = \"value\" }",
                     .palette => "a table like { [0] = \"#000000\", [1] = \"#cc0000\" }",
                     else => "a list of strings like { \"-l\" }",
@@ -393,6 +399,7 @@ fn setCollection(ctx: *Ctx, L: *State, f: *const Field, idx: c_int) ?[]const u8 
         .string_map => cfg.shell_env.clearRetainingCapacity(),
         .string_list => cfg.shell_args.clearRetainingCapacity(),
         .palette => cfg.colors.palette = [_]?u32{null} ** 256,
+        .ssh_profiles => cfg.ssh_profiles.clearRetainingCapacity(),
         else => unreachable,
     }
     if (f.kind == .string_list) {
@@ -487,9 +494,134 @@ fn setItem(ctx: *Ctx, L: *State, path: []const u8, key_idx: c_int, val_idx: c_in
             };
             cfg.colors.palette[@intCast(i)] = v;
         },
+        .ssh_profiles => {
+            const name = lua.toString(L, key_idx) orelse return fail(ctx, "ssh.profiles: profile names must be strings, got {s}", .{describe(ctx, L, key_idx)});
+            if (name.len == 0 or std.mem.indexOfAny(u8, name, " \t\r\n") != null) return fail(ctx, "ssh.profiles: invalid profile name \"{s}\"", .{name});
+            if (c.lua_type(L, val_idx) != c.LUA_TTABLE) return fail(ctx, "ssh.profiles.{s}: expected a table like {{ host = \"example.com\", user = \"me\" }}, got {s}", .{ name, describe(ctx, L, val_idx) });
+            const p = parseProfile(ctx, L, name, val_idx) catch |err| return switch (err) {
+                error.Invalid => ctx.buf[0..ctx.msg_len],
+                error.OutOfMemory => "out of memory",
+            };
+            for (cfg.ssh_profiles.items) |*e| if (std.mem.eql(u8, e.name, p.name)) {
+                e.* = p;
+                return null;
+            };
+            cfg.ssh_profiles.append(p) catch return "out of memory";
+        },
         else => return fail(ctx, "{s} is not a table option", .{path}),
     }
     return null;
+}
+
+const profile_fields = "host, port, user, identity_file, jump, env, command, theme, forwards, keepalive_s, reconnect";
+
+fn invalid(ctx: *Ctx, comptime fmt: []const u8, args: anytype) error{Invalid} {
+    ctx.msg_len = (std.fmt.bufPrint(&ctx.buf, fmt, args) catch "ssh.profiles: invalid value").len;
+    return error.Invalid;
+}
+
+fn profileString(ctx: *Ctx, L: *State, name: []const u8, key: []const u8, idx: c_int) ![]const u8 {
+    const s = lua.toString(L, idx) orelse return invalid(ctx, "ssh.profiles.{s}.{s}: expected a string, got {s}", .{ name, key, describe(ctx, L, idx) });
+    return ctx.cfg.dupe(s);
+}
+
+fn profileInt(ctx: *Ctx, L: *State, name: []const u8, key: []const u8, idx: c_int, min: f64, max: f64) !u16 {
+    const v = c.lua_tonumberx(L, idx, null);
+    if (c.lua_type(L, idx) != c.LUA_TNUMBER or v != @floor(v) or v < min or v > max)
+        return invalid(ctx, "ssh.profiles.{s}.{s}: expected a whole number from {d} to {d}, got {s}", .{ name, key, min, max, describe(ctx, L, idx) });
+    return @intFromFloat(v);
+}
+
+/// One `ssh.profiles.<name> = { ... }` table at `idx`.
+fn parseProfile(ctx: *Ctx, L: *State, name_in: []const u8, idx_in: c_int) error{ Invalid, OutOfMemory }!SshProfile {
+    const cfg = ctx.cfg;
+    const a = cfg.arena.allocator();
+    const idx = c.lua_absindex(L, idx_in);
+    var p = SshProfile{ .name = try cfg.dupe(name_in) };
+    const name = p.name;
+    c.lua_pushnil(L);
+    while (c.lua_next(L, idx) != 0) {
+        defer lua.pop(L, 1);
+        const key = lua.toString(L, -2) orelse return invalid(ctx, "ssh.profiles.{s}: option names must be strings", .{name});
+        if (std.mem.eql(u8, key, "host")) {
+            p.host = try profileString(ctx, L, name, key, -1);
+            _ = @import("../ssh/target.zig").parseSpec(p.host) catch return invalid(ctx, "ssh.profiles.{s}.host: expected \"host\", \"user@host\" or \"host:port\", got \"{s}\"", .{ name, p.host });
+        } else if (std.mem.eql(u8, key, "port")) {
+            p.port = try profileInt(ctx, L, name, key, -1, 1, 65535);
+        } else if (std.mem.eql(u8, key, "user")) {
+            p.user = try profileString(ctx, L, name, key, -1);
+        } else if (std.mem.eql(u8, key, "identity_file")) {
+            p.identity_file = try profileString(ctx, L, name, key, -1);
+        } else if (std.mem.eql(u8, key, "jump")) {
+            p.jump = try profileString(ctx, L, name, key, -1);
+            if (!std.ascii.eqlIgnoreCase(p.jump, "none")) {
+                var it = std.mem.tokenizeAny(u8, p.jump, ", ");
+                while (it.next()) |hop| _ = @import("../ssh/target.zig").parseSpec(hop) catch
+                    return invalid(ctx, "ssh.profiles.{s}.jump: expected \"[user@]host[:port]\" (comma-separated for several hops), got \"{s}\"", .{ name, hop });
+            }
+        } else if (std.mem.eql(u8, key, "command")) {
+            p.command = try profileString(ctx, L, name, key, -1);
+        } else if (std.mem.eql(u8, key, "theme")) {
+            const s = lua.toString(L, -1) orelse "";
+            const th = themes.find(s) orelse {
+                var names: [256]u8 = undefined;
+                return invalid(ctx, "ssh.profiles.{s}.theme: unknown theme {s} (bundled: {s})", .{ name, describe(ctx, L, -1), themeNames(&names) });
+            };
+            p.theme = th.name;
+        } else if (std.mem.eql(u8, key, "keepalive_s")) {
+            p.keepalive_s = try profileInt(ctx, L, name, key, -1, 0, 3600);
+        } else if (std.mem.eql(u8, key, "reconnect")) {
+            if (c.lua_type(L, -1) != c.LUA_TBOOLEAN) return invalid(ctx, "ssh.profiles.{s}.reconnect: expected true or false, got {s}", .{ name, describe(ctx, L, -1) });
+            p.reconnect = c.lua_toboolean(L, -1) != 0;
+        } else if (std.mem.eql(u8, key, "env")) {
+            if (c.lua_type(L, -1) != c.LUA_TTABLE) return invalid(ctx, "ssh.profiles.{s}.env: expected a table like {{ LANG = \"en_US.UTF-8\" }}, got {s}", .{ name, describe(ctx, L, -1) });
+            var env = std.ArrayList([]const u8).init(a);
+            const t = c.lua_absindex(L, -1);
+            c.lua_pushnil(L);
+            while (c.lua_next(L, t) != 0) {
+                defer lua.pop(L, 1);
+                const k = lua.toString(L, -2) orelse "";
+                const v = lua.toString(L, -1);
+                if (k.len == 0 or std.mem.indexOfAny(u8, k, "=\x00 ") != null or v == null) {
+                    return invalid(ctx, "ssh.profiles.{s}.env: expected NAME = \"value\" string pairs", .{name});
+                }
+                try env.append(try std.fmt.allocPrint(a, "{s}={s}", .{ k, v.? }));
+            }
+            p.env = env.items;
+        } else if (std.mem.eql(u8, key, "forwards")) {
+            if (c.lua_type(L, -1) != c.LUA_TTABLE) return invalid(ctx, "ssh.profiles.{s}.forwards: expected a list like {{ \"L 8080:localhost:80\", \"D 1080\" }}, got {s}", .{ name, describe(ctx, L, -1) });
+            var list = std.ArrayList(ssh_forward.Forward).init(a);
+            const t = c.lua_absindex(L, -1);
+            const n = c.luaL_len(L, t);
+            var i: c.lua_Integer = 1;
+            while (i <= n) : (i += 1) {
+                _ = c.lua_rawgeti(L, t, i);
+                defer lua.pop(L, 1);
+                var enabled = true;
+                var spec: ?[]const u8 = lua.toString(L, -1);
+                if (spec == null and c.lua_type(L, -1) == c.LUA_TTABLE) {
+                    _ = c.lua_rawgeti(L, -1, 1);
+                    spec = lua.toString(L, -1);
+                    lua.pop(L, 1);
+                    _ = c.lua_getfield(L, -1, "enabled");
+                    if (c.lua_type(L, -1) == c.LUA_TBOOLEAN) enabled = c.lua_toboolean(L, -1) != 0;
+                    lua.pop(L, 1);
+                }
+                const sp = spec orelse {
+                    return invalid(ctx, "ssh.profiles.{s}.forwards[{d}]: expected a string like \"L 8080:localhost:80\" or {{ \"D 1080\", enabled = false }}", .{ name, i });
+                };
+                var fw = ssh_forward.parse(sp) catch |err| {
+                    return invalid(ctx, "ssh.profiles.{s}.forwards[{d}]: \"{s}\": {s}", .{ name, i, sp, ssh_forward.errorText(err) });
+                };
+                fw.enabled = enabled;
+                try list.append(try fw.dupe(a));
+            }
+            p.forwards = list.items;
+        } else {
+            return invalid(ctx, "ssh.profiles.{s}: unknown option '{s}' (profiles have: {s})", .{ name, key, profile_fields });
+        }
+    }
+    return p;
 }
 
 fn actionError(ctx: *Ctx, L: *State, chord: []const u8, idx: c_int) []const u8 {

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- The SSH tunnel-manager stub (`src/ssh/tunnel.zig`) is replaced by the real client
 - The AI client is HTTP/JSON (OpenAI-compatible) instead of the originally planned gRPC service; the gRPC stub (`src/ai/autocomplete.zig`) is gone
 - `select_all` moved from Ctrl+Shift+A to Ctrl+Shift+Alt+A (Ctrl+Shift+A is now `ai_explain`)
 
@@ -15,6 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `config.txt` (`key = value`): still read when no config.lua exists, with a warning
 
 ### Added
+- Built-in SSH via libssh2 1.11.1 (vendored, built by `zig build`, links system libcrypto): `deathterminal --ssh <profile|~/.ssh/config Host|user@host[:port]>` opens a window running the client; `--ssh-session` runs it in any terminal
+- `config.ssh.profiles` (host, port, user, identity_file, jump/ProxyJump, env, command, theme, forwards, keepalive_s, reconnect) with validation, and `config.ssh.known_hosts`; `~/.ssh/config` parsing (Host patterns, HostName, User, Port, IdentityFile, ProxyJump, Include)
+- Auth: ssh-agent, public keys incl. encrypted (passphrase prompt), keyboard-interactive, password, all drawn in-terminal; secrets are wiped from memory and never logged or stored
+- Host-key verification against known_hosts: SHA256 fingerprint, accept and save / once / reject for unknown hosts, a hard block on changed or revoked keys
+- Remote PTY with window-change on resize, env requests, exit status (128+signal, 255 for connection errors), keepalives with dead-peer detection, optional reconnect with backoff
+- Port forwarding: local (-L), remote (-R) and dynamic SOCKS4/4a/5 (-D), per profile or on the command line; toggled at runtime from the Ctrl+Shift+S palette (`ssh_palette`) or `deathterminal --ssh-ctl <pid> list|toggle|on|off|add|status|reconnect`
+- Ctrl+Shift+S palette: the session's forwards, Reconnect, and every profile / `~/.ssh/config` alias (opens a new window)
+- AI context marks SSH sessions as remote ("over SSH to user@host"); redaction unchanged
+- `zig build test-ssh`: integration tests against local sshd instances (auth methods, host-key paths, forwarding via curl, resize, reconnect); docs/SSH.md
+
 - AI command suggestions over an OpenAI-compatible chat/completions endpoint (HTTP/JSON with SSE streaming; default local Ollama `qwen2.5-coder:0.5b` at `http://localhost:11434/v1`), replacing the stub. Dim ghost text after the cursor; Tab (`ai.accept_key`) accepts, Esc dismisses, Alt+] / Alt+[ cycle alternatives; never inserted without accept
 - "Explain / fix last error" (Ctrl+Shift+A, `ai_explain`): streaming overlay with the cause and a corrected command
 - Background AI worker thread with cancel-on-keystroke and debounce; an unreachable endpoint shows an "AI offline" badge and backs off (5–60 s) instead of erroring
@@ -65,6 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `src/terminal/vt_test.zig` emulation tests, `tools/headless_drive.py`, `docs/VT_SUPPORT.md`
 
 ### Fixed
+- AI requests now honour `ai.timeout_ms` during name resolution and connect (`src/net/dial.zig`); an unroutable endpoint no longer blocks the worker until the OS gives up
 - Scrolling no longer copies the whole screen per line (row map), scrollback stores trimmed lines: `cat` of a 23 MB file in the GUI takes 1.8 s instead of 18.4 s
 - The selection is cleared when output rewrites the selected text
 - The search bar no longer hides the prompt on the last row

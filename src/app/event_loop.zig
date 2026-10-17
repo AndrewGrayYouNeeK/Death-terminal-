@@ -6,7 +6,9 @@ const terminal = @import("../terminal/terminal.zig");
 const renderer = @import("../renderer/vulkan_renderer.zig");
 const software = @import("../renderer/software.zig");
 const ai_controller = @import("ai_controller.zig");
-const ssh = @import("../ssh/tunnel.zig");
+const ssh_target = @import("../ssh/target.zig");
+const ssh_control = @import("../ssh/control.zig");
+const ssh_palette = ui_mod.ssh_palette;
 const lua_engine = @import("../scripting/lua_engine.zig");
 const config = @import("../config/config.zig");
 const window_mod = @import("../platform/window.zig");
@@ -52,16 +54,24 @@ pub const EventLoop = struct {
     watch_path: ?[]const u8 = null,
     /// Problems from loading the config at startup, shown in the window.
     startup_diags: ?*const config.Diagnostics = null,
+    /// `--ssh <target>`: the PTY runs the SSH client for this target.
+    ssh_target: ?[]const u8 = null,
+    /// "user@host[:port]" of that session (AI context, palette title).
+    ssh_remote: []const u8 = "",
+
+    fn aiSettings(self: *const EventLoop) ai_controller.Settings {
+        var s = ai_controller.Settings.fromConfig(self.cfg);
+        s.remote = self.ssh_remote;
+        return s;
+    }
 
     pub fn run(
         self: *EventLoop,
         vulkan_renderer: *renderer.VulkanRenderer,
         term: *terminal.Terminal,
         lua: *lua_engine.LuaEngine,
-        ssh_manager: *ssh.TunnelManager,
     ) !void {
         _ = lua;
-        _ = ssh_manager;
 
         if (self.cfg.headless) {
             try self.runHeadless(vulkan_renderer, term);
@@ -137,7 +147,7 @@ pub const EventLoop = struct {
         };
         var view = ViewBuffers.init(self.allocator);
         defer view.deinit();
-        var ai = ai_controller.Controller.init(self.allocator, ai_controller.Settings.fromConfig(self.cfg));
+        var ai = ai_controller.Controller.init(self.allocator, self.aiSettings());
         defer ai.deinit();
         if (ai.engine != null) std.debug.print("  → AI: {s} via {s}\n", .{ self.cfg.ai_model, self.cfg.ai_endpoint });
         const gui = Gui{
@@ -153,6 +163,7 @@ pub const EventLoop = struct {
             .palette = &palette,
             .pace = &pace,
             .ai = &ai,
+            .loop = self,
         };
         std.debug.print("GUI terminal active ({s}, scale={d:.2}). Close the window or exit the shell to quit.\n", .{
             @tagName(window.backend),
@@ -239,6 +250,8 @@ pub const EventLoop = struct {
                             force_present = true;
                         } else if (a.action == .ai_explain) {
                             try ai.explain(&ui, term, std.time.milliTimestamp());
+                        } else if (a.action == .ssh_palette) {
+                            if (ui.ssh_palette != null) ui.closeSshPalette() else try gui.openSshPalette();
                         } else if (step) |z| {
                             if (try fonts.zoom(z)) {
                                 try regrid(term, &fonts, &soft, window.width, window.height);
@@ -631,6 +644,7 @@ const Gui = struct {
     palette: *color.Palette,
     pace: *Pacer,
     ai: *ai_controller.Controller,
+    loop: *const EventLoop,
 
     /// Build the frame and draw it. Unchanged frames are not drawn unless
     /// `force` (expose/resize). Returns whether anything was presented.
@@ -694,7 +708,7 @@ const Gui = struct {
         // Slices into the old config's arena were re-pointed by applyConfig.
         self.ui.opts = uiOptions(self.cfg);
         self.fonts.opts.family = self.cfg.font_family;
-        self.ai.applySettings(self.ui, ai_controller.Settings.fromConfig(self.cfg));
+        self.ai.applySettings(self.ui, loop.aiSettings());
 
         std.debug.print("config: reloaded {s}\n", .{shown_path});
         var lines = std.ArrayList([]const u8).init(allocator);
@@ -752,9 +766,152 @@ const Gui = struct {
             .set_clipboard => |c| self.window.setClipboard(c.target, c.text),
             .request_paste => |r| self.window.requestClipboard(r.target, r.purpose),
             .open_url => |url| openUrl(self.cfg.url_open_command, url),
+            .ssh => |pick| try self.sshPick(pick),
         };
     }
+
+    // ---------------------------------------------------------------- ssh
+
+    /// pid of the SSH client when this window is an SSH session.
+    fn sshPid(self: Gui) ?posix.pid_t {
+        if (self.loop.ssh_target == null) return null;
+        const p = self.term.pty orelse return null;
+        return p.child_pid;
+    }
+
+    fn openSshPalette(self: Gui) !void {
+        const pal = try self.ui.openSshPalette(if (self.loop.ssh_remote.len > 0) self.loop.ssh_remote else "profiles");
+        try self.fillSshPalette(pal);
+    }
+
+    /// This session's forwards + reconnect (from the client's control
+    /// socket), then profiles and ~/.ssh/config aliases.
+    fn fillSshPalette(self: Gui, pal: *ssh_palette.Palette) !void {
+        var arena_state = std.heap.ArenaAllocator.init(self.cfg.allocator);
+        defer arena_state.deinit();
+        const a = arena_state.allocator();
+        var items = std.ArrayList(ssh_palette.Item).init(a);
+        if (self.sshPid()) |pid| {
+            var out: [8192]u8 = undefined;
+            if (ssh_control.request(pid, "list", &out)) |reply| {
+                var lines = std.mem.splitScalar(u8, reply, '\n');
+                while (lines.next()) |ln| {
+                    const f = parseForwardLine(ln) orelse continue;
+                    try items.append(.{ .kind = .forward, .name = try a.dupe(u8, f.spec), .detail = try a.dupe(u8, f.state), .forward = f.n, .on = f.on });
+                }
+            } else |_| try pal.setStatus(" session not reachable (still connecting?) ");
+            try items.append(.{ .kind = .reconnect, .name = try a.dupe(u8, "Reconnect"), .detail = try a.dupe(u8, self.loop.ssh_remote) });
+        }
+        for (self.cfg.ssh_profiles.items) |p| {
+            var db: [300]u8 = undefined;
+            const detail = if (ssh_target.resolveForConfig(a, self.cfg.ssh_profiles.items, self.cfg.ssh_config_file, self.cfg.ssh_keepalive_s, p.name)) |t|
+                try std.fmt.allocPrint(a, "{s}{s}{s}", .{ t.display(&db), if (t.jumps.len > 0) "  via jump" else "", if (t.forwards.len > 0) "  +forwards" else "" })
+            else |_|
+                try a.dupe(u8, "(invalid)");
+            try items.append(.{ .kind = .profile, .name = try a.dupe(u8, p.name), .detail = detail });
+        }
+        // Lua table order is arbitrary: list profiles by name.
+        const first_profile = blk: {
+            for (items.items, 0..) |it, i| if (it.kind == .profile) break :blk i;
+            break :blk items.items.len;
+        };
+        std.mem.sort(ssh_palette.Item, items.items[first_profile..], {}, struct {
+            fn lt(_: void, x: ssh_palette.Item, y: ssh_palette.Item) bool {
+                return std.mem.lessThan(u8, x.name, y.name);
+            }
+        }.lt);
+        var aliases = std.ArrayList([]const u8).init(a);
+        ssh_target.configAliases(a, self.cfg.ssh_config_file, &aliases);
+        for (aliases.items) |name| {
+            if (ssh_target.findProfile(self.cfg.ssh_profiles.items, name) != null) continue;
+            try items.append(.{ .kind = .alias, .name = try a.dupe(u8, name), .detail = try a.dupe(u8, "~/.ssh/config") });
+        }
+        try pal.setItems(items.items);
+    }
+
+    fn sshPick(self: Gui, pick: ssh_palette.Pick) !void {
+        const now = std.time.milliTimestamp();
+        switch (pick) {
+            .open => |name| {
+                openSshWindow(self.loop, name);
+                var hb: [300]u8 = undefined;
+                try self.ui.setNotice(.info, std.fmt.bufPrint(&hb, "ssh: opening {s} in a new window", .{name}) catch "ssh: opening a new window", &.{}, RELOADED_NOTICE_MS, now);
+            },
+            .toggle => |n| {
+                const pid = self.sshPid() orelse return;
+                var cmd: [32]u8 = undefined;
+                var out: [512]u8 = undefined;
+                const reply = ssh_control.request(pid, std.fmt.bufPrint(&cmd, "toggle {d}", .{n}) catch "list", &out) catch "error session not reachable";
+                if (self.ui.ssh_palette) |*pal| {
+                    var spec: []const u8 = "forward";
+                    for (pal.items.items) |it| if (it.kind == .forward and it.forward == n) {
+                        spec = it.name;
+                    };
+                    var sb: [200]u8 = undefined;
+                    try pal.setStatus(toggleStatus(&sb, spec, std.mem.trim(u8, reply, " \n")));
+                    try self.fillSshPalette(pal);
+                }
+            },
+            .reconnect => {
+                const pid = self.sshPid() orelse return;
+                var out: [64]u8 = undefined;
+                _ = ssh_control.request(pid, "reconnect", &out) catch {};
+            },
+        }
+    }
 };
+
+/// " L 8080:localhost:80 → on " from a control reply "ok on <state>".
+fn toggleStatus(buf: []u8, spec: []const u8, reply: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, reply, "ok ")) {
+        const r = reply[3..];
+        const word = r[0 .. std.mem.indexOfScalar(u8, r, ' ') orelse r.len];
+        return std.fmt.bufPrint(buf, " {s} \u{2192} {s} ", .{ spec, word }) catch " ok ";
+    }
+    const why = if (std.mem.startsWith(u8, reply, "error ")) reply[6..] else reply;
+    return std.fmt.bufPrint(buf, " {s}: {s} ", .{ spec, why }) catch " error ";
+}
+
+test "toggleStatus" {
+    var b: [200]u8 = undefined;
+    try std.testing.expectEqualStrings(" D 1080 \u{2192} off ", toggleStatus(&b, "D 1080", "ok off off"));
+    try std.testing.expectEqualStrings(" D 1080: session not reachable ", toggleStatus(&b, "D 1080", "error session not reachable"));
+}
+
+const ForwardLine = struct { n: usize, on: bool, spec: []const u8, state: []const u8 };
+
+/// "<n> <on|off> <spec> | <state>" from the control socket's `list`.
+fn parseForwardLine(line: []const u8) ?ForwardLine {
+    var it = std.mem.splitScalar(u8, line, ' ');
+    const n = std.fmt.parseInt(usize, it.next() orelse return null, 10) catch return null;
+    const onoff = it.next() orelse return null;
+    const rest = it.rest();
+    const bar = std.mem.indexOf(u8, rest, " | ") orelse return null;
+    return .{ .n = n, .on = std.mem.eql(u8, onoff, "on"), .spec = rest[0..bar], .state = rest[bar + 3 ..] };
+}
+
+test "parseForwardLine" {
+    const f = parseForwardLine("2 off D 1080 | off").?;
+    try std.testing.expectEqual(@as(usize, 2), f.n);
+    try std.testing.expect(!f.on);
+    try std.testing.expectEqualStrings("D 1080", f.spec);
+    try std.testing.expectEqualStrings("off", f.state);
+    try std.testing.expect(parseForwardLine("garbage") == null);
+}
+
+/// A new window process for `name` (same config file and safety flags).
+fn openSshWindow(loop: *const EventLoop, name: []const u8) void {
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const exe = std.fs.selfExePathAlloc(a) catch return;
+    var argv = std.ArrayList([]const u8).init(a);
+    argv.appendSlice(&.{ exe, "--gui", "--ssh", name }) catch return;
+    if (loop.config_arg) |c| argv.appendSlice(&.{ "--config", c }) catch return;
+    if (loop.load_opts.lua_unsafe) argv.append("--lua-unsafe") catch return;
+    if (!loop.cfg.ai_enabled) argv.append("--no-ai") catch return;
+    spawnDetached(argv.items, false);
+}
 
 fn nowNs() u64 {
     return @intCast(std.time.nanoTimestamp());
@@ -924,24 +1081,31 @@ fn installBindings(cfg: *const config.Config) void {
 fn openUrl(command: []const u8, url: []const u8) void {
     if (builtin.os.tag == .windows) return; // TODO: ShellExecuteW
     std.debug.print("  → open {s}\n", .{url});
+    spawnDetached(&.{ command, url }, true);
+}
+
+/// Runs argv[0] (looked up in $PATH) detached from this process: double
+/// fork so it is reparented and never becomes our zombie.
+fn spawnDetached(args: []const []const u8, quiet: bool) void {
+    if (builtin.os.tag == .windows) return;
     var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const cmd_z = arena.dupeZ(u8, command) catch return;
-    const url_z = arena.dupeZ(u8, url) catch return;
-    const argv = [_:null]?[*:0]const u8{ cmd_z.ptr, url_z.ptr, null };
+    const argv = arena.allocSentinel(?[*:0]const u8, args.len, null) catch return;
+    for (args, 0..) |x, i| argv[i] = (arena.dupeZ(u8, x) catch return).ptr;
     const pid = posix.fork() catch return;
     if (pid == 0) {
-        // Intermediate child: fork the opener and exit so it is reparented.
         if (builtin.os.tag == .linux) _ = std.os.linux.setsid();
         const pid2 = posix.fork() catch posix.exit(1);
         if (pid2 == 0) {
             const devnull = posix.openZ("/dev/null", .{ .ACCMODE = .RDWR }, 0) catch posix.exit(1);
             posix.dup2(devnull, 0) catch {};
-            posix.dup2(devnull, 1) catch {};
-            posix.dup2(devnull, 2) catch {};
+            if (quiet) {
+                posix.dup2(devnull, 1) catch {};
+                posix.dup2(devnull, 2) catch {};
+            }
             const envp: [*:null]const ?[*:0]const u8 = @ptrCast(std.c.environ);
-            _ = posix.execvpeZ(cmd_z.ptr, &argv, envp) catch {};
+            _ = posix.execvpeZ(argv[0].?, argv.ptr, envp) catch {};
             posix.exit(127);
         }
         posix.exit(0);
