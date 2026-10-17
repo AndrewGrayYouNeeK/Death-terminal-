@@ -339,8 +339,10 @@ fn renderHeadless(term: *terminal.Terminal, vulkan_renderer: *renderer.VulkanRen
     try writeHeadlessFrame(term, std.io.getStdOut().writer());
 }
 
-/// Write the whole grid to `out`: home the cursor, emit every cell (blanks
-/// included, so columns line up), then place the cursor.
+/// Write the whole grid to `out` as UTF-8: home the cursor, emit every cell
+/// (blanks included, so columns line up; wide-char spacers skipped because
+/// the host terminal advances two columns for the wide glyph), then place
+/// the cursor.
 fn writeHeadlessFrame(term: *terminal.Terminal, out: anytype) !void {
     var buffered = std.io.bufferedWriter(out);
     const writer = buffered.writer();
@@ -349,23 +351,13 @@ fn writeHeadlessFrame(term: *terminal.Terminal, out: anytype) !void {
 
     var row: u16 = 0;
     while (row < term.rows) : (row += 1) {
-        var col: u16 = 0;
-        while (col < term.cols) : (col += 1) {
-            const cell = term.getCell(row, col) orelse break;
-            try writeCellChar(writer, cell.char);
-        }
+        const start = @as(usize, row) * @as(usize, term.cols);
+        try terminal.appendRowText(term.buffer[start..][0..term.cols], writer);
         if (row + 1 < term.rows) try writer.writeAll("\r\n");
     }
 
     try writer.print("\x1b[{d};{d}H", .{ term.cursor_row + 1, term.cursor_col + 1 });
     try buffered.flush();
-}
-
-fn writeCellChar(writer: anytype, ch: u21) !void {
-    if (ch < 0x20 or ch == 0x7f) return writer.writeByte(' ');
-    var utf8: [4]u8 = undefined;
-    const n = std.unicode.utf8Encode(ch, &utf8) catch return writer.writeAll("\u{FFFD}");
-    try writer.writeAll(utf8[0..n]);
 }
 
 test "headless frame keeps blank columns" {
@@ -388,4 +380,16 @@ test "EventLoop exists" {
     const loop = EventLoop{ .allocator = testing.allocator, .cfg = &cfg };
     _ = loop;
     try testing.expect(true);
+}
+
+test "headless frame emits UTF-8 and wide chars" {
+    var term = try terminal.Terminal.initBuffer(std.testing.allocator, 1, 14, 4);
+    defer term.deinit();
+    try term.processOutput("h\xc3\xa9llo \xe6\x97\xa5\xe6\x9c\xac \xf0\x9f\x99\x82");
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try writeHeadlessFrame(&term, out.writer());
+
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "h\u{e9}llo \u{65e5}\u{672c} \u{1f642} ") != null);
 }

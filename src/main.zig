@@ -137,6 +137,7 @@ test {
     _ = @import("terminal/ansi_parser.zig");
     _ = @import("terminal/scrollback.zig");
     _ = @import("terminal/grid_test.zig");
+    _ = @import("terminal/unicode.zig");
     _ = @import("renderer/vulkan_renderer.zig");
     _ = @import("renderer/loader.zig");
     _ = @import("renderer/vulkan_c.zig");

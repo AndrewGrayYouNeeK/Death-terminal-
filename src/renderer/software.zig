@@ -117,14 +117,20 @@ pub const ATLAS_COLS: u32 = 16;
 pub const ATLAS_ROWS: u32 = 8;
 pub const GLYPH_PX: u32 = 8;
 
+/// Atlas slot of the replacement glyph drawn for every codepoint the 8x8
+/// font can't render (non-ASCII, U+FFFD, and the lead cell of wide chars).
+/// Wide-char spacer cells hold ' ' and draw blank.
+pub const REPLACEMENT_INDEX: u32 = 95;
+const REPLACEMENT_BITS: [8]u8 = .{ 0x7E, 0x42, 0x5A, 0x52, 0x4A, 0x42, 0x7E, 0x00 };
+
 pub fn glyphBits(cp: u21) [8]u8 {
     if (cp >= 32 and cp <= 126) return FONT8[cp - 32];
-    return .{ 0x7E, 0x42, 0x42, 0x42, 0x42, 0x42, 0x7E, 0x00 };
+    return REPLACEMENT_BITS;
 }
 
 pub fn atlasIndex(cp: u21) u32 {
     if (cp >= 32 and cp <= 126) return cp - 32;
-    return 95;
+    return REPLACEMENT_INDEX;
 }
 
 pub fn atlasPixelSize() struct { w: u32, h: u32 } {
@@ -313,4 +319,34 @@ test "software renderer draws ASCII glyph" {
         if (px == 0xFFFFFFFF) lit += 1;
     }
     try std.testing.expect(lit > 8);
+}
+
+test "non-ASCII maps to the replacement glyph; wide spacer is blank" {
+    const t = std.testing;
+    try t.expectEqual(REPLACEMENT_INDEX, atlasIndex(0x65E5));
+    try t.expectEqual(REPLACEMENT_INDEX, atlasIndex(0xE9));
+    try t.expectEqual(REPLACEMENT_INDEX, atlasIndex(0xFFFD));
+    try t.expectEqual(@as(u32, 0), atlasIndex(' '));
+
+    var r = try SoftwareRenderer.init(t.allocator, 2, 1, 1.0);
+    defer r.deinit();
+    var cells = [_]Cell{ Cell.init(), Cell.init() };
+    cells[0].char = 0x65E5;
+    cells[0].width = 2;
+    cells[1].width = 0; // spacer keeps char ' '
+    r.renderGrid(&cells, 1, 2, 0, 0, false);
+
+    var lead_lit: usize = 0;
+    var spacer_lit: usize = 0;
+    var y: u32 = 0;
+    while (y < r.height) : (y += 1) {
+        var x: u32 = 0;
+        while (x < r.width) : (x += 1) {
+            if (r.pixels[y * r.width + x] == 0xFFFFFFFF) {
+                if (x < r.cell_w) lead_lit += 1 else spacer_lit += 1;
+            }
+        }
+    }
+    try t.expect(lead_lit > 0);
+    try t.expectEqual(@as(usize, 0), spacer_lit);
 }
