@@ -46,7 +46,32 @@ pub const Field = struct {
     ref: ?RefFn = null,
     /// Changing it only takes effect for new windows / after a restart.
     restart: bool = false,
+    /// Extra check for strings: returns an error message, or null if ok.
+    check: ?*const fn ([]const u8) ?[]const u8 = null,
 };
+
+fn checkEndpoint(s: []const u8) ?[]const u8 {
+    const uri = std.Uri.parse(s) catch return "expected an http:// or https:// URL like \"http://localhost:11434/v1\"";
+    if (!std.mem.eql(u8, uri.scheme, "http") and !std.mem.eql(u8, uri.scheme, "https"))
+        return "expected an http:// or https:// URL like \"http://localhost:11434/v1\"";
+    if (uri.host == null) return "the URL needs a host";
+    return null;
+}
+
+fn checkEnvName(s: []const u8) ?[]const u8 {
+    if (s.len == 0) return null;
+    const ai_redact = @import("../ai/redact.zig");
+    if (ai_redact.looksLikeKey(s)) return "this looks like an API key; set it to the NAME of an environment variable (e.g. \"OPENAI_API_KEY\") and export the key there";
+    for (s) |ch| if (!(std.ascii.isAlphanumeric(ch) or ch == '_'))
+        return "expected an environment variable name like \"OPENAI_API_KEY\"";
+    if (std.ascii.isDigit(s[0])) return "expected an environment variable name like \"OPENAI_API_KEY\"";
+    return null;
+}
+
+fn checkChord(s: []const u8) ?[]const u8 {
+    _ = events.parseChord(s) catch return "cannot parse the key chord (use e.g. \"tab\", \"ctrl+space\", \"right\")";
+    return null;
+}
 
 fn ref(comptime tag: std.meta.Tag(Ref), comptime name: []const u8) RefFn {
     return struct {
@@ -128,12 +153,20 @@ pub const schema = [_]Field{
     .{ .path = "shell.args", .kind = .string_list, .restart = true },
     .{ .path = "shell.env", .kind = .string_map, .restart = true },
     .{ .path = "shell.cwd", .kind = .string, .ref = ref(.string, "shell_cwd"), .restart = true },
+    .{ .path = "shell.integration", .kind = .boolean, .ref = ref(.boolean, "shell_integration"), .restart = true },
 
     .{ .path = "ai", .kind = .section },
     .{ .path = "ai.enabled", .kind = .boolean, .ref = ref(.boolean, "ai_enabled") },
-    .{ .path = "ai.endpoint", .kind = .string, .ref = ref(.string, "ai_endpoint") },
+    .{ .path = "ai.endpoint", .kind = .string, .ref = ref(.string, "ai_endpoint"), .check = checkEndpoint },
     .{ .path = "ai.model", .kind = .string, .ref = ref(.string, "ai_model") },
-    .{ .path = "ai.api_key_env", .kind = .string, .ref = ref(.string, "ai_api_key_env") },
+    .{ .path = "ai.api_key_env", .kind = .string, .ref = ref(.string, "ai_api_key_env"), .check = checkEnvName },
+    .{ .path = "ai.timeout_ms", .kind = .integer, .min = 200, .max = 120_000, .ref = ref(.u32, "ai_timeout_ms") },
+    .{ .path = "ai.debounce_ms", .kind = .integer, .min = 0, .max = 10_000, .ref = ref(.u32, "ai_debounce_ms") },
+    .{ .path = "ai.max_tokens", .kind = .integer, .min = 8, .max = 4096, .ref = ref(.u16, "ai_max_tokens") },
+    .{ .path = "ai.explain_max_tokens", .kind = .integer, .min = 16, .max = 8192, .ref = ref(.u16, "ai_explain_max_tokens") },
+    .{ .path = "ai.history", .kind = .integer, .min = 0, .max = 32, .ref = ref(.u16, "ai_history") },
+    .{ .path = "ai.output_lines", .kind = .integer, .min = 0, .max = 200, .ref = ref(.u16, "ai_output_lines") },
+    .{ .path = "ai.accept_key", .kind = .string, .ref = ref(.string, "ai_accept_key"), .check = checkChord },
 
     .{ .path = "ssh", .kind = .section },
     .{ .path = "ssh.enabled", .kind = .boolean, .ref = ref(.boolean, "ssh_enabled") },
@@ -308,6 +341,7 @@ fn setValue(ctx: *Ctx, L: *State, path: []const u8, idx: c_int) ?[]const u8 {
         },
         .string => {
             const s = lua.toString(L, idx) orelse return fail(ctx, "{s}: expected a string, got {s}", .{ path, describe(ctx, L, idx) });
+            if (f.check) |check| if (check(s)) |msg| return fail(ctx, "{s}: {s}", .{ path, msg });
             f.ref.?(cfg).string.* = cfg.dupe(s) catch return "out of memory";
         },
         .color => {

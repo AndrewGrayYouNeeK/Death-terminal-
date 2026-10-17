@@ -91,7 +91,7 @@ src/
 ├── main.zig              # Entry point, CLI parsing, initialization
 ├── renderer/             # Vulkan rendering subsystem
 ├── terminal/             # Terminal emulation, PTY handling
-├── ai/                   # AI autocomplete via gRPC
+├── ai/                   # AI suggestions: OpenAI-compatible HTTP/JSON client, redaction, worker
 ├── ssh/                  # SSH tunneling and connections
 └── scripting/            # Lua engine and API bindings
 ```
@@ -219,9 +219,10 @@ MoltenVK setup and common troubleshooting steps.
 
 ### AI Autocomplete (`src/ai/`)
 
-- Keep gRPC communication asynchronous
-- Handle network failures gracefully
-- Sanitize context data before sending
+- Requests are OpenAI-compatible HTTP/JSON (no gRPC) and run on the worker thread; never block the UI thread
+- Handle network failures gracefully (status badge, no dialogs)
+- Everything sent goes through `redact.zig`; add a test there for every new secret pattern
+- Test against `src/ai/mock_server.zig`, not a real endpoint
 - Make AI features opt-in and configurable
 - Respect user privacy
 

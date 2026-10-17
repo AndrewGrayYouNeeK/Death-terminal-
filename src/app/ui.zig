@@ -77,7 +77,8 @@ const SearchState = struct {
 
 /// Message bar at the top of the window (config errors, reload results).
 pub const Notice = struct {
-    pub const Kind = enum { err, warning, info };
+    /// `ai` = an "explain last error" answer (taller, blue).
+    pub const Kind = enum { err, warning, info, ai };
     kind: Kind,
     /// Owned lines; the first is the headline.
     lines: std.ArrayList([]u8),
@@ -85,6 +86,17 @@ pub const Notice = struct {
     expires_ms: ?i64 = null,
 
     pub const max_rows = 6;
+    pub const max_ai_rows = 14;
+};
+
+/// AI suggestion shown as dim "ghost" text after the cursor. Only drawn
+/// while the cursor is still where it was when the suggestion arrived;
+/// nothing reaches the shell unless the user accepts it.
+pub const Ghost = struct {
+    anchor: terminal.shell_integration.Mark,
+    /// Suffixes to append to the typed input (owned).
+    alternatives: std.ArrayList([]u8),
+    index: usize = 0,
 };
 
 const Prompt = struct {
@@ -114,6 +126,9 @@ pub const Ui = struct {
     sel_hash: u64 = 0,
     sel_hash_from: i64 = 0,
     notice: ?Notice = null,
+    ghost: ?Ghost = null,
+    /// Short AI status tag for the top-right corner ("AI offline"), owned.
+    ai_status: ?[]u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, opts: Options) Ui {
         return .{ .allocator = allocator, .opts = opts, .effects = std.ArrayList(Effect).init(allocator) };
@@ -122,6 +137,8 @@ pub const Ui = struct {
     pub fn deinit(self: *Ui) void {
         self.closeSearch();
         self.clearNotice();
+        self.clearGhost();
+        self.setAiStatus(null);
         if (self.prompt) |p| self.allocator.free(p.data);
         self.freeEffects(self.effects.items);
         self.effects.deinit();
@@ -429,7 +446,22 @@ pub const Ui = struct {
                 try self.copySelection(term);
             },
             .clear_selection => self.sel = null,
-            .none, .zoom_in, .zoom_out, .zoom_reset, .reload_config => return false,
+            .ai_accept => {
+                if (!self.ghostVisible(term)) return false;
+                try self.pushWrite(self.ghostText().?);
+                self.clearGhost();
+            },
+            .ai_dismiss => {
+                if (!self.ghostVisible(term)) return false;
+                self.clearGhost();
+            },
+            .ai_next, .ai_prev => {
+                if (!self.ghostVisible(term)) return false;
+                const g = &self.ghost.?;
+                const n = g.alternatives.items.len;
+                g.index = if (a == .ai_next) (g.index + 1) % n else (g.index + n - 1) % n;
+            },
+            .none, .zoom_in, .zoom_out, .zoom_reset, .reload_config, .ai_explain => return false,
         }
         return true;
     }
@@ -579,6 +611,150 @@ pub const Ui = struct {
         return false;
     }
 
+    // ------------------------------------------------------------- ghost
+
+    /// Show `alternatives` (suffixes, ownership taken) as ghost text at the
+    /// current cursor position. An empty list clears it.
+    pub fn setSuggestions(self: *Ui, term: *const Terminal, alternatives: [][]u8) !void {
+        self.clearGhost();
+        if (alternatives.len == 0) {
+            self.allocator.free(alternatives);
+            return;
+        }
+        self.ghost = .{
+            .anchor = term.cursorMark(),
+            .alternatives = std.ArrayList([]u8).fromOwnedSlice(self.allocator, alternatives),
+        };
+    }
+
+    pub fn clearGhost(self: *Ui) void {
+        if (self.ghost) |*g| {
+            for (g.alternatives.items) |a| self.allocator.free(a);
+            g.alternatives.deinit();
+        }
+        self.ghost = null;
+    }
+
+    pub fn ghostText(self: *const Ui) ?[]const u8 {
+        const g = self.ghost orelse return null;
+        return g.alternatives.items[g.index];
+    }
+
+    /// Whether the ghost text is on screen (live view, cursor unmoved, no
+    /// overlay in the way).
+    pub fn ghostVisible(self: *const Ui, term: *const Terminal) bool {
+        const g = self.ghost orelse return false;
+        if (self.scroll != 0 or term.alt_active or self.overlayActive()) return false;
+        return std.meta.eql(g.anchor, term.cursorMark());
+    }
+
+    /// The user typed `bytes` for the shell. If they match the start of the
+    /// ghost text, keep the rest (it reappears once the shell echoes);
+    /// otherwise drop it. Returns whether a suggestion is still pending.
+    pub fn ghostTyped(self: *Ui, term: *const Terminal, bytes: []const u8) bool {
+        const g = &(self.ghost orelse return false);
+        const text = g.alternatives.items[g.index];
+        const printable = for (bytes) |b| {
+            if (b < 0x20 or b == 0x7f) break false;
+        } else true;
+        const cols_used = std.unicode.utf8CountCodepoints(bytes) catch bytes.len;
+        if (!printable or bytes.len >= text.len or !std.mem.startsWith(u8, text, bytes) or
+            @as(usize, g.anchor.col) + cols_used >= term.cols)
+        {
+            self.clearGhost();
+            return false;
+        }
+        // Keep only alternatives that agree with what was typed.
+        var i: usize = 0;
+        while (i < g.alternatives.items.len) {
+            const alt = g.alternatives.items[i];
+            if (alt.len > bytes.len and std.mem.startsWith(u8, alt, bytes)) {
+                const rest = self.allocator.dupe(u8, alt[bytes.len..]) catch {
+                    self.clearGhost();
+                    return false;
+                };
+                self.allocator.free(alt);
+                g.alternatives.items[i] = rest;
+                i += 1;
+            } else {
+                self.allocator.free(alt);
+                _ = g.alternatives.orderedRemove(i);
+                if (g.index > i or g.index >= g.alternatives.items.len) g.index -|= 1;
+            }
+        }
+        g.index = @min(g.index, g.alternatives.items.len -| 1);
+        g.anchor.col += @intCast(cols_used);
+        return true;
+    }
+
+    /// Set (or with null, clear) the corner status tag.
+    pub fn setAiStatus(self: *Ui, text: ?[]const u8) void {
+        if (self.ai_status) |old| self.allocator.free(old);
+        self.ai_status = if (text) |t| self.allocator.dupe(u8, t) catch null else null;
+    }
+
+    fn drawGhost(self: *const Ui, term: *const Terminal, row_cells: []Cell, col: u16) void {
+        const text = self.ghostText() orelse return;
+        const g = self.ghost.?;
+        const unicode = @import("../terminal/unicode.zig");
+        var c: usize = col;
+        var counter_buf: [32]u8 = undefined;
+        const counter: []const u8 = if (g.alternatives.items.len > 1)
+            std.fmt.bufPrint(&counter_buf, "  ({d}/{d})", .{ g.index + 1, g.alternatives.items.len }) catch ""
+        else
+            "";
+        _ = term;
+        for ([_][]const u8{ text, counter }) |part| {
+            var it = (std.unicode.Utf8View.init(part) catch return).iterator();
+            while (it.nextCodepoint()) |cp| {
+                const w = unicode.width(cp);
+                if (w == 0) continue;
+                if (c + w > row_cells.len) return;
+                // Never paint over real text (e.g. a right prompt).
+                for (row_cells[c..][0..w]) |cell| if (cell.char != ' ' and cell.char != 0) return;
+                var cell = row_cells[c];
+                cell.char = cp;
+                cell.width = @intCast(w);
+                cell.fg_color = color.indexed(8);
+                cell.bold = false;
+                cell.italic = part.ptr == counter.ptr;
+                cell.underline = false;
+                cell.inverse = false;
+                cell.link = 0;
+                row_cells[c] = cell;
+                if (w == 2) {
+                    row_cells[c + 1] = cell;
+                    row_cells[c + 1].char = ' ';
+                    row_cells[c + 1].width = 0;
+                }
+                c += w;
+            }
+        }
+    }
+
+    /// Replace the notice with an AI answer: `title` then `body` split
+    /// into lines (no "see stderr" truncation; the tail is kept visible).
+    pub fn setAiNotice(self: *Ui, title: []const u8, body: []const u8, now_ms: i64) !void {
+        var lines = std.ArrayList([]const u8).init(self.allocator);
+        defer lines.deinit();
+        var it = std.mem.splitScalar(u8, std.mem.trim(u8, body, "\n"), '\n');
+        while (it.next()) |l| {
+            const line = std.mem.trimRight(u8, l, " \r");
+            if (std.mem.startsWith(u8, std.mem.trim(u8, line, " "), "```")) continue;
+            try lines.append(line);
+        }
+        self.clearNotice();
+        var n = Notice{ .kind = .ai, .lines = std.ArrayList([]u8).init(self.allocator) };
+        errdefer {
+            for (n.lines.items) |l| self.allocator.free(l);
+            n.lines.deinit();
+        }
+        _ = now_ms;
+        try n.lines.append(try self.allocator.dupe(u8, title));
+        for (lines.items) |l| try n.lines.append(try std.fmt.allocPrint(self.allocator, "  {s}", .{l}));
+        self.notice = n;
+    }
+
     // ------------------------------------------------------------ notice
 
     /// Show `headline` plus `details` at the top of the window, replacing
@@ -637,11 +813,13 @@ pub const Ui = struct {
     /// the whole screen.
     fn layoutNotice(self: *const Ui, rows: u16, cols: u16, cells: ?[]Cell, marks: ?[]Mark) usize {
         const note = self.notice orelse return 0;
-        const limit: usize = @min(Notice.max_rows + 2, @as(usize, rows) -| 1);
+        const want: usize = if (note.kind == .ai) Notice.max_ai_rows else Notice.max_rows + 2;
+        const limit: usize = @min(want, @as(usize, rows) -| 1);
         const colors: [2]u32 = switch (note.kind) {
             .err => .{ 0xFFFFFF, 0x8B0000 },
             .warning => .{ 0x000000, 0xD7AF00 },
             .info => .{ 0x000000, 0x5FAF5F },
+            .ai => .{ 0xFFFFFF, 0x1F3A5F },
         };
         var row: usize = 0;
         for (note.lines.items, 0..) |line, i| {
@@ -845,6 +1023,37 @@ pub const Ui = struct {
                 .height = @as(f32, @floatFromInt(rows)) / total,
             };
         }
+
+        if (self.ghostVisible(term) and out.cursor_visible and out.cursor_row < rows) {
+            const g = self.ghost.?;
+            if (g.anchor.col < cols) {
+                const row_cells = cells.items[@as(usize, out.cursor_row) * cols ..][0..cols];
+                self.drawGhost(term, row_cells, g.anchor.col);
+            }
+        }
+
+        if (self.ai_status) |st| if (self.notice == null and !term.alt_active and self.scroll == 0 and rows > 1) {
+            // A small badge in the bottom-right corner, or the top-right
+            // one when the bottom row is in use.
+            const w = (std.unicode.utf8CountCodepoints(st) catch st.len) + 2;
+            if (w + 2 < cols) {
+                const start = cols - w;
+                const bottom = cells.items[@as(usize, rows - 1) * cols ..][0..cols];
+                const bottom_free = out.cursor_row != rows - 1 and for (bottom[start..]) |c| {
+                    if (c.char != ' ' and c.char != 0) break false;
+                } else true;
+                const row_cells = if (bottom_free) bottom else cells.items[0..cols];
+                var c: usize = start;
+                var badge = Cell.init();
+                badge.fg_color = 0xC0C0C0;
+                badge.bg_color = 0x3A3A3A;
+                for (row_cells[start..]) |*cell| cell.* = badge;
+                c += 1;
+                var it = (std.unicode.Utf8View.init(st) catch unreachable).iterator();
+                while (it.nextCodepoint()) |cp| : (c += 1) row_cells[c].char = cp;
+                if (!bottom_free and out.cursor_row == 0 and out.cursor_col >= start) out.cursor_visible = false;
+            }
+        };
 
         if (self.notice != null) {
             const shown = self.layoutNotice(rows, cols, cells.items, marks.items);

@@ -4,7 +4,7 @@ This document tracks development status and priorities for the DeathTerminal des
 
 ## Project Overview
 
-DeathTerminal is a Zig-based, GPU-accelerated terminal emulator. AI suggestions, SSH tunneling, and Lua scripting are planned. It is a **native desktop application** — not a web app.
+DeathTerminal is a Zig-based, GPU-accelerated terminal emulator. It has AI command suggestions (OpenAI-compatible HTTP/JSON, docs/AI.md) and Lua config; SSH tunneling and Lua plugins are planned. It is a **native desktop application** — not a web app.
 
 ## Architecture
 
@@ -26,7 +26,7 @@ PTY ↔ Terminal Core ↔ Renderer (Vulkan)
 | Event loop | `src/app/event_loop.zig` | Headless + native GUI; exits when the shell exits |
 | Vulkan renderer | `src/renderer/` | Instance/device (`vulkan_renderer.zig`), swapchain acquire/present (`gpu_present.zig`), SPIR-V glyph pipeline (`text_pipeline.zig`), CPU fallback (`software.zig`) |
 | Window | `src/platform/window.zig` | Wayland, X11, Win32 + HiDPI scale; keys/mouse/focus events through `events.zig` |
-| AI autocomplete | `src/ai/` | Stub (planned: OpenAI-compatible HTTP/JSON, default local Ollama) |
+| AI suggestions | `src/ai/`, `src/app/ai_controller.zig` | OpenAI-compatible HTTP/JSON + SSE client, worker thread, redaction, ghost text, explain overlay (docs/AI.md) |
 | SSH tunneling | `src/ssh/` | Stub (planned: libssh2) |
 | Lua scripting | `src/scripting/` | Stub (Lua not linked yet) |
 | Configuration | `src/config/` | `config.zig` (Config struct, XDG lookup, legacy `config.txt`), `lua_config.zig` (schema + validation, Lua ↔ Zig), `prelude.lua` (sandboxed env, `config` proxy, `dt` table, file:line diagnostics), `themes.zig`. Reference: `docs/CONFIG.md`; `config.example.lua` is embedded for `--print-default-config` and a test checks it equals the defaults |
@@ -78,9 +78,9 @@ zig build test     # Test
 - [x] Native GUI backends (Wayland / X11 / Win32)
 
 ### Phase 4 — AI Integration
-- [ ] OpenAI-compatible HTTP/JSON client (default: local Ollama)
-- [ ] Context gathering and sanitization
-- [ ] Ghost-text suggestion UI (Tab to accept)
+- [x] OpenAI-compatible HTTP/JSON client (default: local Ollama)
+- [x] Context gathering (OSC 133 shell integration) and sanitization
+- [x] Ghost-text suggestion UI (Tab to accept), explain-last-error overlay
 
 ### Phase 5 — SSH & Scripting
 - [ ] libssh2 integration

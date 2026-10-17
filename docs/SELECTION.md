@@ -43,7 +43,7 @@ CLIPBOARD.
 | Shift+PgUp / Shift+PgDn | `scroll_page_up` / `scroll_page_down` |
 | Shift+Home / Shift+End | `scroll_top` / `scroll_bottom` |
 | Ctrl+Shift+Up / Down | `scroll_line_up` / `scroll_line_down` |
-| Ctrl+Shift+A | `select_all` |
+| Ctrl+Shift+Alt+A | `select_all` (was Ctrl+Shift+A before the AI milestone, which now explains the last error) |
 | Ctrl+= / Ctrl+- / Ctrl+0 | `zoom_in` / `zoom_out` / `zoom_reset` |
 | Ctrl+Shift+R | `reload_config` (see [CONFIG.md](CONFIG.md)) |
 

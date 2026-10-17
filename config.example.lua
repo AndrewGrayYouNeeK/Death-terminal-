@@ -87,12 +87,20 @@ config.shell.program = ""            -- "" = $SHELL, then /bin/sh (restart)
 config.shell.args = {}               -- e.g. { "-l" } (restart)
 config.shell.env = {}                -- e.g. { EDITOR = "nvim" } (restart)
 config.shell.cwd = ""                -- "" = inherit; "~" is expanded (restart)
+config.shell.integration = true      -- OSC 133 prompt marks for bash/zsh/fish (restart)
 
--- AI autocomplete (used from milestone 8) ----------------------------------
+-- AI command suggestions (docs/AI.md) --------------------------------------
 config.ai.enabled = true             -- --no-ai overrides
 config.ai.endpoint = "http://localhost:11434/v1"  -- any OpenAI-compatible API (Ollama by default)
-config.ai.model = ""                 -- "" = let the backend choose
-config.ai.api_key_env = ""           -- name of an env var holding the key, if needed
+config.ai.model = "qwen2.5-coder:0.5b"
+config.ai.api_key_env = ""           -- NAME of an env var holding the key, e.g. "OPENAI_API_KEY"
+config.ai.timeout_ms = 5000          -- give up on a request after this long
+config.ai.debounce_ms = 300          -- typing pause before asking
+config.ai.max_tokens = 64            -- per suggestion request
+config.ai.explain_max_tokens = 400   -- per "explain last error" answer
+config.ai.history = 5                -- previous commands (with exit codes) sent as context
+config.ai.output_lines = 20          -- lines of recent output sent as context
+config.ai.accept_key = "tab"         -- accepts the ghost text (Esc dismisses)
 
 -- SSH (used from the libssh2 milestone) ------------------------------------
 config.ssh.enabled = true

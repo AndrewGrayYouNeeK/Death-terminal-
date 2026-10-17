@@ -58,6 +58,22 @@ fn addDefaultConfig(b: *std.Build, step: *std.Build.Step.Compile) void {
     step.root_module.addAnonymousImport("default_config", .{ .root_source_file = mod });
 }
 
+/// Shell integration snippets (shell-integration/*), printed by
+/// --print-shell-integration and injected into bash/zsh/fish.
+fn addShellIntegration(b: *std.Build, step: *std.Build.Step.Compile) void {
+    const wf = b.addWriteFiles();
+    _ = wf.addCopyFile(b.path("shell-integration/bash.sh"), "bash.sh");
+    _ = wf.addCopyFile(b.path("shell-integration/zsh.zsh"), "zsh.zsh");
+    _ = wf.addCopyFile(b.path("shell-integration/fish.fish"), "fish.fish");
+    const mod = wf.add("shell_scripts.zig",
+        \\pub const bash = @embedFile("bash.sh");
+        \\pub const zsh = @embedFile("zsh.zsh");
+        \\pub const fish = @embedFile("fish.fish");
+        \\
+    );
+    step.root_module.addAnonymousImport("shell_scripts", .{ .root_source_file = mod });
+}
+
 /// Bundled default font (JetBrains Mono, SIL OFL 1.1), embedded with
 /// `@embedFile("jbm_regular")` etc.
 fn addFonts(b: *std.Build, step: *std.Build.Step.Compile) void {
@@ -84,6 +100,7 @@ pub fn build(b: *std.Build) void {
     addFonts(b, exe);
     addLua(b, exe, target);
     addDefaultConfig(b, exe);
+    addShellIntegration(b, exe);
 
     b.installArtifact(exe);
 
@@ -103,6 +120,7 @@ pub fn build(b: *std.Build) void {
     addFonts(b, unit_tests);
     addLua(b, unit_tests, target);
     addDefaultConfig(b, unit_tests);
+    addShellIntegration(b, unit_tests);
 
     // `zig build bench`: throughput benchmark, always optimised.
     const bench_exe = b.addExecutable(.{
