@@ -128,6 +128,24 @@ config.ssh.keepalive_s = 30          -- seconds; 0 = off
 --   },
 -- }
 
+-- Status bar ---------------------------------------------------------------
+-- One row under the grid for plugin segments (git branch, theme, ...).
+-- Ctrl+Shift+B toggles it at runtime.
+config.status_bar.enabled = false
+
+-- Plugins (see docs/PLUGINS.md) -------------------------------------------
+-- Plugins live in ~/.config/death-terminal/plugins/<name>/ (manifest.lua +
+-- init.lua). They run sandboxed and get only what you grant here.
+-- `deathterminal --plugins list` shows what is installed and granted.
+config.plugins_enabled = true        -- false (or --no-plugins) loads none
+config.plugins_dir = ""              -- "" = $XDG_CONFIG_HOME/death-terminal/plugins
+-- config.plugins = {
+--   git_branch = { allow = { "exec" }, exec = { "git" } },
+--   long_command = { settings = { threshold_s = 10 } },
+--   weather = { allow = { "network" }, hosts = { "wttr.in" }, cpu_ms = 50 },
+--   noisy = { enabled = false },
+-- }
+
 -- Lua tricks ---------------------------------------------------------------
 -- if os.getenv("SSH_CONNECTION") then config.theme = "death" end
 -- if dt.os == "macos" then config.font.size = 13 end

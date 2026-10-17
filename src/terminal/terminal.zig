@@ -176,6 +176,18 @@ pub const ClipboardTargets = packed struct {
     }
 };
 
+/// A verified report from the built-in SSH client (OSC 7799).
+pub const SshEvent = struct {
+    pub const Kind = enum { connect, disconnect };
+    kind: Kind,
+    target_buf: [200]u8 = undefined,
+    target_len: u8 = 0,
+
+    pub fn target(self: *const SshEvent) []const u8 {
+        return self.target_buf[0..self.target_len];
+    }
+};
+
 pub const ClipboardOp = union(enum) {
     set: struct { targets: ClipboardTargets, data: []u8 },
     query: ClipboardTargets,
@@ -242,6 +254,15 @@ pub const Terminal = struct {
     /// Shape for DECSCUSR 0 and RIS (config.lua `cursor.shape`).
     default_cursor_shape: CursorShape = .block,
     bell: bool = false,
+    /// Bumped on every BEL (the front end diffs it).
+    bell_count: u32 = 0,
+    /// Secret the built-in SSH client puts in its OSC 7799 connect /
+    /// disconnect reports (DT_SSH_NONCE), so remote output can't fake them.
+    /// Empty = reports are ignored.
+    ssh_nonce: [64]u8 = undefined,
+    ssh_nonce_len: u8 = 0,
+    /// Verified SSH session reports, oldest first (drained by the front end).
+    ssh_events: std.ArrayListUnmanaged(SshEvent) = .{},
     /// Bytes to send back to the application (DA, DSR, ...).
     replies: std.ArrayList(u8),
     /// OSC 8 hyperlink targets, referenced by `Cell.link`.
@@ -333,6 +354,7 @@ pub const Terminal = struct {
         self.allocator.free(self.tabs);
         self.allocator.free(self.title);
         self.allocator.free(self.cwd_uri);
+        self.ssh_events.deinit(self.allocator);
         self.shell.deinit();
         self.replies.deinit();
         for (self.links.items) |l| self.allocator.free(l);
@@ -488,7 +510,10 @@ pub const Terminal = struct {
 
     fn execute(self: *Terminal, byte: u8) !void {
         switch (byte) {
-            0x07 => self.bell = true,
+            0x07 => {
+                self.bell = true;
+                self.bell_count +%= 1;
+            },
             0x08 => self.backspace(),
             0x09 => self.tabForward(1),
             0x0A, 0x0B, 0x0C => try self.newline(),
@@ -1703,6 +1728,7 @@ pub const Terminal = struct {
             },
             8 => try self.setHyperlink(arg),
             133 => self.shellMark(arg),
+            7799 => self.sshEventOsc(arg),
             52 => try self.clipboardOsc(arg),
             10, 11 => if (std.mem.eql(u8, arg, "?")) {
                 const c = if (cmd == 10) self.palette.fg else self.palette.bg;
@@ -1713,6 +1739,37 @@ pub const Terminal = struct {
             },
             else => {},
         }
+    }
+
+    /// OSC 7799 ; <nonce> ; connect|disconnect ; <user@host:port> from the
+    /// built-in SSH client (see `ssh_nonce`).
+    fn sshEventOsc(self: *Terminal, arg: []const u8) void {
+        if (self.ssh_nonce_len == 0) return;
+        var it = std.mem.splitScalar(u8, arg, ';');
+        const nonce = it.next() orelse return;
+        if (!std.crypto.utils.timingSafeEql([64]u8, padNonce(nonce), padNonce(self.ssh_nonce[0..self.ssh_nonce_len])) or nonce.len != self.ssh_nonce_len) return;
+        const kind_s = it.next() orelse return;
+        const kind: SshEvent.Kind = if (std.mem.eql(u8, kind_s, "connect")) .connect else if (std.mem.eql(u8, kind_s, "disconnect")) .disconnect else return;
+        const target = it.rest();
+        if (self.ssh_events.items.len >= 16) return;
+        var ev = SshEvent{ .kind = kind };
+        const n = @min(target.len, ev.target_buf.len);
+        @memcpy(ev.target_buf[0..n], target[0..n]);
+        ev.target_len = @intCast(n);
+        self.ssh_events.append(self.allocator, ev) catch {};
+    }
+
+    fn padNonce(s: []const u8) [64]u8 {
+        var b = [_]u8{0} ** 64;
+        const n = @min(s.len, 64);
+        @memcpy(b[0..n], s[0..n]);
+        return b;
+    }
+
+    pub fn setSshNonce(self: *Terminal, nonce: []const u8) void {
+        const n = @min(nonce.len, self.ssh_nonce.len);
+        @memcpy(self.ssh_nonce[0..n], nonce[0..n]);
+        self.ssh_nonce_len = @intCast(n);
     }
 
     /// OSC 52 ; Pc ; Pd — Pd is base64 text to store, or "?" to query.
@@ -1784,6 +1841,7 @@ pub const Terminal = struct {
                 }
                 sh.output_start = self.cursorMark();
                 sh.phase = .running;
+                sh.started +%= 1;
             },
             'D' => {
                 if (sh.phase == .running or sh.pending != null) self.finishCommand(shell_integration.parseExit(arg));
@@ -2033,4 +2091,22 @@ test {
     _ = @import("shell_integration_test.zig");
     _ = shell_integration;
     _ = pty_mod;
+}
+
+test "OSC 7799 SSH reports need the nonce; OSC 133 C counts starts; BEL counts" {
+    var term = try Terminal.initBuffer(std.testing.allocator, 4, 20, 10);
+    defer term.deinit();
+    try term.processOutput("\x1b]7799;abc;connect;me@host:22\x07");
+    try std.testing.expectEqual(@as(usize, 0), term.ssh_events.items.len); // no nonce set
+    term.setSshNonce("secret123");
+    try term.processOutput("\x1b]7799;guess;connect;evil\x07\x1b]7799;secret12;connect;evil\x07");
+    try std.testing.expectEqual(@as(usize, 0), term.ssh_events.items.len);
+    try term.processOutput("\x1b]7799;secret123;connect;me@host:22\x07\x1b]7799;secret123;disconnect;me@host:22\x1b\\");
+    try std.testing.expectEqual(@as(usize, 2), term.ssh_events.items.len);
+    try std.testing.expectEqualStrings("me@host:22", term.ssh_events.items[0].target());
+    try std.testing.expectEqual(SshEvent.Kind.disconnect, term.ssh_events.items[1].kind);
+    try term.processOutput("\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07\x07out\r\n\x1b]133;D;0\x07");
+    try std.testing.expectEqual(@as(u64, 1), term.shell.started);
+    try std.testing.expectEqual(@as(u64, 1), term.shell.finished);
+    try std.testing.expectEqual(@as(u32, 1), term.bell_count);
 }

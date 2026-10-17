@@ -93,8 +93,13 @@ src/
 ├── terminal/             # Terminal emulation, PTY handling
 ├── ai/                   # AI suggestions: OpenAI-compatible HTTP/JSON client, redaction, worker
 ├── ssh/                  # Built-in SSH client (libssh2), ~/.ssh/config, forwards
+├── plugins/              # Plugin host: sandbox.lua, permissions, hooks, registry/CLI, jobs
+├── app/                  # Event loop, UI overlays (palette, toasts, status bar), plugin bridge
 └── scripting/            # Lua engine and API bindings
 ```
+
+Example plugins live in the top-level `plugins/` directory; a test loads all of them
+(`src/plugins/host_test.zig`), so keep them working when the API changes.
 
 **Guidelines:**
 - Each module should be self-contained

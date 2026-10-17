@@ -103,6 +103,8 @@ pub const Client = struct {
     chan: ?*c.LIBSSH2_CHANNEL = null,
     state: enum { connecting, connected, disconnected } = .connecting,
     reconnect_requested: bool = false,
+    /// A connect report went out (OSC 7799); a disconnect one is owed.
+    announced: bool = false,
     in_buf: bridge.Buf = .{},
     stdin_eof: bool = false,
     eof_sent: bool = false,
@@ -205,7 +207,20 @@ pub const Client = struct {
         }
     }
 
+    /// Tell the terminal (and so plugins' ssh_connect / ssh_disconnect)
+    /// with the per-window secret it gave us in DT_SSH_NONCE.
+    fn announce(self: *Client, up: bool) void {
+        if (up == self.announced) return;
+        self.announced = up;
+        const nonce = posix.getenv("DT_SSH_NONCE") orelse return;
+        if (nonce.len == 0 or nonce.len > 64) return;
+        for (nonce) |ch| if (!std.ascii.isAlphanumeric(ch)) return;
+        var db: [300]u8 = undefined;
+        self.tty.print("\x1b]7799;{s};{s};{s}\x07", .{ nonce, if (up) "connect" else "disconnect", self.target.display(&db) });
+    }
+
     fn teardown(self: *Client) void {
+        self.announce(false);
         for (self.conns.items) |cn| {
             posix.close(cn.fd);
             self.a.destroy(cn);
@@ -259,6 +274,7 @@ pub const Client = struct {
             _ = self.in_buf.append("\r");
         }
         self.state = .connected;
+        self.announce(true);
         if (self.target.keepalive_s > 0) c.libssh2_keepalive_config(s, 1, self.target.keepalive_s);
         c.libssh2_session_set_blocking(s, 0);
         const now = std.time.milliTimestamp();

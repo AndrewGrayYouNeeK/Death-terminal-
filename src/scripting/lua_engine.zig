@@ -75,7 +75,7 @@ pub const LuaEngine = struct {
         const L = self.vm.L;
         var name_buf: [256]u8 = undefined;
         const chunk = std.fmt.bufPrintZ(&name_buf, "={s}", .{name[0..@min(name.len, 200)]}) catch unreachable;
-        self.vm.alloc_state.instructions = 0;
+        self.vm.startBudget(self.vm.alloc_state.instruction_limit, 0);
         lua.loadText(L, code, chunk) catch return self.fail();
         _ = c.lua_rawgeti(L, c.LUA_REGISTRYINDEX, self.env_ref);
         _ = c.lua_setupvalue(L, -2, 1); // _ENV

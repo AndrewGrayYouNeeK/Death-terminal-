@@ -35,7 +35,8 @@ pub const Event = union(enum) {
 
 pub const ClipTarget = enum { clipboard, primary };
 /// Why the clipboard was read: a user paste, or an OSC 52 query reply.
-pub const PastePurpose = enum { paste, osc52 };
+/// `plugin`: a plugin asked with dt.clipboard.get (needs the clipboard grant).
+pub const PastePurpose = enum { paste, osc52, plugin };
 
 pub const Paste = struct {
     data: []const u8,
@@ -73,6 +74,39 @@ pub const Action = enum {
     /// SSH palette: profiles (open in a new window), and this session's
     /// forwards (toggle) and reconnect.
     ssh_palette,
+    /// Command palette: built-in actions and plugin commands.
+    command_palette,
+    /// Show / hide the status bar (config.status_bar.enabled sets the default).
+    toggle_status_bar,
+    /// A plugin keybinding (ActionEvent.arg = the binding's id). Not
+    /// bindable from config.
+    plugin_binding,
+
+    /// Label in the command palette (null = not listed there).
+    pub fn title(self: Action) ?[]const u8 {
+        return switch (self) {
+            .copy => "Copy selection",
+            .paste => "Paste",
+            .paste_selection => "Paste primary selection",
+            .search => "Find in scrollback",
+            .scroll_page_up => "Scroll up a page",
+            .scroll_page_down => "Scroll down a page",
+            .scroll_line_up => "Scroll up a line",
+            .scroll_line_down => "Scroll down a line",
+            .scroll_top => "Scroll to the top",
+            .scroll_bottom => "Scroll to the bottom",
+            .zoom_in => "Zoom in",
+            .zoom_out => "Zoom out",
+            .zoom_reset => "Reset zoom",
+            .select_all => "Select all",
+            .clear_selection => "Clear selection",
+            .reload_config => "Reload config",
+            .ai_explain => "AI: explain the last failed command",
+            .ssh_palette => "SSH: profiles and forwards",
+            .toggle_status_bar => "Toggle status bar",
+            .none, .ai_accept, .ai_dismiss, .ai_next, .ai_prev, .command_palette, .plugin_binding => null,
+        };
+    }
 
     pub fn parse(name: []const u8) ?Action {
         inline for (@typeInfo(Action).Enum.fields) |f| {
@@ -86,6 +120,8 @@ pub const Action = enum {
 /// don't apply, e.g. scrolling in the alternate screen, can forward it).
 pub const ActionEvent = struct {
     action: Action,
+    /// Extra data (plugin binding id).
+    arg: u16 = 0,
     sym: u32 = 0,
     mods: input.Mods = .{},
 };
@@ -203,13 +239,14 @@ pub const Binding = struct {
     sym: u32,
     mods: input.Mods,
     action: Action,
+    arg: u16 = 0,
 };
 
 /// Keyboard shortcuts, matched by the backends before a key becomes
 /// terminal input. Keys are X11/XKB keysyms (Win32 maps its virtual keys
 /// onto the same numbers). Letters are matched case-insensitively.
 pub const Bindings = struct {
-    pub const max = 64;
+    pub const max = 128;
     items: [max]Binding = undefined,
     len: usize = 0,
 
@@ -243,6 +280,8 @@ pub const Bindings = struct {
         "alt+bracketleft=ai_prev",
         "ctrl+shift+a=ai_explain",
         "ctrl+shift+s=ssh_palette",
+        "ctrl+shift+p=command_palette",
+        "ctrl+shift+b=toggle_status_bar",
     };
 
     pub fn defaults() Bindings {
@@ -260,6 +299,7 @@ pub const Bindings = struct {
         const action_s = std.mem.trim(u8, spec[eq + 1 ..], " \t");
         const chord = try parseChord(chord_s);
         const action = Action.parse(action_s) orelse return error.UnknownAction;
+        if (action == .plugin_binding) return error.UnknownAction;
         var i: usize = 0;
         while (i < self.len) : (i += 1) {
             const it = self.items[i];
@@ -278,12 +318,30 @@ pub const Bindings = struct {
     }
 
     pub fn match(self: *const Bindings, sym_in: u32, mods: input.Mods) ?Action {
+        const b = self.find(sym_in, mods) orelse return null;
+        return b.action;
+    }
+
+    pub fn find(self: *const Bindings, sym_in: u32, mods: input.Mods) ?Binding {
         const sym = normalizeSym(sym_in);
         const want: u3 = @bitCast(mods);
         for (self.items[0..self.len]) |it| {
-            if (it.sym == sym and @as(u3, @bitCast(it.mods)) == want) return it.action;
+            if (it.sym == sym and @as(u3, @bitCast(it.mods)) == want) return it;
         }
         return null;
+    }
+
+    /// Whether `chord` is bound (to anything).
+    pub fn has(self: *const Bindings, chord: Chord) bool {
+        return self.find(chord.sym, chord.mods) != null;
+    }
+
+    /// Add a plugin binding (never replaces an existing one).
+    pub fn addPlugin(self: *Bindings, chord: Chord, id: u16) bool {
+        if (self.has(chord) or self.len == max) return false;
+        self.items[self.len] = .{ .sym = chord.sym, .mods = chord.mods, .action = .plugin_binding, .arg = id };
+        self.len += 1;
+        return true;
     }
 };
 
@@ -292,8 +350,8 @@ pub var bindings: Bindings = Bindings.defaults();
 
 /// Shortcut lookup used by every backend.
 pub fn matchBinding(sym: u32, mods: input.Mods) ?ActionEvent {
-    const action = bindings.match(sym, mods) orelse return null;
-    return .{ .action = action, .sym = sym, .mods = mods };
+    const b = bindings.find(sym, mods) orelse return null;
+    return .{ .action = b.action, .arg = b.arg, .sym = sym, .mods = mods };
 }
 
 fn normalizeSym(sym: u32) u32 {
@@ -302,6 +360,38 @@ fn normalizeSym(sym: u32) u32 {
 }
 
 pub const Chord = struct { sym: u32, mods: input.Mods };
+
+/// "Ctrl+Shift+P", "Shift+PgUp", "F5".
+pub fn formatChord(buf: []u8, sym: u32, mods: input.Mods) []const u8 {
+    var fbs = std.io.fixedBufferStream(buf);
+    const w = fbs.writer();
+    if (mods.ctrl) w.writeAll("Ctrl+") catch {};
+    if (mods.alt) w.writeAll("Alt+") catch {};
+    if (mods.shift) w.writeAll("Shift+") catch {};
+    const pretty = [_]struct { u32, []const u8 }{
+        .{ 0xff55, "PgUp" },   .{ 0xff56, "PgDn" },      .{ 0xff50, "Home" },  .{ 0xff57, "End" },
+        .{ 0xff63, "Insert" }, .{ 0xffff, "Delete" },    .{ 0xff52, "Up" },    .{ 0xff54, "Down" },
+        .{ 0xff51, "Left" },   .{ 0xff53, "Right" },     .{ 0xff0d, "Enter" }, .{ 0xff09, "Tab" },
+        .{ 0xff1b, "Esc" },    .{ 0xff08, "Backspace" }, .{ 0x20, "Space" },   .{ 0xffab, "Num+" },
+        .{ 0xffad, "Num-" },   .{ 0xffb0, "Num0" },
+    };
+    for (pretty) |pk| if (pk[0] == sym) {
+        w.writeAll(pk[1]) catch {};
+        return fbs.getWritten();
+    };
+    if (sym >= 0xffbe and sym <= 0xffc9) {
+        w.print("F{d}", .{sym - 0xffbe + 1}) catch {};
+    } else if (sym > 0x20 and sym < 0x7f) {
+        w.writeByte(std.ascii.toUpper(@intCast(sym))) catch {};
+    } else w.print("0x{x}", .{sym}) catch {};
+    return fbs.getWritten();
+}
+
+/// The first chord bound to `action` in `b`, formatted.
+pub fn chordFor(b: *const Bindings, action: Action, buf: []u8) ?[]const u8 {
+    for (b.items[0..b.len]) |it| if (it.action == action) return formatChord(buf, it.sym, it.mods);
+    return null;
+}
 
 /// Parse "ctrl+shift+c", "shift+page_up", "ctrl+=" ...
 pub fn parseChord(text: []const u8) !Chord {
@@ -447,6 +537,22 @@ test "default bindings and overrides" {
     try std.testing.expectEqual(Action.search, b.match(0xffc2, .{ .shift = true }).?);
     try std.testing.expectError(error.UnknownAction, b.apply("ctrl+x=launch_missiles"));
     try std.testing.expectError(error.UnknownKey, b.apply("ctrl+nokey=copy"));
+}
+
+test "chord formatting and action titles" {
+    var b: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("Ctrl+Shift+P", formatChord(&b, 'p', .{ .ctrl = true, .shift = true }));
+    try std.testing.expectEqualStrings("Shift+PgUp", formatChord(&b, 0xff55, .{ .shift = true }));
+    try std.testing.expectEqualStrings("F5", formatChord(&b, 0xffc2, .{}));
+    const d = Bindings.defaults();
+    try std.testing.expectEqualStrings("Ctrl+Shift+P", chordFor(&d, .command_palette, &b).?);
+    try std.testing.expect(Action.copy.title() != null);
+    try std.testing.expect(Action.plugin_binding.title() == null);
+    var x = Bindings{};
+    try std.testing.expectError(error.UnknownAction, x.apply("ctrl+x=plugin_binding"));
+    try std.testing.expect(x.addPlugin(.{ .sym = 'x', .mods = .{ .ctrl = true } }, 7));
+    try std.testing.expect(!x.addPlugin(.{ .sym = 'x', .mods = .{ .ctrl = true } }, 8));
+    try std.testing.expectEqual(@as(u16, 7), x.find('x', .{ .ctrl = true }).?.arg);
 }
 
 test "paste events carry the backend buffer" {

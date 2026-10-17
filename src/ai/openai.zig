@@ -139,7 +139,9 @@ pub fn chatStream(allocator: std.mem.Allocator, req: Request, cancel: *Cancel, s
         last_status = @intFromEnum(r.response.status);
         return error.HttpStatus;
     }
-    const sse = if (r.response.content_type) |ct| std.mem.indexOf(u8, ct, "event-stream") != null else false;
+    // Trust text/event-stream; anything else (missing, or a proxy that
+    // relabels the stream as JSON) is decided by the first body byte.
+    var sse: ?bool = if (r.response.content_type) |ct| (if (std.mem.indexOf(u8, ct, "event-stream") != null) true else null) else null;
 
     var parser = SseParser.init(allocator);
     defer parser.deinit();
@@ -152,7 +154,13 @@ pub fn chatStream(allocator: std.mem.Allocator, req: Request, cancel: *Cancel, s
         setTimeout(fd, @intCast(left));
         const n = r.read(&buf) catch |err| return mapErr(err, cancel, deadline);
         if (n == 0) break;
-        if (sse) {
+        if (sse == null) sse = sniffSse(buf[0..n]);
+        if (sse == true) {
+            if (whole.items.len > 0) {
+                // Leading whitespace held back while sniffing.
+                _ = try parser.feed(whole.items, sink);
+                whole.clearRetainingCapacity();
+            }
             if (!try parser.feed(buf[0..n], sink)) return;
         } else {
             if (whole.items.len + n > 1024 * 1024) return error.BadResponse;
@@ -160,12 +168,20 @@ pub fn chatStream(allocator: std.mem.Allocator, req: Request, cancel: *Cancel, s
         }
     }
     if (cancel.isCancelled()) return error.Cancelled;
-    if (sse) {
+    if (sse == true) {
         _ = try parser.feed("\n", sink);
         return;
     }
     // Non-streaming reply.
     try handlePayload(allocator, whole.items, sink);
+}
+
+/// null while `data` is only whitespace; true for an SSE body ("data:",
+/// "event:", "id:", ": comment"), false for anything else (JSON).
+fn sniffSse(data: []const u8) ?bool {
+    const t = std.mem.trimLeft(u8, data, " \t\r\n");
+    if (t.len == 0) return null;
+    return t[0] != '{' and t[0] != '[';
 }
 
 fn cancelCheck(ctx: *anyopaque) bool {
@@ -443,6 +459,41 @@ test "chatStream: plain JSON reply, HTTP errors, refused connection" {
     // Server gone: connection refused degrades to an error, no crash.
     try std.testing.expectError(error.Offline, chatStream(std.testing.allocator, testRequest(url, &msgs), &cancel, Collect{ .out = &out }));
     try std.testing.expectError(error.BadEndpoint, chatStream(std.testing.allocator, testRequest("ftp://x/v1", &msgs), &cancel, Collect{ .out = &out }));
+}
+
+test "chatStream: servers that close the connection after each reply" {
+    const json = "{\"choices\":[{\"message\":{\"content\":\"git status\"}}]}";
+    const stream_body = "data: {\"choices\":[{\"delta\":{\"content\":\"git \"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"status\"}}]}\n\ndata: [DONE]\n\n";
+    const replies = [_]mock.Reply{
+        // HTTP/1.0 with Content-Length (Python's http.server and friends).
+        .{ .head = std.fmt.comptimePrint("HTTP/1.0 200 OK\r\nServer: BaseHTTP/0.6\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n", .{json.len}), .chunks = &.{json} },
+        // HTTP/1.0 streaming, body ends at close.
+        .{ .head = "HTTP/1.0 200 OK\r\nContent-Type: text/event-stream\r\n\r\n", .chunks = &.{stream_body} },
+        // HTTP/1.1 + Connection: close + Content-Length.
+        .{ .head = std.fmt.comptimePrint("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: text/event-stream\r\nContent-Length: {d}\r\n\r\n", .{stream_body.len}), .chunks = &.{stream_body} },
+        // An SSE body labelled as JSON (some proxies rewrite the type).
+        .{ .head = "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n", .chunks = &.{stream_body} },
+        // No Content-Type at all.
+        .{ .head = "HTTP/1.0 200 OK\r\n\r\n", .chunks = &.{stream_body} },
+    };
+    var srv = try mock.MockServer.start(std.testing.allocator, &replies);
+    defer srv.deinit();
+    var ub: [64]u8 = undefined;
+    const url = srv.url(&ub);
+    const msgs = [_]Message{.{ .role = "user", .content = "x" }};
+    var cancel = Cancel{};
+    for (replies, 0..) |_, i| {
+        var out = std.ArrayList(u8).init(std.testing.allocator);
+        defer out.deinit();
+        chatStream(std.testing.allocator, testRequest(url, &msgs), &cancel, Collect{ .out = &out }) catch |err| {
+            std.debug.print("reply {d}: {s}\n", .{ i, @errorName(err) });
+            return err;
+        };
+        std.testing.expectEqualStrings("git status", out.items) catch |err| {
+            std.debug.print("reply {d}\n", .{i});
+            return err;
+        };
+    }
 }
 
 test "chatStream: timeout and cancel from another thread" {

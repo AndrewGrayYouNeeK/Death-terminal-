@@ -108,6 +108,10 @@ config is reloaded.
 | `ssh.config_file` | `"~/.ssh/config"` | OpenSSH config to read Host aliases from (`""` = none) |
 | `ssh.keepalive_s` | `30` | Default keepalive interval, 0–3600 (0 = off); profiles can override |
 | `ssh.known_hosts` | `"~/.ssh/known_hosts"` | Host keys file (shared with OpenSSH; appended to, never rewritten) |
+| `status_bar.enabled` | `false` | A one-row status bar under the grid for plugin segments. Ctrl+Shift+B (`toggle_status_bar`) toggles it |
+| `plugins_enabled` | `true` | Load plugins (`--no-plugins` overrides). See [PLUGINS.md](PLUGINS.md) |
+| `plugins_dir` | `""` | Where plugins live. `""` = `$XDG_CONFIG_HOME/death-terminal/plugins`; `~/` is expanded |
+| `plugins` | `{}` | Per plugin: `enabled`, `allow` (permissions), `exec`, `hosts`, `memory_mb` (32), `cpu_ms` (100), `settings` ([PLUGINS.md](PLUGINS.md#configuration)) |
 | `ssh.profiles` | `{}` | Named connections: `host`, `port`, `user`, `identity_file`, `jump`, `env`, `command`, `theme`, `forwards`, `keepalive_s`, `reconnect` ([SSH.md](SSH.md#profiles)) |
 
 Key chords use `ctrl`, `shift` and `alt` plus a key name: letters, digits, `f1`–`f12`,
@@ -119,7 +123,8 @@ Actions: `copy`, `paste`, `paste_selection`, `search`, `scroll_page_up`,
 `scroll_bottom`, `zoom_in`, `zoom_out`, `zoom_reset`, `select_all`,
 `clear_selection`, `reload_config` (default Ctrl+Shift+R), `ai_accept` (Tab, only
 while a suggestion shows), `ai_dismiss` (Esc, likewise), `ai_next` / `ai_prev`
-(Alt+] / Alt+[), `ai_explain` (Ctrl+Shift+A), `ssh_palette` (Ctrl+Shift+S). `select_all` is Ctrl+Shift+Alt+A.
+(Alt+] / Alt+[), `ai_explain` (Ctrl+Shift+A), `ssh_palette` (Ctrl+Shift+S),
+`command_palette` (Ctrl+Shift+P), `toggle_status_bar` (Ctrl+Shift+B). `select_all` is Ctrl+Shift+Alt+A.
 
 ## Errors
 
@@ -151,7 +156,9 @@ reload for 3 s. If options marked restart changed, a yellow bar names them.
 
 These apply live: theme and colours (text already on screen is recoloured), fonts (the grid
 reflows to the new cell size), cursor shape, present mode, FPS cap, read budget,
-selection/clipboard/scrollbar options and key bindings.
+selection/clipboard/scrollbar options, key bindings, the status bar and plugins (the
+plugin host restarts when a plugin's files, grants or settings changed; otherwise plugins get
+a `config_reload` event).
 
 Watching uses inotify, which is Linux-only. On other platforms only Ctrl+Shift+R reloads.
 
@@ -171,10 +178,8 @@ The old flat format (`font_size = 12`, `keybind = ctrl+shift+c=copy`, …) still
 read only when no config.lua exists, or through `--config file.txt`, and it shows a one-time
 deprecation warning. It will be removed in a later release.
 
-## For plugin authors (milestone 10)
+## Plugins
 
-`src/scripting/lua.zig` wraps the vendored C API (memory cap and instruction hook).
-`src/scripting/lua_engine.zig` is the long-lived sandboxed state that hooks will run in.
-`src/config/prelude.lua` shows the pattern: a Zig-validated proxy table plus a `dt` API table
-inside a per-script environment. Hooks (`dt.on(event, fn)`) will be registered on that same
-`dt` table.
+Plugins are separate from config.lua: they live in their own directories, run in their
+own sandboxed Lua states and can only do what `config.plugins.<name>.allow` grants. See
+[PLUGINS.md](PLUGINS.md).

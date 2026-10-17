@@ -10,6 +10,7 @@ const ssh_control = @import("ssh/control.zig");
 const lua_engine = @import("scripting/lua_engine.zig");
 const config = @import("config/config.zig");
 const event_loop = @import("app/event_loop.zig");
+const plugin_registry = @import("plugins/registry.zig");
 
 const VERSION = "0.1.0";
 
@@ -56,6 +57,11 @@ pub fn main() !void {
         }
     }
 
+    // `--plugins list|enable|disable`: no window, no banner.
+    for (args[1..], 1..) |a, i| {
+        if (std.mem.eql(u8, a, "--plugins")) std.process.exit(pluginsCli(allocator, args, args[i + 1 ..]));
+    }
+
     // Print banner only for interactive runs
     try printBanner();
 
@@ -87,6 +93,7 @@ pub fn main() !void {
     // `--ssh <target>`: the window runs the built-in SSH client instead of a shell.
     const ssh_name = sshArg(args);
     var ssh_display: []const u8 = "";
+    var ssh_nonce: []const u8 = "";
     const shell_opts = if (ssh_name) |name| blk: {
         const sa = shell_arena.allocator();
         if (builtin.os.tag != .linux) {
@@ -103,6 +110,14 @@ pub fn main() !void {
         };
         var db: [300]u8 = undefined;
         ssh_display = try sa.dupe(u8, t.display(&db));
+        // A per-window secret for the client's connect/disconnect reports
+        // (OSC 7799), so remote output can't fake them.
+        var nb: [16]u8 = undefined;
+        std.crypto.random.bytes(&nb);
+        ssh_nonce = try std.fmt.allocPrint(sa, "{s}", .{std.fmt.fmtSliceHexLower(&nb)});
+        var env = std.ArrayList([]const u8).init(sa);
+        try env.appendSlice(cfg.shell_env.items);
+        try env.append(try std.fmt.allocPrint(sa, "DT_SSH_NONCE={s}", .{ssh_nonce}));
         var child_args = std.ArrayList([]const u8).init(sa);
         try child_args.appendSlice(&.{ "--ssh-session", name });
         if (config_arg) |c| try child_args.appendSlice(&.{ "--config", c });
@@ -111,7 +126,7 @@ pub fn main() !void {
         break :blk @import("terminal/pty.zig").ShellOptions{
             .program = try std.fs.selfExePathAlloc(sa),
             .args = child_args.items,
-            .env = cfg.shell_env.items,
+            .env = env.items,
             .cwd = cfg.shell_cwd,
         };
     } else shell_inject.apply(shell_arena.allocator(), .{
@@ -122,6 +137,7 @@ pub fn main() !void {
     }, cfg.shell_integration);
     var term = try terminal.Terminal.initWithShell(allocator, cfg.rows, cfg.cols, cfg.scrollback_lines, shell_opts);
     defer term.deinit();
+    term.setSshNonce(ssh_nonce);
 
     std.debug.print("[3/5] Initializing Lua scripting engine...\n", .{});
     var lua = try lua_engine.LuaEngine.init(allocator);
@@ -149,6 +165,33 @@ pub fn main() !void {
         .ssh_remote = ssh_display,
     };
     try loop.run(&vulkan_renderer, &term, &lua);
+}
+
+/// `deathterminal --plugins list|enable <name>|disable <name>`.
+fn pluginsCli(allocator: std.mem.Allocator, all_args: []const []const u8, sub: []const []const u8) u8 {
+    var diags = config.Diagnostics.init(allocator);
+    defer diags.deinit();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const src = config.locate(&path_buf, config.configArg(all_args));
+    var cfg = config.load(allocator, src, &.{}, .{ .lua_unsafe = hasFlag(all_args, "--lua-unsafe") }, &diags) catch |err| {
+        std.debug.print("config: {s}\n", .{@errorName(err)});
+        return 1;
+    };
+    defer cfg.deinit();
+    if (diags.hasErrors()) {
+        diags.print();
+        std.debug.print("config: {d} error(s); showing plugins without config.plugins grants\n\n", .{diags.errorCount()});
+    }
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    // Only the subcommand and its name (stop at the next flag).
+    var n: usize = 0;
+    while (n < sub.len and n < 2 and !std.mem.startsWith(u8, sub[n], "--")) n += 1;
+    const out = std.io.getStdOut().writer();
+    return plugin_registry.cli(arena.allocator(), sub[0..n], cfg.plugins_dir, cfg.plugins.items, cfg.plugins_enabled, out) catch |err| {
+        std.debug.print("plugins: {s}\n", .{@errorName(err)});
+        return 1;
+    };
 }
 
 /// `--ssh-ctl <pid> <command…>`: talk to a running SSH session client.
@@ -239,6 +282,10 @@ fn printHelp() !void {
         \\    --ssh-session <target> [-L|-R|-D spec]...  Run the SSH client in this terminal
         \\    --ssh-ctl <pid> <cmd>   Control a running session: status, list, toggle <n>,
         \\                     on <n>, off <n>, add <spec>, reconnect
+        \\    --plugins list | enable <name> | disable <name>
+        \\                     Show installed plugins (and their permissions), or switch
+        \\                     one on/off; see docs/PLUGINS.md
+        \\    --no-plugins     Start without loading any plugin
         \\    --no-ai          Disable AI command suggestions
         \\    --headless       Run without a GUI window (default)
         \\    --gui            Open a native window (Wayland/X11/Win32; falls back to headless)
@@ -256,7 +303,7 @@ fn printHelp() !void {
         \\    • AI command suggestions (OpenAI-compatible, local Ollama by default)
         \\    • Built-in SSH (libssh2): profiles, ProxyJump, -L/-R/-D forwards (Ctrl+Shift+S)
         \\    • Vulkan-accelerated rendering
-        \\    • Lua scripting support
+        \\    • Lua plugins: hooks, command palette (Ctrl+Shift+P), status bar, themes
         \\    • Brutalist, high-performance design
         \\
         \\For more information, visit: https://github.com/AndrewGrayYouNeeK/Death-terminal-
@@ -296,7 +343,13 @@ test {
     _ = @import("terminal/search.zig");
     _ = @import("terminal/urls.zig");
     _ = @import("app/ui.zig");
-    _ = @import("app/ssh_palette.zig");
+    _ = @import("app/palette.zig");
+    _ = @import("plugins/permissions.zig");
+    _ = @import("plugins/value.zig");
+    _ = @import("plugins/manifest.zig");
+    _ = @import("plugins/jobs.zig");
+    _ = @import("plugins/host_test.zig");
+    _ = @import("plugins/registry.zig");
     _ = @import("platform/wayland_backend.zig");
     _ = @import("platform/win32_backend.zig");
     _ = @import("app/event_loop.zig");

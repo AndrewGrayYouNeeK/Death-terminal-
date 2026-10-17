@@ -8,7 +8,8 @@ const software = @import("../renderer/software.zig");
 const ai_controller = @import("ai_controller.zig");
 const ssh_target = @import("../ssh/target.zig");
 const ssh_control = @import("../ssh/control.zig");
-const ssh_palette = ui_mod.ssh_palette;
+const palette_mod = ui_mod.palette_mod;
+const plugin_bridge = @import("plugin_bridge.zig");
 const lua_engine = @import("../scripting/lua_engine.zig");
 const config = @import("../config/config.zig");
 const window_mod = @import("../platform/window.zig");
@@ -114,7 +115,7 @@ pub const EventLoop = struct {
         if (window.scale != scale) {
             scale = window.scale;
             _ = try fonts.setScale(scale);
-            try regrid(term, &fonts, &soft, window.width, window.height);
+            try regrid(term, &fonts, &soft, window.width, window.height, 0);
         }
         defer vulkan_renderer.detachPresent();
         vulkan_renderer.setPresentMode(renderer.PresentMode.parse(self.cfg.present_mode) orelse .fifo);
@@ -135,6 +136,8 @@ pub const EventLoop = struct {
         installBindings(self.cfg);
         var ui = ui_mod.Ui.init(self.allocator, uiOptions(self.cfg));
         defer ui.deinit();
+        ui.status_visible = self.cfg.status_bar;
+        if (ui.status_visible) try regrid(term, &fonts, &soft, window.width, window.height, ui.statusRows());
         var palette = self.cfg.palette();
         term.palette = palette;
         applyCursorShape(term, self.cfg.cursor_shape);
@@ -150,6 +153,8 @@ pub const EventLoop = struct {
         var ai = ai_controller.Controller.init(self.allocator, self.aiSettings());
         defer ai.deinit();
         if (ai.engine != null) std.debug.print("  → AI: {s} via {s}\n", .{ self.cfg.ai_model, self.cfg.ai_endpoint });
+        var plugins = plugin_bridge.Bridge.init(self.allocator, term);
+        defer plugins.deinit();
         const gui = Gui{
             .term = term,
             .vk = vulkan_renderer,
@@ -163,8 +168,11 @@ pub const EventLoop = struct {
             .palette = &palette,
             .pace = &pace,
             .ai = &ai,
+            .plugins = &plugins,
             .loop = self,
         };
+        gui.startPlugins();
+        ai.filter = plugins.aiFilter();
         std.debug.print("GUI terminal active ({s}, scale={d:.2}). Close the window or exit the shell to quit.\n", .{
             @tagName(window.backend),
             window.scale,
@@ -187,6 +195,7 @@ pub const EventLoop = struct {
                 .{ .fd = window.connectionFd() orelse -1, .events = posix.POLL.IN, .revents = 0 },
                 .{ .fd = if (watcher) |w| w.fd else -1, .events = posix.POLL.IN, .revents = 0 },
                 .{ .fd = ai.wakeFd(), .events = posix.POLL.IN, .revents = 0 },
+                .{ .fd = plugins.wakeFd(), .events = posix.POLL.IN, .revents = 0 },
             };
             // Sleep until input, output or the next frame slot; with nothing
             // to do the timeout is infinite (no wakeups when idle).
@@ -200,6 +209,8 @@ pub const EventLoop = struct {
             if (reload_at) |t| timeout = minTimeout(timeout, t - now_ms);
             if (ui.noticeTimeout(now_ms)) |t| timeout = minTimeout(timeout, t);
             if (ai.timeout(now_ms)) |t| timeout = minTimeout(timeout, t);
+            if (ui.toastTimeout(now_ms)) |t| timeout = minTimeout(timeout, t);
+            if (plugins.timeout(now_ms)) |t| timeout = minTimeout(timeout, t);
             _ = posix.poll(&poll_fds, timeout) catch 0;
             pace.wakeups += 1;
 
@@ -207,6 +218,9 @@ pub const EventLoop = struct {
                 if (try ai.onWake(&ui, term, std.time.milliTimestamp())) need_present = true;
             }
             ai.tick(term, std.time.milliTimestamp());
+            plugins.tick(std.time.milliTimestamp());
+            if (try gui.pluginEffects(focused)) need_present = true;
+            if (ui.tickToasts(std.time.milliTimestamp())) need_present = true;
 
             if (poll_fds[2].revents & posix.POLL.IN != 0) {
                 if (watcher) |*w| {
@@ -231,9 +245,10 @@ pub const EventLoop = struct {
                     .resize => |sz| {
                         // HiDPI: the compositor may change the scale with the size.
                         if (window.scale != fonts.scale) _ = try fonts.setScale(window.scale);
-                        try regrid(term, &fonts, &soft, sz.width, sz.height);
+                        try regrid(term, &fonts, &soft, sz.width, sz.height, ui.statusRows());
                         try vulkan_renderer.resize(sz.width, sz.height);
                         ui.sync(term);
+                        plugins.resized();
                         need_present = true;
                         force_present = true;
                     },
@@ -251,10 +266,17 @@ pub const EventLoop = struct {
                         } else if (a.action == .ai_explain) {
                             try ai.explain(&ui, term, std.time.milliTimestamp());
                         } else if (a.action == .ssh_palette) {
-                            if (ui.ssh_palette != null) ui.closeSshPalette() else try gui.openSshPalette();
+                            if (ui.paletteOpen(.ssh)) ui.closePalette() else try gui.openSshPalette();
+                        } else if (a.action == .command_palette) {
+                            if (ui.paletteOpen(.commands)) ui.closePalette() else try gui.openCommandPalette();
+                        } else if (a.action == .toggle_status_bar) {
+                            try gui.setStatusBar(!ui.status_visible);
+                        } else if (a.action == .plugin_binding) {
+                            if (plugins.host) |h| h.runBinding(a.arg);
                         } else if (step) |z| {
                             if (try fonts.zoom(z)) {
-                                try regrid(term, &fonts, &soft, window.width, window.height);
+                                try regrid(term, &fonts, &soft, window.width, window.height, ui.statusRows());
+                                plugins.resized();
                                 std.debug.print("  → zoom: {d:.1}pt, cell {d}x{d}, grid {d}x{d}\n", .{ fonts.size_pt, fonts.metrics.cell_w, fonts.metrics.cell_h, term.cols, term.rows });
                             }
                         } else if (try ui.handleAction(term, a.action)) {
@@ -283,6 +305,10 @@ pub const EventLoop = struct {
                         need_present = true;
                     },
                     .paste => |p| {
+                        if (p.purpose == .plugin) {
+                            if (plugins.host) |h| h.clipboardResult(p.data);
+                            continue;
+                        }
                         try ui.onPaste(term, p.data, p.target, p.purpose);
                         ai.onKeystroke(&ui, std.time.milliTimestamp());
                         need_present = true;
@@ -293,6 +319,8 @@ pub const EventLoop = struct {
                     },
                     .input => |bytes| {
                         if (try ui.handleText(term, bytes)) {
+                            need_present = true;
+                        } else if (plugins.text(bytes)) {
                             need_present = true;
                         } else {
                             // Ctrl+C arrives as 0x03 and goes to the shell like any key.
@@ -305,6 +333,8 @@ pub const EventLoop = struct {
                     .key => |k| {
                         if (try ui.handleKey(term, k.key, k.mods)) {
                             need_present = true;
+                        } else if (plugins.key(k.key, k.mods)) {
+                            need_present = true;
                         } else {
                             if (ui.userTyped()) need_present = true;
                             const seq = input.encodeKey(k.key, k.mods, term.modes);
@@ -314,6 +344,8 @@ pub const EventLoop = struct {
                         }
                     },
                     .mouse => |m| {
+                        // The status bar row is not part of the grid.
+                        if (ui.status_visible and m.y >= @as(i32, @intCast(@as(u32, term.rows) * fonts.metrics.cell_h)) and m.action != .release) continue;
                         if (try ui.handleMouse(term, m, fonts.metrics.cell_w, fonts.metrics.cell_h, std.time.milliTimestamp())) {
                             need_present = true;
                         } else {
@@ -323,10 +355,12 @@ pub const EventLoop = struct {
                     .focus => |f| {
                         focused = f;
                         need_present = true;
+                        plugins.focus(f);
                         if (input.encodeFocus(f, term.modes)) |seq| _ = try term.write(seq);
                     },
                 }
                 try gui.runEffects();
+                _ = try gui.pluginEffects(focused);
             }
 
             if (poll_fds[0].revents & posix.POLL.IN == 0 and
@@ -374,6 +408,8 @@ pub const EventLoop = struct {
                         try gui.runEffects();
                     }
                     ui.sync(term);
+                    plugins.afterOutput(std.time.milliTimestamp());
+                    _ = try gui.pluginEffects(focused);
                     need_present = true;
                 }
                 if (exited) {
@@ -607,10 +643,12 @@ fn handleMouse(term: *terminal.Terminal, st: *MouseState, m: window_mod.MouseInp
 
 /// Fit the grid to a window of `width`×`height` px with the current cell
 /// size; resizes the terminal (and so the PTY) when it changes.
-fn regrid(term: *terminal.Terminal, fonts: *fonts_mod.Fonts, soft: *software.SoftwareRenderer, width: u32, height: u32) !void {
+/// `reserved` rows at the bottom are kept for the status bar.
+fn regrid(term: *terminal.Terminal, fonts: *fonts_mod.Fonts, soft: *software.SoftwareRenderer, width: u32, height: u32, reserved: u16) !void {
     const cell = fonts.cellSize();
     const cols: u16 = @intCast(std.math.clamp(width / cell.w, 1, 1000));
-    const rows: u16 = @intCast(std.math.clamp(height / cell.h, 1, 500));
+    const all: u32 = height / cell.h;
+    const rows: u16 = @intCast(std.math.clamp(if (all > reserved + 1) all - reserved else 1, 1, 500));
     if (cols != term.cols or rows != term.rows) try term.resize(rows, cols);
     try soft.resizePixels(width, height);
 }
@@ -644,6 +682,7 @@ const Gui = struct {
     palette: *color.Palette,
     pace: *Pacer,
     ai: *ai_controller.Controller,
+    plugins: *plugin_bridge.Bridge,
     loop: *const EventLoop,
 
     /// Build the frame and draw it. Unchanged frames are not drawn unless
@@ -659,7 +698,7 @@ const Gui = struct {
         v.selection_bg = self.palette.selection_bg;
         v.selection_fg = self.palette.selection_fg;
         if (composed.scrollbar) |sb| v.scrollbar = .{ .top = sb.top, .height = sb.height };
-        try self.frame.build(self.fonts, self.view.cells.items, self.term.rows, self.term.cols, composed.cursor_row, composed.cursor_col, v);
+        try self.frame.build(self.fonts, self.view.cells.items, composed.rows, self.term.cols, composed.cursor_row, composed.cursor_col, v);
         if (!self.frame.changed and !force) return false;
         switch (self.vk.presentFrame(self.frame, &self.fonts.atlas)) {
             .presented => {
@@ -709,6 +748,10 @@ const Gui = struct {
         self.ui.opts = uiOptions(self.cfg);
         self.fonts.opts.family = self.cfg.font_family;
         self.ai.applySettings(self.ui, loop.aiSettings());
+        if (self.plugins.reload(self.cfg, chordTaken)) {
+            self.installAllBindings();
+            self.refreshStatus();
+        } else self.installAllBindings();
 
         std.debug.print("config: reloaded {s}\n", .{shown_path});
         var lines = std.ArrayList([]const u8).init(allocator);
@@ -731,6 +774,7 @@ const Gui = struct {
     /// Push `next`'s live settings into the running terminal.
     fn applyConfig(self: Gui, next: *const config.Config) !void {
         const old = self.cfg;
+        if (old.status_bar != next.status_bar) try self.setStatusBar(next.status_bar);
         self.palette.* = next.palette();
         self.term.palette = self.palette.*;
         applyCursorShape(self.term, next.cursor_shape);
@@ -743,7 +787,7 @@ const Gui = struct {
                 self.fonts.deinit();
                 self.fonts.* = f;
                 self.frame.invalidate();
-                try regrid(self.term, self.fonts, self.soft, self.window.width, self.window.height);
+                try regrid(self.term, self.fonts, self.soft, self.window.width, self.window.height, self.ui.statusRows());
                 self.ui.sync(self.term);
                 std.debug.print("  → Font: {s} {d:.1}pt, cell {d}x{d}px\n", .{ self.fonts.familyName(), self.fonts.size_pt, self.fonts.metrics.cell_w, self.fonts.metrics.cell_h });
             } else |err| {
@@ -766,8 +810,112 @@ const Gui = struct {
             .set_clipboard => |c| self.window.setClipboard(c.target, c.text),
             .request_paste => |r| self.window.requestClipboard(r.target, r.purpose),
             .open_url => |url| openUrl(self.cfg.url_open_command, url),
-            .ssh => |pick| try self.sshPick(pick),
+            .palette => |pick| switch (pick) {
+                .action => |n| self.window.queue.pushAction(.{ .action = @enumFromInt(n), .sym = 0, .mods = .{} }),
+                .command => |n| if (self.plugins.host) |h| h.runCommand(n),
+                else => try self.sshPick(pick),
+            },
         };
+    }
+
+    // ------------------------------------------------------------ plugins
+
+    fn startPlugins(self: Gui) void {
+        // Plugin chords are checked against the terminal's own bindings.
+        installBindings(self.cfg);
+        self.plugins.start(self.cfg, chordTaken);
+        self.installAllBindings();
+        self.refreshStatus();
+        _ = self.pluginEffects(true) catch {};
+    }
+
+    /// Config bindings, then the plugins' (never replacing one).
+    fn installAllBindings(self: Gui) void {
+        installBindings(self.cfg);
+        const h = self.plugins.host orelse return;
+        for (h.binds.items) |b| {
+            if (!events.bindings.addPlugin(b.chord, b.id)) h.log(b.plugin, "warn", "keybinding {s} is taken; ignored", .{b.spec});
+        }
+    }
+
+    fn refreshStatus(self: Gui) void {
+        self.ui.clearStatus();
+        const h = self.plugins.host orelse return;
+        for (h.segments.items) |seg| {
+            if (seg.text.len == 0 or !seg.plugin.running()) continue;
+            self.ui.addStatus(seg.right, seg.text, seg.fg) catch {};
+        }
+    }
+
+    fn setStatusBar(self: Gui, on: bool) !void {
+        if (self.ui.status_visible == on) return;
+        self.ui.status_visible = on;
+        try regrid(self.term, self.fonts, self.soft, self.window.width, self.window.height, self.ui.statusRows());
+        self.ui.sync(self.term);
+        self.plugins.resized();
+        self.frame.invalidate();
+    }
+
+    /// Apply what plugins asked for. True if the screen changed.
+    fn pluginEffects(self: Gui, focused: bool) !bool {
+        const h = self.plugins.host orelse return false;
+        if (h.effects.items.len == 0) return false;
+        // Handlers below can queue more (e.g. a theme hook): take a copy.
+        const fx = try self.cfg.allocator.dupe(host_effect, h.effects.items);
+        h.effects.clearRetainingCapacity();
+        defer {
+            for (fx) |*e| freeHostEffect(self.cfg.allocator, e);
+            self.cfg.allocator.free(fx);
+        }
+        var redraw = false;
+        const now = std.time.milliTimestamp();
+        for (fx) |e| switch (e) {
+            .write => |bytes| _ = try self.term.write(bytes),
+            .set_clipboard => |text| self.window.setClipboard(.clipboard, text),
+            .request_clipboard => self.window.requestClipboard(.clipboard, .plugin),
+            .notify => |n| {
+                var tb: [320]u8 = undefined;
+                const line = std.fmt.bufPrint(&tb, "{s}: {s}", .{ n.source, n.text[0..@min(n.text.len, 280)] }) catch n.text;
+                try self.ui.addToast(line, switch (n.level) {
+                    .info, .success => .info,
+                    .warn => .warn,
+                    .@"error" => .err,
+                }, n.timeout_ms, now);
+                if (n.desktop and !focused) desktopNotify(n.source, n.text);
+                redraw = true;
+            },
+            .theme => |t| {
+                self.palette.* = t.palette;
+                self.term.palette = t.palette;
+                h.setInfo(.theme, t.name);
+                self.frame.invalidate();
+                redraw = true;
+            },
+            .action => |a| self.window.queue.pushAction(.{ .action = a, .sym = 0, .mods = .{} }),
+            .redraw => {
+                self.refreshStatus();
+                redraw = true;
+            },
+            .bindings_changed => self.installAllBindings(),
+        };
+        return redraw;
+    }
+
+    fn openCommandPalette(self: Gui) !void {
+        const pal = try self.ui.openPalette(.commands, "");
+        var cb: [48]u8 = undefined;
+        if (self.plugins.host) |h| {
+            for (h.commands.items, 0..) |cmd, i| {
+                if (!cmd.plugin.running()) continue;
+                try pal.addItem(.command, cmd.title, cmd.plugin.name, i, false);
+            }
+        }
+        inline for (@typeInfo(events.Action).Enum.fields) |f| {
+            const act: events.Action = @enumFromInt(f.value);
+            if (act.title()) |ttl| {
+                try pal.addItem(.action, ttl, events.chordFor(&events.bindings, act, &cb) orelse "", f.value, false);
+            }
+        }
     }
 
     // ---------------------------------------------------------------- ssh
@@ -780,24 +928,24 @@ const Gui = struct {
     }
 
     fn openSshPalette(self: Gui) !void {
-        const pal = try self.ui.openSshPalette(if (self.loop.ssh_remote.len > 0) self.loop.ssh_remote else "profiles");
+        const pal = try self.ui.openPalette(.ssh, if (self.loop.ssh_remote.len > 0) self.loop.ssh_remote else "profiles");
         try self.fillSshPalette(pal);
     }
 
     /// This session's forwards + reconnect (from the client's control
     /// socket), then profiles and ~/.ssh/config aliases.
-    fn fillSshPalette(self: Gui, pal: *ssh_palette.Palette) !void {
+    fn fillSshPalette(self: Gui, pal: *palette_mod.Palette) !void {
         var arena_state = std.heap.ArenaAllocator.init(self.cfg.allocator);
         defer arena_state.deinit();
         const a = arena_state.allocator();
-        var items = std.ArrayList(ssh_palette.Item).init(a);
+        var items = std.ArrayList(palette_mod.Item).init(a);
         if (self.sshPid()) |pid| {
             var out: [8192]u8 = undefined;
             if (ssh_control.request(pid, "list", &out)) |reply| {
                 var lines = std.mem.splitScalar(u8, reply, '\n');
                 while (lines.next()) |ln| {
                     const f = parseForwardLine(ln) orelse continue;
-                    try items.append(.{ .kind = .forward, .name = try a.dupe(u8, f.spec), .detail = try a.dupe(u8, f.state), .forward = f.n, .on = f.on });
+                    try items.append(.{ .kind = .forward, .name = try a.dupe(u8, f.spec), .detail = try a.dupe(u8, f.state), .arg = f.n, .on = f.on });
                 }
             } else |_| try pal.setStatus(" session not reachable (still connecting?) ");
             try items.append(.{ .kind = .reconnect, .name = try a.dupe(u8, "Reconnect"), .detail = try a.dupe(u8, self.loop.ssh_remote) });
@@ -815,8 +963,8 @@ const Gui = struct {
             for (items.items, 0..) |it, i| if (it.kind == .profile) break :blk i;
             break :blk items.items.len;
         };
-        std.mem.sort(ssh_palette.Item, items.items[first_profile..], {}, struct {
-            fn lt(_: void, x: ssh_palette.Item, y: ssh_palette.Item) bool {
+        std.mem.sort(palette_mod.Item, items.items[first_profile..], {}, struct {
+            fn lt(_: void, x: palette_mod.Item, y: palette_mod.Item) bool {
                 return std.mem.lessThan(u8, x.name, y.name);
             }
         }.lt);
@@ -829,7 +977,7 @@ const Gui = struct {
         try pal.setItems(items.items);
     }
 
-    fn sshPick(self: Gui, pick: ssh_palette.Pick) !void {
+    fn sshPick(self: Gui, pick: palette_mod.Pick) !void {
         const now = std.time.milliTimestamp();
         switch (pick) {
             .open => |name| {
@@ -842,9 +990,9 @@ const Gui = struct {
                 var cmd: [32]u8 = undefined;
                 var out: [512]u8 = undefined;
                 const reply = ssh_control.request(pid, std.fmt.bufPrint(&cmd, "toggle {d}", .{n}) catch "list", &out) catch "error session not reachable";
-                if (self.ui.ssh_palette) |*pal| {
+                if (self.ui.palette) |*pal| {
                     var spec: []const u8 = "forward";
-                    for (pal.items.items) |it| if (it.kind == .forward and it.forward == n) {
+                    for (pal.items.items) |it| if (it.kind == .forward and it.arg == n) {
                         spec = it.name;
                     };
                     var sb: [200]u8 = undefined;
@@ -857,6 +1005,7 @@ const Gui = struct {
                 var out: [64]u8 = undefined;
                 _ = ssh_control.request(pid, "reconnect", &out) catch {};
             },
+            .action, .command => {},
         }
     }
 };
@@ -911,6 +1060,32 @@ fn openSshWindow(loop: *const EventLoop, name: []const u8) void {
     if (loop.load_opts.lua_unsafe) argv.append("--lua-unsafe") catch return;
     if (!loop.cfg.ai_enabled) argv.append("--no-ai") catch return;
     spawnDetached(argv.items, false);
+}
+
+const host_effect = plugin_bridge.host_mod.Effect;
+
+fn freeHostEffect(a: std.mem.Allocator, e: *host_effect) void {
+    switch (e.*) {
+        .write, .set_clipboard => |x| a.free(x),
+        .notify => |n| {
+            a.free(n.source);
+            a.free(n.text);
+        },
+        .theme => |t| a.free(t.name),
+        else => {},
+    }
+}
+
+fn chordTaken(c: events.Chord) bool {
+    return events.bindings.has(c);
+}
+
+/// `notify-send` (if installed) for a plugin notice while unfocused.
+fn desktopNotify(source: []const u8, text: []const u8) void {
+    if (builtin.os.tag != .linux) return;
+    var tb: [96]u8 = undefined;
+    const title = std.fmt.bufPrint(&tb, "DeathTerminal: {s}", .{source}) catch "DeathTerminal";
+    spawnDetached(&.{ "notify-send", "--app-name=DeathTerminal", "--", title, text[0..@min(text.len, 500)] }, true);
 }
 
 fn nowNs() u64 {

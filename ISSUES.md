@@ -112,13 +112,15 @@
 - [x] Lua state initialization (vendored Lua 5.4.7, built by zig)
 - [x] C API bindings for Lua 5.4
 - [x] Lua API design and implementation (config API; `dt` table)
-- [ ] Hook system (startup, command execution, etc.) — milestone 10
+- [x] Hook system (startup, commands, output, cwd, title, bell, focus, keys, SSH, AI) — milestone 10
 - [x] Configuration loading from Lua files (live reload)
-- [ ] Plugin system architecture — milestone 10
+- [x] Plugin system: sandboxed per-plugin states, permissions, palette, status bar (docs/PLUGINS.md)
 - [x] Sandboxing for dangerous operations (config; `--lua-unsafe` opt-out)
 - [x] Error handling and reporting (file:line, in-window notice)
-- [x] API documentation for script authors (docs/CONFIG.md; plugin API in milestone 10)
-- [ ] Example scripts and plugins
+- [x] API documentation for script authors (docs/CONFIG.md, docs/PLUGINS.md)
+- [x] Example plugins (plugins/: git_branch, long_command, theme_cycle)
+- [ ] Plugin hot reload of `require`d modules (only manifest/init.lua mtimes trigger a restart)
+- [ ] SSH hooks for `ssh` run inside a local shell (only the built-in client reports)
 
 ### Main Event Loop
 - [x] Event loop architecture
