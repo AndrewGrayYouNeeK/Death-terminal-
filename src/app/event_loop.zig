@@ -136,9 +136,21 @@ pub const EventLoop = struct {
                 }
             }
 
+            if (poll_fds[0].revents & posix.POLL.IN == 0 and
+                poll_fds[0].revents & (posix.POLL.HUP | posix.POLL.ERR) != 0)
+            {
+                std.debug.print("\nShell exited.\n", .{});
+                break;
+            }
+
             if (poll_fds[0].revents & posix.POLL.IN != 0) {
                 const n = posix.read(pty_fd, &read_buf) catch |err| switch (err) {
                     error.WouldBlock => 0,
+                    // Linux reports EIO on the master once the shell exits.
+                    error.InputOutput => {
+                        std.debug.print("\nShell exited.\n", .{});
+                        break;
+                    },
                     else => return err,
                 };
                 if (n == 0) {
@@ -192,9 +204,21 @@ pub const EventLoop = struct {
                 continue;
             }
 
+            if (poll_fds[0].revents & posix.POLL.IN == 0 and
+                poll_fds[0].revents & (posix.POLL.HUP | posix.POLL.ERR) != 0)
+            {
+                std.debug.print("\nShell exited.\n", .{});
+                break;
+            }
+
             if (poll_fds[0].revents & posix.POLL.IN != 0) {
                 const n = posix.read(pty_fd, &read_buf) catch |err| switch (err) {
                     error.WouldBlock => 0,
+                    // Linux reports EIO on the master once the shell exits.
+                    error.InputOutput => {
+                        std.debug.print("\nShell exited.\n", .{});
+                        break;
+                    },
                     else => return err,
                 };
 
@@ -312,26 +336,49 @@ fn presentGui(
 
 fn renderHeadless(term: *terminal.Terminal, vulkan_renderer: *renderer.VulkanRenderer) !void {
     try vulkan_renderer.render();
+    try writeHeadlessFrame(term, std.io.getStdOut().writer());
+}
 
-    var out: [8192]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&out);
-    const writer = fbs.writer();
+/// Write the whole grid to `out`: home the cursor, emit every cell (blanks
+/// included, so columns line up), then place the cursor.
+fn writeHeadlessFrame(term: *terminal.Terminal, out: anytype) !void {
+    var buffered = std.io.bufferedWriter(out);
+    const writer = buffered.writer();
 
-    try writer.writeAll("\x1b[H\x1b[2J");
+    try writer.writeAll("\x1b[H");
 
     var row: u16 = 0;
     while (row < term.rows) : (row += 1) {
         var col: u16 = 0;
         while (col < term.cols) : (col += 1) {
-            const cell = term.getCell(row, col) orelse continue;
-            if (cell.char == ' ') continue;
-            try writer.print("{u}", .{cell.char});
+            const cell = term.getCell(row, col) orelse break;
+            try writeCellChar(writer, cell.char);
         }
-        if (row + 1 < term.rows) try writer.writeAll("\n");
+        if (row + 1 < term.rows) try writer.writeAll("\r\n");
     }
 
     try writer.print("\x1b[{d};{d}H", .{ term.cursor_row + 1, term.cursor_col + 1 });
-    _ = try posix.write(posix.STDOUT_FILENO, fbs.getWritten());
+    try buffered.flush();
+}
+
+fn writeCellChar(writer: anytype, ch: u21) !void {
+    if (ch < 0x20 or ch == 0x7f) return writer.writeByte(' ');
+    var utf8: [4]u8 = undefined;
+    const n = std.unicode.utf8Encode(ch, &utf8) catch return writer.writeAll("\u{FFFD}");
+    try writer.writeAll(utf8[0..n]);
+}
+
+test "headless frame keeps blank columns" {
+    var term = try terminal.Terminal.initBuffer(std.testing.allocator, 2, 12, 4);
+    defer term.deinit();
+    try term.processOutput("echo HELLO_DT");
+
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    try writeHeadlessFrame(&term, out.writer());
+
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "echo HELLO_D") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "echoHELLO") == null);
 }
 
 test "EventLoop exists" {

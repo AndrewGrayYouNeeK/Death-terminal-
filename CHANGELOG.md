@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Headless redraw keeps blank cells, so spaces and column alignment survive (`echo HELLO_DT` no longer renders as `echoHELLO_DT`)
+- Event loop exits cleanly when the shell exits (PTY hang-up / EIO) instead of spinning
+- `--no-ai` no longer prints the AI stub initialization message
+
+### Removed
+- `vercel.json` / `.vercelignore` (native app, no web deployment)
+- Unused `src/renderer/swapchain.zig` stub (the real swapchain lives in `gpu_present.zig`)
+
+### Added
+- `src/terminal/grid_test.zig` grid tests (ported from PR #19) and a headless-frame test
+
 ### Added
 - Wayland window backend (`xdg-shell` + xkbcommon) with Vulkan `VK_KHR_wayland_surface` and SHM fallback
 - Win32 window backend with Vulkan `VK_KHR_win32_surface` and GDI fallback

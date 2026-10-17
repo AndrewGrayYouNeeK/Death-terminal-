@@ -1,5 +1,8 @@
 -- DeathTerminal Default Configuration
 -- This is an example configuration file for DeathTerminal
+-- NOTE: Lua config is not executed yet (planned). Today DeathTerminal reads
+-- ~/.config/death-terminal/config.txt with flat `key = value` lines:
+--   rows = 24 / cols = 80 / ai_enabled = true / ai_endpoint = "..." / scrollback_lines = 10000
 -- Place this file in one of the following locations:
 --   Linux/macOS: ~/.config/death-terminal/config.lua
 --   Windows: %APPDATA%/death-terminal/config.lua

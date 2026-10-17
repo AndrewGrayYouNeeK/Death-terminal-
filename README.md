@@ -1,156 +1,182 @@
-DeathTerminal 💀
+# DeathTerminal 💀
 
-A brutalist, GPU-accelerated terminal with AI-native command workflows
+**A brutalist, GPU-accelerated terminal with AI-native command workflows.**
 
 Fast. Minimal. Unapologetically powerful.
 
-⚡ Why DeathTerminal?
+## ⚡ Why DeathTerminal?
 
 Most terminals are either:
 
-fast but dumb (like Alacritty), or
-smart but heavy (like Warp)
+- fast but dumb (like Alacritty), or
+- smart but heavy (like Warp)
 
 DeathTerminal aims for both:
 
-low-level performance
-AI-native workflows
-zero visual fluff
-🚀 Demo
+- low-level performance
+- AI-native workflows
+- zero visual fluff
+
+## 🚀 Demo
+
+```
 $ docker run -
-# → AI suggests:
+# → AI suggests (ghost text, Tab to accept):
 docker run -it --rm ubuntu:latest /bin/bash
+
 $ ssh prod
 # → Auto-expands with config + port forwarding
+```
 
 Context-aware, not just history-based.
 
-🔥 Core Features
-🤖 AI-Native Autocomplete
-Context-aware command suggestions (not just history)
-gRPC-based engine (local or remote models)
-Works with shell state, not just text
-⚡ GPU Rendering (Vulkan)
-Powered by Vulkan
-Smooth under extreme output (logs, builds, streaming data)
-Designed for future effects + massive scrollback
-🔐 Built-in SSH + Tunneling
-Persistent SSH profiles
-Port forwarding made first-class
-Cross-platform (no config hacks)
-🔧 Lua Scripting Engine
-Powered by Lua
-Full control over config, hooks, and automation
-Plugin system (planned)
-🎯 Brutalist Design
-No animations
-No distractions
-Maximum contrast, maximum signal
-🧠 Philosophy
+## 🔥 Core Features
 
-DeathTerminal is built on a few principles:
+### 🤖 AI-Native Autocomplete *(planned)*
+- Context-aware command suggestions (not just history)
+- OpenAI-compatible HTTP/JSON endpoint — local Ollama by default, any compatible server configurable
+- Inline ghost-text suggestions, accepted with Tab
+- Works with shell state, not just text
 
-Speed is non-negotiable
-The terminal is a programming environment, not just a shell
-AI should assist, not interrupt
-Every feature must justify its complexity
-🏗 Tech Stack
-Layer	Tech
-Core	Zig
-Rendering	Vulkan
-AI Backend	gRPC
-Scripting	Lua
-⚡ Quick Start
-Option 1 — Build from source
+### ⚡ GPU Rendering (Vulkan)
+- Vulkan swapchain + SPIR-V glyph pipeline, with a software fallback
+- Smooth under extreme output (logs, builds, streaming data)
+- Designed for future effects + massive scrollback
+
+### 🔐 Built-in SSH + Tunneling *(planned)*
+- libssh2-based connections with persistent profiles
+- Port forwarding made first-class
+- Reads your existing `~/.ssh/config`
+
+### 🔧 Lua Scripting Engine *(planned)*
+- Lua 5.4 for config, hooks, and automation
+- Plugin system
+
+### 🎯 Brutalist Design
+- No animations
+- No distractions
+- Maximum contrast, maximum signal
+- Optional "retro" 8×8 bitmap font alongside real fonts
+
+## 🧠 Philosophy
+
+- Speed is non-negotiable
+- The terminal is a programming environment, not just a shell
+- AI should assist, not interrupt
+- Every feature must justify its complexity
+
+## 🏗 Tech Stack
+
+| Layer      | Tech                                   |
+|------------|----------------------------------------|
+| Core       | Zig 0.13                               |
+| Rendering  | Vulkan (software fallback)             |
+| Windowing  | X11, Wayland, Win32                    |
+| AI Backend | OpenAI-compatible HTTP/JSON (Ollama)   |
+| SSH        | libssh2                                |
+| Scripting  | Lua 5.4                                |
+
+## ⚡ Quick Start
+
+```bash
 git clone https://github.com/AndrewGrayYouNeeK/Death-terminal-.git
 cd Death-terminal-
 
-zig build run
-Requirements
-Zig 0.13+
-Vulkan SDK
-Lua 5.4
-🧪 Current Status
+zig build run -- --gui        # native window
+zig build run -- --headless   # render into the current terminal
+zig build test                # unit tests
+```
 
-🚧 Actively in development
+### Requirements
 
-Done
-Project structure
-Build system
-Core module layout
-PTY + terminal emulation
-Vulkan loader + instance/device init
-X11/Wayland/Win32 window + GPU text pipeline + HiDPI
-In Progress
-AI integration
-Next Up
-gRPC autocomplete
-🧩 Architecture (Simplified)
-PTY ↔ Terminal Core ↔ Renderer (Vulkan)
+- Zig 0.13.x
+- Vulkan loader + headers (`libvulkan-dev`; `mesa-vulkan-drivers` for a software GPU)
+- Linux: `libx11-dev`, `libwayland-dev`, `wayland-protocols`, `libxkbcommon-dev`
+
+See [QUICKSTART.md](QUICKSTART.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for details.
+
+## 🧪 Current Status
+
+🚧 Actively in development — not yet a daily-driver terminal.
+
+**Done**
+- PTY + shell spawning (Unix), ANSI/VT100 parser (cursor movement, erase, 16 colors, bold/italic/underline, title)
+- Scrollback storage
+- Event loop with headless and native GUI modes, signal handling, clean exit when the shell exits
+- Vulkan loader, instance/device, swapchain present, SPIR-V glyph pipeline, software fallback
+- X11 / Wayland / Win32 windows, resize, HiDPI scaling
+- CI (build + unit tests)
+
+**Not done yet** (tracked in [ISSUES.md](ISSUES.md))
+- UTF-8 / wide characters
+- Full-screen app support (scroll regions, alternate screen, insert/delete, 256/true color, mouse, bracketed paste)
+- Real fonts, selection + copy/paste, scrollback navigation
+- AI suggestions, SSH, Lua, tabs/splits, packaging, macOS
+
+## 🧩 Architecture (Simplified)
+
+```
+PTY ↔ Terminal Core ↔ Renderer (Vulkan / software)
            ↓
-        AI Engine (gRPC)
+        AI Engine (HTTP/JSON, async)
            ↓
         Lua Scripting
-Terminal correctness comes first
-Rendering is fully decoupled
-AI is optional and async
-🧠 AI Design (More Detail)
+```
 
-Unlike traditional autocomplete:
+- Terminal correctness comes first
+- Rendering is fully decoupled
+- AI is optional and async
 
-Not just command history
-Understands:
-previous commands
-working directory
-partial input
+## 🧠 AI Design
 
-Supports:
+Unlike traditional autocomplete, suggestions understand:
 
-local models (offline)
-remote inference servers
-🔐 Security
-No credential logging
-SSH handled via standard crypto libraries
-AI context is sanitized before sending
-🛣 Roadmap
-Phase 1 — Terminal Core
-PTY + process handling
-ANSI/VT100 parser
-Phase 2 — Rendering
-Vulkan text pipeline
-Glyph atlas + batching
-Phase 3 — AI
-Suggestion engine
-Context pipeline
-Phase 4 — SSH
-Connection manager
-Port forwarding UX
-Phase 5 — Scripting
-Lua API
-Plugin system
-🤝 Contributing
+- previous commands
+- working directory
+- partial input
 
-Looking for contributors interested in:
+Works with local models (offline, e.g. Ollama) or remote OpenAI-compatible inference servers.
 
-terminal emulation
-low-level graphics
-systems programming
-AI tooling
-git checkout -b feature/your-feature
-❗ Non-Goals
-Beginner-friendly UX
-Feature bloat
-Replacing your shell
-🙏 Inspiration
-Alacritty
-Warp
-Ghostty
-📜 License
+## 🔐 Security
+
+- No credential logging
+- SSH handled via libssh2
+- AI context is sanitized before sending
+
+## 🛣 Roadmap
+
+1. **Cleanup** — headless redraw fix, stale code/docs removed
+2. **UTF-8** — codepoint cells, wide chars, replacement glyphs
+3. **Full-screen apps** — scroll regions, alt screen, insert/delete, 256/true color, mouse, bracketed paste
+4. **Fonts** — real font rendering + optional retro 8×8 bitmap font
+5. **Selection & scrollback** — copy/paste, scrollback navigation, search
+6. **Performance** — frame sync, damage tracking, benchmarks
+7. **Lua config** — real Lua 5.4 for colors, keybindings, fonts
+8. **AI** — ghost-text suggestions via OpenAI-compatible HTTP/JSON
+9. **SSH** — libssh2 connections, profiles, port forwarding
+10. **Plugins + tabs/splits**
+11. **Packaging** — Linux packages, Windows, macOS
+
+## 🤝 Contributing
+
+Looking for contributors interested in terminal emulation, low-level graphics, systems programming, and AI tooling. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## ❗ Non-Goals
+
+- Beginner-friendly UX
+- Feature bloat
+- Replacing your shell
+
+## 🙏 Inspiration
+
+Alacritty · Warp · Ghostty
+
+## 📜 License
 
 MIT
 
-💀 Final Word
+## 💀 Final Word
 
-DeathTerminal isn’t trying to be everything.
+DeathTerminal isn't trying to be everything.
 
-It’s trying to be the terminal you don’t outgrow.
+It's trying to be the terminal you don't outgrow.
