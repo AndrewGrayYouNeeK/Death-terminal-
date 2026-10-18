@@ -104,7 +104,7 @@ See [QUICKSTART.md](QUICKSTART.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for deta
 
 **Done**
 - PTY + shell spawning (Unix), UTF-8 decoding with wide (2-column) and combining characters, xterm-compatible VT emulation (scroll regions, alternate screen, insert/delete, 256/true color, mouse, bracketed paste, focus events, DA/DSR replies, titles, hyperlinks — vim, less, htop and tmux work; see [docs/VT_SUPPORT.md](docs/VT_SUPPORT.md))
-- Scrollback storage
+- Selection (word/line/block, wide-char aware), CLIPBOARD + PRIMARY copy/paste with bracketed paste and a multi-line paste prompt, OSC 52, scrollback viewport with scrollbar, search overlay (regex optional), Ctrl+click URLs and OSC 8 links (see [docs/SELECTION.md](docs/SELECTION.md))
 - Event loop with headless and native GUI modes, signal handling, clean exit when the shell exits
 - Vulkan loader, instance/device, swapchain present, SPIR-V glyph pipeline, software fallback
 - Real fonts: FreeType/HarfBuzz/fontconfig, bold/italic faces, CJK + colour emoji fallback, procedural box drawing, underline styles/colours, runtime zoom, optional retro 8×8 font (see [docs/FONTS.md](docs/FONTS.md))
@@ -112,7 +112,6 @@ See [QUICKSTART.md](QUICKSTART.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for deta
 - CI (build + unit tests)
 
 **Not done yet** (tracked in [ISSUES.md](ISSUES.md))
-- Selection + copy/paste (so bracketed paste has no GUI trigger yet), scrollback navigation
 - AI suggestions, SSH, Lua, tabs/splits, packaging, macOS
 
 ## 🧩 Architecture (Simplified)

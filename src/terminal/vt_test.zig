@@ -703,3 +703,44 @@ test "SGR 58 sets underline colour and 4:3 selects curly" {
     try t.expectEqual(color.none, term.buffer[1].underline_color);
     try t.expect(!term.buffer[2].underline);
 }
+
+test "OSC 52 set and query are queued for the front end" {
+    var term = try Terminal.initBuffer(std.testing.allocator, 2, 10, 4);
+    defer term.deinit();
+    try term.processOutput("\x1b]52;c;aGVsbG8=\x07\x1b]52;p;?\x1b\\\x1b]52;;d29ybGQ\x07\x1b]52;c;!!bad\x07");
+    const ops = try term.takeClipboardOps();
+    defer term.freeClipboardOps(ops);
+    try std.testing.expectEqual(@as(usize, 3), ops.len);
+    try std.testing.expectEqualStrings("hello", ops[0].set.data);
+    try std.testing.expect(ops[0].set.targets.clipboard);
+    try std.testing.expect(ops[1].query.primary);
+    try std.testing.expectEqualStrings("world", ops[2].set.data);
+    try std.testing.expect(ops[2].set.targets.clipboard);
+}
+
+test "soft wrap is recorded and absolute lines survive scrolling" {
+    var term = try Terminal.initBuffer(std.testing.allocator, 2, 4, 10);
+    defer term.deinit();
+    try term.processOutput("abcdef\r\nxy\r\nzz");
+    // "abcd" wrapped into "ef", then two more lines scrolled it up.
+    try std.testing.expectEqual(@as(i64, 2), term.screenTop());
+    try std.testing.expectEqual(@as(i64, 0), term.historyTop());
+    const l0 = term.lineAt(0).?;
+    try std.testing.expect(l0[3].soft_wrap);
+    try std.testing.expectEqual(@as(u21, 'a'), l0[0].char);
+    try std.testing.expect(!term.lineAt(1).?[3].soft_wrap);
+    try std.testing.expectEqual(@as(u21, 'x'), term.lineAt(2).?[0].char);
+    try std.testing.expect(term.lineAt(4) == null);
+    try std.testing.expect(term.lineAt(-1) == null);
+}
+
+test "scrollback ring keeps the newest lines in order" {
+    var term = try Terminal.initBuffer(std.testing.allocator, 1, 3, 3);
+    defer term.deinit();
+    try term.processOutput("1\r\n2\r\n3\r\n4\r\n5\r\n6");
+    try std.testing.expectEqual(@as(usize, 3), term.scrollback.len());
+    try std.testing.expectEqual(@as(i64, 2), term.historyTop());
+    try std.testing.expectEqual(@as(u21, '3'), term.lineAt(2).?[0].char);
+    try std.testing.expectEqual(@as(u21, '5'), term.lineAt(4).?[0].char);
+    try std.testing.expectEqual(@as(u21, '6'), term.lineAt(5).?[0].char);
+}

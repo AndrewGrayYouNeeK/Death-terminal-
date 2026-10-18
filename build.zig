@@ -17,6 +17,10 @@ fn addPlatform(b: *std.Build, step: *std.Build.Step.Compile, target: std.Build.R
             .flags = &.{ "-std=c99", "-DWL_EXPORT=" },
         });
         step.addCSourceFile(.{
+            .file = b.path("src/platform/wayland/primary-selection-protocol.c"),
+            .flags = &.{ "-std=c99", "-DWL_EXPORT=" },
+        });
+        step.addCSourceFile(.{
             .file = b.path("src/platform/wayland/xdg_shim.c"),
             .flags = &.{ "-std=c99", "-DWL_EXPORT=" },
         });

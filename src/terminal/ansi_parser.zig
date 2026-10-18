@@ -23,7 +23,7 @@ pub const ParserState = enum {
 
 pub const MAX_PARAMS = 32;
 /// OSC payloads longer than this are dropped (titles, hyperlinks, ...).
-pub const MAX_OSC_LEN = 8192;
+pub const MAX_OSC_LEN = 1 << 20; // room for OSC 52 clipboard payloads
 
 /// CSI parameters. Sub-parameters (`38:2::r:g:b`) are stored inline and
 /// flagged in `colon_mask` (bit i set = param i followed a ':').

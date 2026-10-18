@@ -3,10 +3,16 @@ const terminal = @import("terminal.zig");
 const Cell = terminal.Cell;
 
 /// Scrollback stores lines that have scrolled off the top of the viewport.
+/// Once full it is a ring: the oldest line is recycled in O(1).
 pub const Scrollback = struct {
     allocator: std.mem.Allocator,
     lines: std.ArrayList([]Cell),
     max_lines: usize,
+    /// Ring start (index of the oldest line) once `lines` is full.
+    head: usize = 0,
+    /// Lines ever pushed. Absolute line numbers (selection, search) are
+    /// based on this, so they stay valid while history scrolls.
+    total: u64 = 0,
 
     pub fn init(allocator: std.mem.Allocator, max_lines: usize) Scrollback {
         return Scrollback{
@@ -25,14 +31,26 @@ pub const Scrollback = struct {
 
     /// Push a full row of cells into scrollback history.
     pub fn pushLine(self: *Scrollback, line: []const Cell) !void {
-        const copy = try self.allocator.alloc(Cell, line.len);
-        @memcpy(copy, line);
-        try self.lines.append(copy);
-
-        while (self.lines.items.len > self.max_lines) {
-            const oldest = self.lines.orderedRemove(0);
-            self.allocator.free(oldest);
+        if (self.max_lines == 0) {
+            self.total += 1;
+            return;
         }
+        if (self.lines.items.len < self.max_lines) {
+            const copy = try self.allocator.alloc(Cell, line.len);
+            @memcpy(copy, line);
+            try self.lines.append(copy);
+        } else {
+            // Recycle the oldest slot.
+            const slot = &self.lines.items[self.head];
+            if (slot.len != line.len) {
+                const copy = try self.allocator.alloc(Cell, line.len);
+                self.allocator.free(slot.*);
+                slot.* = copy;
+            }
+            @memcpy(slot.*, line);
+            self.head = (self.head + 1) % self.lines.items.len;
+        }
+        self.total += 1;
     }
 
     pub fn len(self: *const Scrollback) usize {
@@ -41,8 +59,9 @@ pub const Scrollback = struct {
 
     /// Get a line by index, where 0 is the oldest line.
     pub fn getLine(self: *const Scrollback, index: usize) ?[]const Cell {
-        if (index >= self.lines.items.len) return null;
-        return self.lines.items[index];
+        const n = self.lines.items.len;
+        if (index >= n) return null;
+        return self.lines.items[(self.head + index) % n];
     }
 
     pub fn clear(self: *Scrollback) void {
@@ -50,6 +69,7 @@ pub const Scrollback = struct {
             self.allocator.free(line);
         }
         self.lines.clearRetainingCapacity();
+        self.head = 0;
     }
 
     /// Write a scrollback line as UTF-8 (wide-char spacers skipped).
@@ -66,7 +86,7 @@ pub const Scrollback = struct {
 
         var buf = std.ArrayList(u8).init(allocator);
         defer buf.deinit();
-        for (self.lines.items, 0..) |_, i| {
+        for (0..self.lines.items.len) |i| {
             buf.clearRetainingCapacity();
             try self.lineText(i, buf.writer());
             if (std.mem.indexOf(u8, buf.items, query) != null) {

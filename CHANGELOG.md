@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Mouse selection: drag, double-click word, triple-click line, Shift+click extend, Ctrl+Alt/Alt+drag block; wide-char aware, joins soft-wrapped rows, anchored to absolute lines so it survives scrolling; Shift overrides application mouse reporting
+- Clipboard: CLIPBOARD and PRIMARY on X11 (incl. INCR receive) and Wayland (data-device + primary-selection-unstable-v1), CF_UNICODETEXT on Win32; `copy_on_select`; paste via Ctrl+Shift+V, Shift+Insert, middle-click with bracketed paste; multi-line paste prompt (`paste_confirm`)
+- OSC 52 set and (opt-in, `osc52 = read-write`) query
+- Scrollback viewport: Shift+PgUp/PgDn, Shift+Home/End, Ctrl+Shift+Up/Down, mouse wheel on the normal screen, optional scrollbar
+- Search overlay (Ctrl+Shift+F): incremental highlight, older/newer, case toggle, POSIX regex
+- Ctrl+click opens URLs and OSC 8 links via `url_open_command` (default `xdg-open`, no shell)
+- Configurable keybindings (`keybind = chord=action`) and selection colours; `docs/SELECTION.md`
+- Scrollback is a ring buffer with O(1) line recycling
 - Real font rendering (Linux): FreeType rasterisation, HarfBuzz shaping with ligatures, fontconfig family lookup and per-codepoint fallback (CJK, colour emoji via Noto Color Emoji, monochrome symbols)
 - Bundled JetBrains Mono (OFL 1.1) Regular/Bold/Italic/BoldItalic; synthetic bold/oblique when a family lacks a face
 - Dynamic glyph atlas shared by the Vulkan and software renderers: rasterised on demand, shelf-packed, grows 512→2048, reset + frame rebuild when full; dirty-rect GPU uploads
@@ -28,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `src/terminal/vt_test.zig` emulation tests, `tools/headless_drive.py`, `docs/VT_SUPPORT.md`
 
 ### Fixed
+- Headless mode puts the controlling tty in raw mode, so Ctrl+C reaches the shell instead of quitting DeathTerminal; the tty is restored on exit
 - Ctrl+C in the GUI is sent to the shell (0x03) instead of closing the window
 - The shell starts with default signal dispositions and an empty mask, so Ctrl+C works even when DeathTerminal was launched with SIGINT ignored
 - `ESC[m` resets attributes; `ESC ( B` no longer prints `B`; DCS/APC/PM/SOS strings are swallowed; ST-terminated OSC works; empty/zero CSI params default correctly; huge params saturate; `38;5;n` uses the full 256 palette; private-marker CSI (e.g. XTMODKEYS `CSI > 4 ; 1 m`) is no longer treated as SGR; ED 2 no longer homes the cursor (xterm behaviour)

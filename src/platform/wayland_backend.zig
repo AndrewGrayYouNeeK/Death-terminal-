@@ -9,6 +9,7 @@ const c = if (builtin.os.tag == .linux) @cImport({
     @cInclude("wayland-client.h");
     @cInclude("xkbcommon/xkbcommon.h");
     @cInclude("xdg_shim.h");
+    @cInclude("primary-selection-client-protocol.h");
 }) else struct {};
 
 pub const State = struct {
@@ -49,6 +50,20 @@ pub const State = struct {
     shm_buffer: if (builtin.os.tag == .linux) ?*c.wl_buffer else ?*anyopaque = null,
     shm_w: u32 = 0,
     shm_h: u32 = 0,
+    // Clipboard (wl_data_device) and primary selection (zwp_primary_selection_v1).
+    ddm: if (builtin.os.tag == .linux) ?*c.wl_data_device_manager else ?*anyopaque = null,
+    data_device: if (builtin.os.tag == .linux) ?*c.wl_data_device else ?*anyopaque = null,
+    psm: if (builtin.os.tag == .linux) ?*c.zwp_primary_selection_device_manager_v1 else ?*anyopaque = null,
+    primary_device: if (builtin.os.tag == .linux) ?*c.zwp_primary_selection_device_v1 else ?*anyopaque = null,
+    clip_offer: if (builtin.os.tag == .linux) ?*c.wl_data_offer else ?*anyopaque = null,
+    primary_offer: if (builtin.os.tag == .linux) ?*c.zwp_primary_selection_offer_v1 else ?*anyopaque = null,
+    clip_source: if (builtin.os.tag == .linux) ?*c.wl_data_source else ?*anyopaque = null,
+    primary_source: if (builtin.os.tag == .linux) ?*c.zwp_primary_selection_source_v1 else ?*anyopaque = null,
+    /// Text we serve for [clipboard, primary].
+    owned: [2]?[]u8 = .{ null, null },
+    /// Serial of the latest input event (needed to set a selection).
+    last_serial: u32 = 0,
+    paste_buf: std.ArrayListUnmanaged(u8) = .{},
 };
 
 pub fn open(st: *State, allocator: std.mem.Allocator, title: []const u8, width: u32, height: u32) !void {
@@ -71,6 +86,14 @@ pub fn connectionFd(st: *const State) ?posix.fd_t {
 pub fn poll(st: *State) Event {
     if (builtin.os.tag == .linux) return Linux.poll(st);
     return .none;
+}
+
+pub fn setSelection(st: *State, target: events.ClipTarget, text: []const u8) void {
+    if (builtin.os.tag == .linux) Linux.setSelection(st, target, text);
+}
+
+pub fn requestSelection(st: *State, target: events.ClipTarget, purpose: events.PastePurpose) void {
+    if (builtin.os.tag == .linux) Linux.requestSelection(st, target, purpose);
 }
 
 pub fn setTitle(st: *State, title: []const u8) void {
@@ -168,6 +191,7 @@ const Linux = if (builtin.os.tag == .linux) struct {
 
         if (st.seat != null) {
             _ = c.wl_seat_add_listener(st.seat, &seat_listener, st);
+            setupSelections(st);
         }
         if (st.output != null) {
             _ = c.wl_output_add_listener(st.output, &output_listener, st);
@@ -186,6 +210,19 @@ const Linux = if (builtin.os.tag == .linux) struct {
 
     fn destroy(st: *State) void {
         destroyShm(st);
+        for (&st.owned) |*o| if (o.*) |t| {
+            st.allocator.free(t);
+            o.* = null;
+        };
+        st.paste_buf.deinit(st.allocator);
+        if (st.clip_source) |src| c.wl_data_source_destroy(src);
+        if (st.primary_source) |src| c.zwp_primary_selection_source_v1_destroy(src);
+        if (st.clip_offer) |o| c.wl_data_offer_destroy(o);
+        if (st.primary_offer) |o| c.zwp_primary_selection_offer_v1_destroy(o);
+        if (st.data_device) |d| c.wl_data_device_release(d);
+        if (st.primary_device) |d| c.zwp_primary_selection_device_v1_destroy(d);
+        if (st.ddm) |m| c.wl_data_device_manager_destroy(m);
+        if (st.psm) |m| c.zwp_primary_selection_device_manager_v1_destroy(m);
         if (st.xkb_state) |s| c.xkb_state_unref(s);
         if (st.xkb_keymap) |k| c.xkb_keymap_unref(k);
         if (st.xkb_ctx) |ctx| c.xkb_context_unref(ctx);
@@ -296,6 +333,10 @@ const Linux = if (builtin.os.tag == .linux) struct {
             st.seat = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_seat_interface, @min(version, 4)));
         } else if (std.mem.eql(u8, iface, "wl_output") and st.output == null) {
             st.output = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_output_interface, @min(version, 2)));
+        } else if (std.mem.eql(u8, iface, "wl_data_device_manager") and st.ddm == null) {
+            st.ddm = @ptrCast(c.wl_registry_bind(registry, name, &c.wl_data_device_manager_interface, @min(version, 3)));
+        } else if (std.mem.eql(u8, iface, "zwp_primary_selection_device_manager_v1") and st.psm == null) {
+            st.psm = @ptrCast(c.wl_registry_bind(registry, name, &c.zwp_primary_selection_device_manager_v1_interface, 1));
         } else if (std.mem.eql(u8, iface, "xdg_wm_base") and st.xdg_base == null) {
             st.xdg_base = @ptrCast(c.dt_xdg_bind(registry, name, 1));
         }
@@ -385,14 +426,15 @@ const Linux = if (builtin.os.tag == .linux) struct {
         st.queue.pushFocus(false);
     }
 
-    fn keyboardKey(data: ?*anyopaque, _: ?*c.wl_keyboard, _: u32, _: u32, key: u32, state: u32) callconv(.C) void {
+    fn keyboardKey(data: ?*anyopaque, _: ?*c.wl_keyboard, serial: u32, _: u32, key: u32, state: u32) callconv(.C) void {
         const st: *State = @ptrCast(@alignCast(data.?));
         if (state != c.WL_KEYBOARD_KEY_STATE_PRESSED) return;
+        st.last_serial = serial;
         const xkb_key = key + 8;
         const xs = st.xkb_state orelse return;
         const sym = c.xkb_state_key_get_one_sym(xs, xkb_key);
-        if (events.zoomForKeysym(sym, st.mods.ctrl)) |z| {
-            st.queue.pushZoom(z);
+        if (events.matchBinding(sym, st.mods)) |a| {
+            st.queue.pushAction(a);
             return;
         }
         if (events.keysymToKey(sym)) |k| {
@@ -446,8 +488,9 @@ const Linux = if (builtin.os.tag == .linux) struct {
         st.queue.pushMouse(.{ .action = .motion, .button = st.pointer_held, .x = x, .y = y, .mods = st.mods });
     }
 
-    fn pointerButton(data: ?*anyopaque, _: ?*c.wl_pointer, _: u32, _: u32, button: u32, state: u32) callconv(.C) void {
+    fn pointerButton(data: ?*anyopaque, _: ?*c.wl_pointer, serial: u32, _: u32, button: u32, state: u32) callconv(.C) void {
         const st: *State = @ptrCast(@alignCast(data.?));
+        st.last_serial = serial;
         const b: input.MouseButton = switch (button) {
             0x110 => .left, // BTN_LEFT
             0x111 => .right, // BTN_RIGHT
@@ -476,6 +519,176 @@ const Linux = if (builtin.os.tag == .linux) struct {
     }
 
     fn keyboardRepeat(_: ?*anyopaque, _: ?*c.wl_keyboard, _: i32, _: i32) callconv(.C) void {}
+
+    // -------------------------------------------------------- selections
+
+    const text_mimes = [_][*:0]const u8{ "text/plain;charset=utf-8", "UTF8_STRING", "TEXT", "STRING", "text/plain" };
+
+    const data_device_listener = c.wl_data_device_listener{
+        .data_offer = ddOffer,
+        .enter = ddEnter,
+        .leave = ddLeave,
+        .motion = ddMotion,
+        .drop = ddDrop,
+        .selection = ddSelection,
+    };
+    const primary_device_listener = c.zwp_primary_selection_device_v1_listener{
+        .data_offer = pdOffer,
+        .selection = pdSelection,
+    };
+    const data_source_listener = blk: {
+        var l = std.mem.zeroes(c.wl_data_source_listener);
+        l.target = dsTarget;
+        l.send = dsSend;
+        l.cancelled = dsCancelled;
+        break :blk l;
+    };
+    const primary_source_listener = c.zwp_primary_selection_source_v1_listener{
+        .send = psSend,
+        .cancelled = psCancelled,
+    };
+
+    fn setupSelections(st: *State) void {
+        const seat = st.seat orelse return;
+        if (st.ddm) |m| {
+            st.data_device = c.wl_data_device_manager_get_data_device(m, seat);
+            if (st.data_device) |d| _ = c.wl_data_device_add_listener(d, &data_device_listener, st);
+        }
+        if (st.psm) |m| {
+            st.primary_device = c.zwp_primary_selection_device_manager_v1_get_device(m, seat);
+            if (st.primary_device) |d| _ = c.zwp_primary_selection_device_v1_add_listener(d, &primary_device_listener, st);
+        }
+    }
+
+    fn ddOffer(_: ?*anyopaque, _: ?*c.wl_data_device, _: ?*c.wl_data_offer) callconv(.C) void {}
+    fn ddEnter(_: ?*anyopaque, _: ?*c.wl_data_device, _: u32, _: ?*c.wl_surface, _: c.wl_fixed_t, _: c.wl_fixed_t, offer: ?*c.wl_data_offer) callconv(.C) void {
+        // No drag-and-drop support: drop the offer.
+        if (offer) |o| c.wl_data_offer_destroy(o);
+    }
+    fn ddLeave(_: ?*anyopaque, _: ?*c.wl_data_device) callconv(.C) void {}
+    fn ddMotion(_: ?*anyopaque, _: ?*c.wl_data_device, _: u32, _: c.wl_fixed_t, _: c.wl_fixed_t) callconv(.C) void {}
+    fn ddDrop(_: ?*anyopaque, _: ?*c.wl_data_device) callconv(.C) void {}
+    fn ddSelection(data: ?*anyopaque, _: ?*c.wl_data_device, offer: ?*c.wl_data_offer) callconv(.C) void {
+        const st: *State = @ptrCast(@alignCast(data.?));
+        if (st.clip_offer) |old| c.wl_data_offer_destroy(old);
+        st.clip_offer = offer;
+    }
+    fn pdOffer(_: ?*anyopaque, _: ?*c.zwp_primary_selection_device_v1, _: ?*c.zwp_primary_selection_offer_v1) callconv(.C) void {}
+    fn pdSelection(data: ?*anyopaque, _: ?*c.zwp_primary_selection_device_v1, offer: ?*c.zwp_primary_selection_offer_v1) callconv(.C) void {
+        const st: *State = @ptrCast(@alignCast(data.?));
+        if (st.primary_offer) |old| c.zwp_primary_selection_offer_v1_destroy(old);
+        st.primary_offer = offer;
+    }
+
+    fn writeOwned(st: *State, target: events.ClipTarget, fd: i32) void {
+        defer posix.close(fd);
+        const text = st.owned[@intFromEnum(target)] orelse return;
+        var off: usize = 0;
+        while (off < text.len) {
+            const n = posix.write(fd, text[off..]) catch return;
+            if (n == 0) return;
+            off += n;
+        }
+    }
+
+    fn dsTarget(_: ?*anyopaque, _: ?*c.wl_data_source, _: ?[*:0]const u8) callconv(.C) void {}
+    fn dsSend(data: ?*anyopaque, _: ?*c.wl_data_source, _: ?[*:0]const u8, fd: i32) callconv(.C) void {
+        writeOwned(@ptrCast(@alignCast(data.?)), .clipboard, fd);
+    }
+    fn dsCancelled(data: ?*anyopaque, src: ?*c.wl_data_source) callconv(.C) void {
+        const st: *State = @ptrCast(@alignCast(data.?));
+        if (src) |s| c.wl_data_source_destroy(s);
+        if (st.clip_source == src) {
+            st.clip_source = null;
+            if (st.owned[0]) |t| st.allocator.free(t);
+            st.owned[0] = null;
+        }
+    }
+    fn psSend(data: ?*anyopaque, _: ?*c.zwp_primary_selection_source_v1, _: ?[*:0]const u8, fd: i32) callconv(.C) void {
+        writeOwned(@ptrCast(@alignCast(data.?)), .primary, fd);
+    }
+    fn psCancelled(data: ?*anyopaque, src: ?*c.zwp_primary_selection_source_v1) callconv(.C) void {
+        const st: *State = @ptrCast(@alignCast(data.?));
+        if (src) |s| c.zwp_primary_selection_source_v1_destroy(s);
+        if (st.primary_source == src) {
+            st.primary_source = null;
+            if (st.owned[1]) |t| st.allocator.free(t);
+            st.owned[1] = null;
+        }
+    }
+
+    fn setSelection(st: *State, target: events.ClipTarget, text: []const u8) void {
+        const copy = st.allocator.dupe(u8, text) catch return;
+        const slot = &st.owned[@intFromEnum(target)];
+        if (slot.*) |old| st.allocator.free(old);
+        slot.* = copy;
+        switch (target) {
+            .clipboard => {
+                const m = st.ddm orelse return;
+                const dev = st.data_device orelse return;
+                const src = c.wl_data_device_manager_create_data_source(m) orelse return;
+                for (text_mimes) |mime| c.wl_data_source_offer(src, mime);
+                _ = c.wl_data_source_add_listener(src, &data_source_listener, st);
+                c.wl_data_device_set_selection(dev, src, st.last_serial);
+                // The old source gets `cancelled` and frees itself.
+                st.clip_source = src;
+            },
+            .primary => {
+                const m = st.psm orelse return; // no primary support: kept in-process
+                const dev = st.primary_device orelse return;
+                const src = c.zwp_primary_selection_device_manager_v1_create_source(m) orelse return;
+                for (text_mimes) |mime| c.zwp_primary_selection_source_v1_offer(src, mime);
+                _ = c.zwp_primary_selection_source_v1_add_listener(src, &primary_source_listener, st);
+                c.zwp_primary_selection_device_v1_set_selection(dev, src, st.last_serial);
+                st.primary_source = src;
+            },
+        }
+        if (st.display) |d| _ = c.wl_display_flush(d);
+    }
+
+    fn requestSelection(st: *State, target: events.ClipTarget, purpose: events.PastePurpose) void {
+        st.paste_buf.clearRetainingCapacity();
+        defer st.queue.pushPaste(st.paste_buf.items, target, purpose);
+        const own_source = switch (target) {
+            .clipboard => st.clip_source != null,
+            .primary => st.primary_source != null or st.psm == null,
+        };
+        if (own_source) {
+            // Reading our own source would deadlock (we'd have to serve
+            // the `send` while blocked here); use the stored text.
+            if (st.owned[@intFromEnum(target)]) |t| st.paste_buf.appendSlice(st.allocator, t) catch {};
+            return;
+        }
+        const fds = posix.pipe2(.{ .CLOEXEC = true }) catch return;
+        defer posix.close(fds[0]);
+        switch (target) {
+            .clipboard => {
+                const offer = st.clip_offer orelse {
+                    posix.close(fds[1]);
+                    return;
+                };
+                c.wl_data_offer_receive(offer, text_mimes[0], fds[1]);
+            },
+            .primary => {
+                const offer = st.primary_offer orelse {
+                    posix.close(fds[1]);
+                    return;
+                };
+                c.zwp_primary_selection_offer_v1_receive(offer, text_mimes[0], fds[1]);
+            },
+        }
+        posix.close(fds[1]);
+        if (st.display) |d| _ = c.wl_display_flush(d);
+        var buf: [4096]u8 = undefined;
+        while (st.paste_buf.items.len < 16 << 20) {
+            var pfd = [_]posix.pollfd{.{ .fd = fds[0], .events = posix.POLL.IN, .revents = 0 }};
+            const ready = posix.poll(&pfd, 1000) catch break;
+            if (ready == 0) break; // source stalled
+            const n = posix.read(fds[0], &buf) catch break;
+            if (n == 0) break;
+            st.paste_buf.appendSlice(st.allocator, buf[0..n]) catch break;
+        }
+    }
 } else struct {};
 
 test "wayland state defaults to inert" {
