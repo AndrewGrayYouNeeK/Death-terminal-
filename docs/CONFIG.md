@@ -109,6 +109,11 @@ config is reloaded.
 | `ssh.keepalive_s` | `30` | Default keepalive interval, 0–3600 (0 = off); profiles can override |
 | `ssh.known_hosts` | `"~/.ssh/known_hosts"` | Host keys file (shared with OpenSSH; appended to, never rewritten) |
 | `status_bar.enabled` | `false` | A one-row status bar under the grid for plugin segments. Ctrl+Shift+B (`toggle_status_bar`) toggles it |
+| `tabs.bar` | `"auto"` | Tab bar: `"auto"` (only with 2+ tabs), `"top"`, `"bottom"`, `"hidden"`. `toggle_tab_bar` flips it. See [TABS.md](TABS.md) |
+| `tabs.confirm_close` | `true` | Ask before closing a pane / tab / the window while a program (not just the shell) runs in it |
+| `tabs.dim_inactive` | `0` | 0–0.9: fade the text of panes without the focus (0 = off) |
+| `tabs.inherit_cwd` | `true` | New tabs and panes start in the focused pane's directory (from OSC 7) |
+| `layout` | `{}` | Tabs to open at startup: a list of `{ title, cwd, command, ssh, focus }` panes or `{ split = "right"\|"down", ratio, panes = {...} }` splits ([TABS.md](TABS.md#startup-layouts)) |
 | `plugins_enabled` | `true` | Load plugins (`--no-plugins` overrides). See [PLUGINS.md](PLUGINS.md) |
 | `plugins_dir` | `""` | Where plugins live. `""` = `$XDG_CONFIG_HOME/death-terminal/plugins`; `~/` is expanded |
 | `plugins` | `{}` | Per plugin: `enabled`, `allow` (permissions), `exec`, `hosts`, `memory_mb` (32), `cpu_ms` (100), `settings` ([PLUGINS.md](PLUGINS.md#configuration)) |
@@ -125,6 +130,17 @@ Actions: `copy`, `paste`, `paste_selection`, `search`, `scroll_page_up`,
 while a suggestion shows), `ai_dismiss` (Esc, likewise), `ai_next` / `ai_prev`
 (Alt+] / Alt+[), `ai_explain` (Ctrl+Shift+A), `ssh_palette` (Ctrl+Shift+S),
 `command_palette` (Ctrl+Shift+P), `toggle_status_bar` (Ctrl+Shift+B). `select_all` is Ctrl+Shift+Alt+A.
+
+Tabs and panes ([TABS.md](TABS.md)): `new_tab` (Ctrl+Shift+T), `close_tab`
+(Ctrl+Shift+Alt+W), `next_tab` / `prev_tab` (Ctrl+PgDn / Ctrl+PgUp, Ctrl+Tab /
+Ctrl+Shift+Tab), `move_tab_left` / `move_tab_right` (Ctrl+Shift+PgUp / PgDn),
+`goto_tab_1` … `goto_tab_9` (Alt+1 … Alt+9), `rename_tab` (Ctrl+Shift+Alt+R),
+`toggle_tab_bar`, `split_right` (Ctrl+Shift+E), `split_down` (Ctrl+Shift+O),
+`close_pane` (Ctrl+Shift+W), `focus_left` / `focus_right` / `focus_up` / `focus_down`
+(Alt+arrows), `next_pane` / `prev_pane`, `resize_left` … `resize_down`
+(Alt+Shift+arrows), `zoom_pane` (Ctrl+Shift+Z), `equalize_panes` (Ctrl+Shift+Alt+E).
+When one doesn't apply (Alt+3 with two tabs, Alt+Left with no pane to the left) the key
+goes to the program as usual.
 
 ## Errors
 

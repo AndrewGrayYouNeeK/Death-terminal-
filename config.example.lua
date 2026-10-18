@@ -133,6 +133,21 @@ config.ssh.keepalive_s = 30          -- seconds; 0 = off
 -- Ctrl+Shift+B toggles it at runtime.
 config.status_bar.enabled = false
 
+-- Tabs and split panes (see docs/TABS.md) ---------------------------------
+config.tabs.bar = "auto"             -- "auto" (shown with 2+ tabs), "top", "bottom", "hidden"
+config.tabs.confirm_close = true     -- ask before closing a pane that runs a program
+config.tabs.dim_inactive = 0         -- 0..0.9: fade the panes that don't have the focus
+config.tabs.inherit_cwd = true       -- new tabs / panes start in the focused pane's directory
+-- Tabs to open at startup (instead of one shell). A pane is { cwd, command,
+-- ssh, focus }; a split is { split = "right" | "down", ratio, panes = {...} }.
+-- config.layout = {
+--   { title = "dev", cwd = "~/src/app", split = "right", ratio = 0.6, panes = {
+--       { command = "vim", focus = true },
+--       { split = "down", panes = { { command = "htop" }, {} } },
+--   } },
+--   { title = "prod", ssh = "work" },
+-- }
+
 -- Plugins (see docs/PLUGINS.md) -------------------------------------------
 -- Plugins live in ~/.config/death-terminal/plugins/<name>/ (manifest.lua +
 -- init.lua). They run sandboxed and get only what you grant here.

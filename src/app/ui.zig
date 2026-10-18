@@ -200,7 +200,7 @@ pub const Ui = struct {
             .open_url => |u| self.allocator.free(u),
             .request_paste => {},
             .palette => |pk| switch (pk) {
-                .open => |n| self.allocator.free(n),
+                .open => |o| self.allocator.free(o.name),
                 else => {},
             },
         };
@@ -509,7 +509,7 @@ pub const Ui = struct {
                 const n = g.alternatives.items.len;
                 g.index = if (a == .ai_next) (g.index + 1) % n else (g.index + n - 1) % n;
             },
-            .none, .zoom_in, .zoom_out, .zoom_reset, .reload_config, .ai_explain, .ssh_palette, .command_palette, .toggle_status_bar, .plugin_binding => return false,
+            else => return false,
         }
         return true;
     }
@@ -635,7 +635,7 @@ pub const Ui = struct {
     /// Special keys while an overlay is open; false = not consumed.
     pub fn handleKey(self: *Ui, term: *const Terminal, key: input.Key, mods: input.Mods) !bool {
         if (self.palette) |*p| {
-            try self.paletteResult(try p.handleKey(key));
+            try self.paletteResult(try p.handleKey(key, mods));
             return true;
         }
         if (self.prompt != null) {
@@ -935,7 +935,7 @@ pub const Ui = struct {
             .none => {},
             .close => self.closePalette(),
             .pick => |pk| {
-                errdefer if (pk == .open) self.allocator.free(pk.open);
+                errdefer if (pk == .open) self.allocator.free(pk.open.name);
                 // Close first: the pick may open another overlay.
                 if (pk != .toggle) self.closePalette();
                 try self.effects.append(.{ .palette = pk });
@@ -1043,7 +1043,7 @@ pub const Ui = struct {
         try list.append(self.allocator, .{ .text = owned, .fg = fg });
     }
 
-    fn drawStatus(self: *const Ui, row: []Cell) void {
+    pub fn drawStatus(self: *const Ui, row: []Cell) void {
         const bg: u32 = 0x202020;
         var base = Cell.init();
         base.bg_color = bg;
@@ -1316,6 +1316,27 @@ pub const Ui = struct {
             out.rows = rows + 1;
         } else out.rows = rows;
         return out;
+    }
+
+    /// Window-level overlays (toasts from `first_row` down, the palette)
+    /// over a whole rows×cols window grid. Returns true when they cover
+    /// the cursor (the palette is open).
+    pub fn drawOverlays(self: *Ui, cells: []Cell, marks: []Mark, rows: u16, cols: u16, first_row: usize) bool {
+        if (self.toasts.items.len > 0) {
+            self.drawToasts(cells, rows, cols, first_row);
+            for (first_row..@min(first_row + self.toasts.items.len, rows)) |r| @memset(marks[r * cols ..][cols -| @max(@as(usize, cols) / 2, 30)..cols], .none);
+        }
+        if (self.palette) |*p| {
+            p.draw(cells, rows, cols);
+            @memset(marks, .none);
+            return true;
+        }
+        return false;
+    }
+
+    /// Anything drawn by `drawOverlays`.
+    pub fn hasOverlays(self: *const Ui) bool {
+        return self.palette != null or self.toasts.items.len > 0;
     }
 
     fn drawBar(self: *Ui, bar: []Cell) !void {

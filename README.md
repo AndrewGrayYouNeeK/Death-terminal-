@@ -57,6 +57,11 @@ Context-aware, not just history-based.
 - Lua 5.4 config with live reload (see [docs/CONFIG.md](docs/CONFIG.md))
 - Sandboxed Lua plugins, each in its own state with memory/CPU limits and only the permissions you grant: hooks for commands (OSC 133), output, cwd, title, bell, focus, keys, SSH and AI suggestions; command palette (Ctrl+Shift+P), keybindings, status bar, toasts, timers, themes; `deathterminal --plugins list|enable|disable` (see [docs/PLUGINS.md](docs/PLUGINS.md))
 
+### 🗂 Tabs + Split Panes
+- Tabs and horizontal/vertical splits, each pane with its own shell, scrollback, selection, search and AI context
+- Themed tab bar with cwd, activity, bell and exit-status markers; drag to reorder, double-click to rename; drag dividers to resize; zoom, equalize, optional dimming of inactive panes
+- New tabs/panes inherit the cwd (OSC 7); SSH profiles open in a tab or split; startup layouts in Lua (see [docs/TABS.md](docs/TABS.md))
+
 ### 🎯 Brutalist Design
 - No animations
 - No distractions
@@ -116,10 +121,11 @@ See [QUICKSTART.md](QUICKSTART.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for deta
 - Lua 5.4 config (`~/.config/death-terminal/config.lua`, vendored Lua, sandboxed): typed options with file:line errors shown in the window, bundled themes, key bindings, shell/env/cwd, live reload on save or Ctrl+Shift+R; `deathterminal --print-default-config` (see [docs/CONFIG.md](docs/CONFIG.md))
 - Built-in SSH (libssh2): profiles + `~/.ssh/config`, ProxyJump, agent/key/keyboard-interactive/password auth, known_hosts checks, remote PTY with resize, `-L/-R/-D` forwards togglable at runtime (Ctrl+Shift+S), keepalive/reconnect; `zig build test-ssh` against a local sshd (see [docs/SSH.md](docs/SSH.md))
 - Lua plugins: sandboxed per-plugin states, permission grants in config.lua, hooks, command palette (Ctrl+Shift+P), optional status bar, toasts, timers, themes, three example plugins (see [docs/PLUGINS.md](docs/PLUGINS.md))
+- Tabs and split panes: layout tree, keyboard/mouse resize and focus, zoom, equalize, tab bar, confirm-close for running programs, startup layouts, plugin tab/pane events and actions (see [docs/TABS.md](docs/TABS.md))
 - CI (build + unit tests)
 
 **Not done yet** (tracked in [ISSUES.md](ISSUES.md))
-- Tabs/splits, packaging, macOS (SSH is Linux-only for now)
+- Packaging, macOS (SSH is Linux-only for now)
 
 ## 🧩 Architecture (Simplified)
 
@@ -163,8 +169,9 @@ The client is plain HTTP/JSON (it replaces the gRPC service planned originally);
 7. **Lua config** — real Lua 5.4 for colors, keybindings, fonts
 8. **AI** — ghost-text suggestions via OpenAI-compatible HTTP/JSON
 9. **SSH** — libssh2 connections, profiles, port forwarding
-10. **Plugins + tabs/splits**
-11. **Packaging** — Linux packages, Windows, macOS
+10. **Plugins** — sandboxed Lua plugins, hooks, palette, status bar
+11. **Tabs + splits** — tabs, split panes, layouts
+12. **Packaging** — Linux packages, Windows, macOS
 
 ## 🤝 Contributing
 

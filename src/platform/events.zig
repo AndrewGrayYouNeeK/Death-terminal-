@@ -78,9 +78,51 @@ pub const Action = enum {
     command_palette,
     /// Show / hide the status bar (config.status_bar.enabled sets the default).
     toggle_status_bar,
+    /// Tabs (docs/TABS.md).
+    new_tab,
+    close_tab,
+    next_tab,
+    prev_tab,
+    move_tab_left,
+    move_tab_right,
+    rename_tab,
+    toggle_tab_bar,
+    goto_tab_1,
+    goto_tab_2,
+    goto_tab_3,
+    goto_tab_4,
+    goto_tab_5,
+    goto_tab_6,
+    goto_tab_7,
+    goto_tab_8,
+    goto_tab_9,
+    /// Split panes.
+    split_right,
+    split_down,
+    close_pane,
+    focus_left,
+    focus_right,
+    focus_up,
+    focus_down,
+    next_pane,
+    prev_pane,
+    resize_left,
+    resize_right,
+    resize_up,
+    resize_down,
+    zoom_pane,
+    equalize_panes,
     /// A plugin keybinding (ActionEvent.arg = the binding's id). Not
     /// bindable from config.
     plugin_binding,
+
+    /// goto_tab_N -> N-1.
+    pub fn gotoIndex(self: Action) ?usize {
+        const lo = @intFromEnum(Action.goto_tab_1);
+        const v = @intFromEnum(self);
+        if (v < lo or v > @intFromEnum(Action.goto_tab_9)) return null;
+        return v - lo;
+    }
 
     /// Label in the command palette (null = not listed there).
     pub fn title(self: Action) ?[]const u8 {
@@ -104,6 +146,31 @@ pub const Action = enum {
             .ai_explain => "AI: explain the last failed command",
             .ssh_palette => "SSH: profiles and forwards",
             .toggle_status_bar => "Toggle status bar",
+            .new_tab => "Tabs: new tab",
+            .close_tab => "Tabs: close tab",
+            .next_tab => "Tabs: next tab",
+            .prev_tab => "Tabs: previous tab",
+            .move_tab_left => "Tabs: move tab left",
+            .move_tab_right => "Tabs: move tab right",
+            .rename_tab => "Tabs: rename tab",
+            .toggle_tab_bar => "Tabs: show / hide the tab bar",
+            .split_right => "Panes: split right",
+            .split_down => "Panes: split down",
+            .close_pane => "Panes: close pane",
+            .focus_left => "Panes: focus left",
+            .focus_right => "Panes: focus right",
+            .focus_up => "Panes: focus up",
+            .focus_down => "Panes: focus down",
+            .next_pane => "Panes: next pane",
+            .prev_pane => "Panes: previous pane",
+            .resize_left => "Panes: grow / shrink left",
+            .resize_right => "Panes: grow / shrink right",
+            .resize_up => "Panes: grow / shrink up",
+            .resize_down => "Panes: grow / shrink down",
+            .zoom_pane => "Panes: zoom (toggle)",
+            .equalize_panes => "Panes: equalize sizes",
+            // Listed as "Go to tab N: <title>" entries instead.
+            .goto_tab_1, .goto_tab_2, .goto_tab_3, .goto_tab_4, .goto_tab_5, .goto_tab_6, .goto_tab_7, .goto_tab_8, .goto_tab_9 => null,
             .none, .ai_accept, .ai_dismiss, .ai_next, .ai_prev, .command_palette, .plugin_binding => null,
         };
     }
@@ -282,6 +349,37 @@ pub const Bindings = struct {
         "ctrl+shift+s=ssh_palette",
         "ctrl+shift+p=command_palette",
         "ctrl+shift+b=toggle_status_bar",
+        "ctrl+shift+t=new_tab",
+        "ctrl+shift+alt+w=close_tab",
+        "ctrl+page_down=next_tab",
+        "ctrl+tab=next_tab",
+        "ctrl+page_up=prev_tab",
+        "ctrl+shift+tab=prev_tab",
+        "ctrl+shift+page_up=move_tab_left",
+        "ctrl+shift+page_down=move_tab_right",
+        "ctrl+shift+alt+r=rename_tab",
+        "alt+1=goto_tab_1",
+        "alt+2=goto_tab_2",
+        "alt+3=goto_tab_3",
+        "alt+4=goto_tab_4",
+        "alt+5=goto_tab_5",
+        "alt+6=goto_tab_6",
+        "alt+7=goto_tab_7",
+        "alt+8=goto_tab_8",
+        "alt+9=goto_tab_9",
+        "ctrl+shift+e=split_right",
+        "ctrl+shift+o=split_down",
+        "ctrl+shift+w=close_pane",
+        "alt+left=focus_left",
+        "alt+right=focus_right",
+        "alt+up=focus_up",
+        "alt+down=focus_down",
+        "alt+shift+left=resize_left",
+        "alt+shift+right=resize_right",
+        "alt+shift+up=resize_up",
+        "alt+shift+down=resize_down",
+        "ctrl+shift+z=zoom_pane",
+        "ctrl+shift+alt+e=equalize_panes",
     };
 
     pub fn defaults() Bindings {
@@ -356,6 +454,7 @@ pub fn matchBinding(sym: u32, mods: input.Mods) ?ActionEvent {
 
 fn normalizeSym(sym: u32) u32 {
     if (sym >= 'A' and sym <= 'Z') return sym + 32;
+    if (sym == 0xfe20) return 0xff09; // ISO_Left_Tab = Shift+Tab
     return sym;
 }
 

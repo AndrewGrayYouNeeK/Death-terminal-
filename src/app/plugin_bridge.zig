@@ -18,15 +18,13 @@ pub const Host = host_mod.Host;
 const Entry = value.Entry;
 const V = value.Value;
 
-pub const version = "0.10.0";
+pub const version = "0.11.0";
 
-pub const Bridge = struct {
-    a: std.mem.Allocator,
+/// What one pane (terminal) looked like at its last `afterOutput`.
+pub const Track = struct {
     term: *terminal.Terminal,
-    host: ?*Host = null,
-    /// Plan hash of the running host (reload restarts it when it changes).
-    hash: u64 = 0,
-    // What the terminal looked like at the last `afterOutput`.
+    pane: u32 = 1,
+    tab: u32 = 1,
     seen_started: u64 = 0,
     seen_finished: u64 = 0,
     seen_bells: u32 = 0,
@@ -37,17 +35,73 @@ pub const Bridge = struct {
     line_gen: u32 = 0,
     cwd: std.ArrayListUnmanaged(u8) = .{},
     title: std.ArrayListUnmanaged(u8) = .{},
+    ssh: std.ArrayListUnmanaged(u8) = .{},
+
+    pub fn deinit(self: *Track, a: std.mem.Allocator) void {
+        self.cwd.deinit(a);
+        self.title.deinit(a);
+        self.ssh.deinit(a);
+    }
+
+    fn sync(self: *Track) void {
+        self.seen_started = self.term.shell.started;
+        self.seen_finished = self.term.shell.finished;
+        self.seen_bells = self.term.bell_count;
+        const m = self.term.cursorMark();
+        self.line_mark = m.line;
+        self.line_gen = m.gen;
+        self.term.ssh_events.clearRetainingCapacity();
+    }
+};
+
+pub const Bridge = struct {
+    a: std.mem.Allocator,
+    /// The focused pane: what dt.term / dt.screen read.
+    cur: *Track,
+    /// Every pane in the window.
+    tracks: std.ArrayListUnmanaged(*Track) = .{},
+    host: ?*Host = null,
+    /// Plan hash of the running host (reload restarts it when it changes).
+    hash: u64 = 0,
     scratch: std.ArrayList(u8),
 
-    pub fn init(a: std.mem.Allocator, term: *terminal.Terminal) Bridge {
-        return .{ .a = a, .term = term, .scratch = std.ArrayList(u8).init(a) };
+    pub fn init(a: std.mem.Allocator, first: *Track) Bridge {
+        var b = Bridge{ .a = a, .cur = first, .scratch = std.ArrayList(u8).init(a) };
+        b.tracks.append(a, first) catch {};
+        return b;
     }
 
     pub fn deinit(self: *Bridge) void {
         self.stop();
-        self.cwd.deinit(self.a);
-        self.title.deinit(self.a);
+        self.tracks.deinit(self.a);
         self.scratch.deinit();
+    }
+
+    /// A new pane (its counters start now).
+    pub fn addTrack(self: *Bridge, tr: *Track) void {
+        tr.sync();
+        self.tracks.append(self.a, tr) catch {};
+    }
+
+    /// A pane is going away (`cur` must be moved first).
+    pub fn removeTrack(self: *Bridge, tr: *Track) void {
+        for (self.tracks.items, 0..) |x, i| if (x == tr) {
+            _ = self.tracks.swapRemove(i);
+            break;
+        };
+    }
+
+    /// The focus moved to another pane.
+    pub fn setFocus(self: *Bridge, tr: *Track) void {
+        self.cur = tr;
+        const h = self.host orelse return;
+        h.info.rows = tr.term.rows;
+        h.info.cols = tr.term.cols;
+        h.info.pane = tr.pane;
+        h.info.tab = tr.tab;
+        h.setInfo(.cwd, tr.cwd.items);
+        h.setInfo(.title, tr.term.title);
+        h.setInfo(.ssh, tr.ssh.items);
     }
 
     /// (Re)load the plugins `cfg` asks for. Returns false when none run.
@@ -71,13 +125,10 @@ pub const Bridge = struct {
             return;
         };
         h.taken = taken;
-        h.info.rows = self.term.rows;
-        h.info.cols = self.term.cols;
-        h.setInfo(.cwd, self.cwd.items);
-        h.setInfo(.title, self.term.title);
         h.setInfo(.theme, cfg.theme);
         self.host = h;
-        self.syncCounters();
+        self.setFocus(self.cur);
+        for (self.tracks.items) |tr| tr.sync();
         h.start(p.specs) catch |err| std.debug.print("plugins: {s}\n", .{@errorName(err)});
         var running: usize = 0;
         for (h.plugins.items) |pl| running += @intFromBool(pl.running());
@@ -115,21 +166,11 @@ pub const Bridge = struct {
         return false;
     }
 
-    fn syncCounters(self: *Bridge) void {
-        self.seen_started = self.term.shell.started;
-        self.seen_finished = self.term.shell.finished;
-        self.seen_bells = self.term.bell_count;
-        const m = self.term.cursorMark();
-        self.line_mark = m.line;
-        self.line_gen = m.gen;
-        self.term.ssh_events.clearRetainingCapacity();
-    }
-
     // ---------------------------------------------------------- app view
 
     fn screenText(ctx: *anyopaque, out: *std.ArrayList(u8), scrollback: u32) void {
         const self: *Bridge = @ptrCast(@alignCast(ctx));
-        const t = self.term;
+        const t = self.cur.term;
         const first = @max(t.historyTop(), t.screenTop() - @as(i64, scrollback));
         var line = first;
         while (line < t.screenTop() + t.rows) : (line += 1) {
@@ -144,87 +185,97 @@ pub const Bridge = struct {
 
     fn cursor(ctx: *anyopaque) [2]u32 {
         const self: *Bridge = @ptrCast(@alignCast(ctx));
-        return .{ self.term.cursor_row, self.term.cursor_col };
+        return .{ self.cur.term.cursor_row, self.cur.term.cursor_col };
     }
 
     // ------------------------------------------------------------ events
 
-    /// After PTY output was parsed: fire whatever changed.
-    pub fn afterOutput(self: *Bridge, now_ms: i64) void {
+    /// After `tr`'s PTY output was parsed: fire whatever changed.
+    pub fn afterOutput(self: *Bridge, tr: *Track, now_ms: i64) void {
         const h = self.host orelse {
-            self.syncCounters();
+            tr.sync();
             return;
         };
-        const t = self.term;
+        const t = tr.term;
+        const focused = tr == self.cur;
+        const pane: Entry = .{ .key = "pane", .value = .{ .integer = tr.pane } };
+        const tab: Entry = .{ .key = "tab", .value = .{ .integer = tr.tab } };
         // Commands (OSC 133 C / D).
-        if (t.shell.started != self.seen_started) {
-            self.seen_started = t.shell.started;
-            self.cmd_start_ms = now_ms;
-            self.cmd_running = true;
+        if (t.shell.started != tr.seen_started) {
+            tr.seen_started = t.shell.started;
+            tr.cmd_start_ms = now_ms;
+            tr.cmd_running = true;
             if (h.wants(.command_start)) {
                 const cmd = t.shell.pending orelse "";
                 h.emitWithPrivate(.command_start, &.{
-                    .{ .key = "cwd", .value = .{ .string = self.cwd.items } },
+                    .{ .key = "cwd", .value = .{ .string = tr.cwd.items } },
+                    pane,
+                    tab,
                 }, &.{.{ .key = "command", .value = .{ .string = cmd } }});
             }
         }
-        if (t.shell.finished != self.seen_finished) {
-            self.seen_finished = t.shell.finished;
-            const dur: i64 = if (self.cmd_running) now_ms - self.cmd_start_ms else 0;
-            self.cmd_running = false;
+        if (t.shell.finished != tr.seen_finished) {
+            tr.seen_finished = t.shell.finished;
+            const dur: i64 = if (tr.cmd_running) now_ms - tr.cmd_start_ms else 0;
+            tr.cmd_running = false;
             if (h.wants(.command_finish)) {
                 const last = t.shell.lastCommand();
                 const code: V = if (last) |c| (if (c.exit_code) |e| V{ .integer = e } else V{ .boolean = false }) else V{ .boolean = false };
                 h.emitWithPrivate(.command_finish, &.{
                     .{ .key = "exit_code", .value = code },
                     .{ .key = "duration_ms", .value = .{ .integer = dur } },
-                    .{ .key = "cwd", .value = .{ .string = self.cwd.items } },
-                    .{ .key = "focused", .value = .{ .boolean = h.info.focused } },
+                    .{ .key = "cwd", .value = .{ .string = tr.cwd.items } },
+                    // Window focused and this pane the focused one.
+                    .{ .key = "focused", .value = .{ .boolean = h.info.focused and focused } },
+                    pane,
+                    tab,
                 }, &.{.{ .key = "command", .value = .{ .string = if (last) |c| c.text else "" } }});
             }
         }
         // Working directory (OSC 7).
         var cb: [4096]u8 = undefined;
-        if (si.cwdFromUri(t.cwd_uri, &cb)) |dir| if (!std.mem.eql(u8, dir, self.cwd.items)) {
-            self.cwd.clearRetainingCapacity();
-            self.cwd.appendSlice(self.a, dir) catch {};
-            h.setInfo(.cwd, dir);
-            h.emit(.cwd, .{ .map = &.{.{ .key = "cwd", .value = .{ .string = dir } }} });
+        if (si.cwdFromUri(t.cwd_uri, &cb)) |dir| if (!std.mem.eql(u8, dir, tr.cwd.items)) {
+            tr.cwd.clearRetainingCapacity();
+            tr.cwd.appendSlice(self.a, dir) catch {};
+            if (focused) h.setInfo(.cwd, dir);
+            h.emit(.cwd, .{ .map = &.{ .{ .key = "cwd", .value = .{ .string = dir } }, pane, tab } });
         };
         // Title.
-        if (!std.mem.eql(u8, t.title, self.title.items)) {
-            self.title.clearRetainingCapacity();
-            self.title.appendSlice(self.a, t.title) catch {};
-            h.setInfo(.title, t.title);
-            h.emit(.title, .{ .map = &.{.{ .key = "title", .value = .{ .string = t.title } }} });
+        if (!std.mem.eql(u8, t.title, tr.title.items)) {
+            tr.title.clearRetainingCapacity();
+            tr.title.appendSlice(self.a, t.title) catch {};
+            if (focused) h.setInfo(.title, t.title);
+            h.emit(.title, .{ .map = &.{ .{ .key = "title", .value = .{ .string = t.title } }, pane, tab } });
         }
         // Bell.
-        if (t.bell_count != self.seen_bells) {
-            self.seen_bells = t.bell_count;
-            h.emit(.bell, null);
+        if (t.bell_count != tr.seen_bells) {
+            tr.seen_bells = t.bell_count;
+            h.emit(.bell, .{ .map = &.{ pane, tab } });
         }
         // SSH session reports (OSC 7799, verified by the terminal).
         for (t.ssh_events.items) |ev| {
             const target = ev.target();
-            h.setInfo(.ssh, if (ev.kind == .connect) target else "");
-            h.emit(if (ev.kind == .connect) .ssh_connect else .ssh_disconnect, .{ .map = &.{.{ .key = "target", .value = .{ .string = target } }} });
+            tr.ssh.clearRetainingCapacity();
+            if (ev.kind == .connect) tr.ssh.appendSlice(self.a, target) catch {};
+            if (focused) h.setInfo(.ssh, tr.ssh.items);
+            h.emit(if (ev.kind == .connect) .ssh_connect else .ssh_disconnect, .{ .map = &.{ .{ .key = "target", .value = .{ .string = target } }, pane, tab } });
         }
         t.ssh_events.clearRetainingCapacity();
-        self.outputLines();
+        self.outputLines(tr);
     }
 
     /// Rows that the cursor left since last time (main screen only).
-    fn outputLines(self: *Bridge) void {
+    fn outputLines(self: *Bridge, tr: *Track) void {
         const h = self.host.?;
-        const t = self.term;
+        const t = tr.term;
         const m = t.cursorMark();
         defer {
-            self.line_mark = m.line;
-            self.line_gen = m.gen;
+            tr.line_mark = m.line;
+            tr.line_gen = m.gen;
         }
-        if (t.alt_active or m.gen != self.line_gen or m.line <= self.line_mark) return;
+        if (t.alt_active or m.gen != tr.line_gen or m.line <= tr.line_mark) return;
         if (!h.wants(.output_line)) return;
-        const first = @max(self.line_mark, m.line - host_mod.Limits.output_lines_per_batch, t.historyTop());
+        const first = @max(tr.line_mark, m.line - host_mod.Limits.output_lines_per_batch, t.historyTop());
         self.scratch.clearRetainingCapacity();
         var spans: [host_mod.Limits.output_lines_per_batch][2]usize = undefined;
         var n: usize = 0;
@@ -250,8 +301,8 @@ pub const Bridge = struct {
 
     pub fn resized(self: *Bridge) void {
         const h = self.host orelse return;
-        h.info.rows = self.term.rows;
-        h.info.cols = self.term.cols;
+        h.info.rows = self.cur.term.rows;
+        h.info.cols = self.cur.term.cols;
     }
 
     /// A key from a `.key` event; true = a plugin consumed it.
