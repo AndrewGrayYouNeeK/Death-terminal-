@@ -176,7 +176,7 @@
 - [ ] Video demos or GIFs
 - [ ] Community chat setup
 - [x] GitHub Actions for CI
-- [ ] Release automation (workflow ready in packaging/ci/release.yml, not installed yet)
+- [x] Release automation (`.github/workflows/release.yml`, draft release on a `v*` tag)
 - [x] Package managers: AUR PKGBUILD, winget, Homebrew cask/formula skeletons (not submitted)
 - [x] macOS window backend (Cocoa + MoltenVK; untested at runtime)
 - [ ] Runtime testing on real Windows and macOS hardware

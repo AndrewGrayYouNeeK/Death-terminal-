@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Grok 4.7 on `api.x.ai` and `us.api.x.ai` (the model Grok Bot uses) goes through the Responses API: `reasoning.effort` defaults to `low` (`config.ai.reasoning`: `low` / `medium` / `high` / `xhigh`), live search is off, responses are not stored, and reasoning text is not shown as the suggestion. Other endpoints stay on chat/completions. xAI requests wait at least 15s; `ai.timeout_ms` now allows up to 600000
 
+### Fixed
+- GitHub Actions CI matches the build: `.github/workflows/ci.yml` installs FreeType, HarfBuzz, fontconfig and libssl, and cross-compiles Windows and macOS. `.github/workflows/release.yml` publishes a draft release on a `v*` tag. The previous workflow was missing those packages, so `zig build` failed on GitHub the same way it did on `main`
+
 ## [0.1.0] - 2026-10-17
 
 First versioned release. Everything below (milestones 1–12) ships in it.
@@ -40,7 +43,7 @@ First versioned release. Everything below (milestones 1–12) ships in it.
 - `window.allow_column_switch` and DECSET 40; DECRQM reports modes 3 and 40
 - `zig build release`: stripped ReleaseFast staged tree + .tar.gz/.zip + SHA256SUMS in `zig-out/release`; `-Dpackages=true` adds the AppImage, .deb and .rpm (nfpm)
 - Packaging: .desktop file, skull/terminal icon (SVG + PNG 16–512, .ico), man page `deathterminal(1)`, AUR PKGBUILD, winget manifests, WiX MSI skeleton, macOS `.app` script, Homebrew cask and formula (packaging/README.md)
-- CI workflow updates (font/SSH deps, cross-compile checks) and a release workflow under `packaging/ci/`, ready to copy into `.github/workflows`
+- CI workflow updates (font/SSH deps, cross-compile checks) and a release workflow, kept in `packaging/ci/` and installed under `.github/workflows/`
 - Tabs and split panes (docs/TABS.md): every pane has its own PTY, grid, scrollback, selection, search and AI context. Layout tree with right/down splits, resize from the keyboard (Alt+Shift+arrows) or by dragging dividers, directional (Alt+arrows) and click focus, zoom (Ctrl+Shift+Z), equalize, close pane
 - Tab bar (`config.tabs.bar` = auto/top/bottom/hidden): themed, title + cwd, bell / failed / running / activity markers, close buttons, `+`, drag to reorder, double-click (or Ctrl+Shift+Alt+R) to rename, wheel to cycle; new/close/next/prev/move/goto-N actions
 - New tabs and panes start in the focused pane's OSC 7 directory (`config.tabs.inherit_cwd`); SSH palette opens profiles in a tab (Enter), split (Shift+Enter) or window (Alt+Enter)
