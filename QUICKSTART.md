@@ -48,7 +48,7 @@ zig build -Doptimize=ReleaseFast
 zig build install --prefix ~/.local
 
 # Run from anywhere
-death-terminal
+deathterminal --gui
 ```
 
 ### Option 3: Using Development Script
@@ -164,7 +164,7 @@ export VK_LAYER_PATH=$VULKAN_SDK/share/vulkan/explicit_layer.d
 After installation, run DeathTerminal:
 
 ```bash
-death-terminal
+deathterminal --gui
 ```
 
 You should see the DeathTerminal banner and initialization messages:
@@ -285,7 +285,7 @@ zig build
 
 1. **Explore Features**: Try different command-line options
    ```bash
-   death-terminal --help
+   deathterminal --help
    ```
 
 2. **Customize**: Edit your configuration file

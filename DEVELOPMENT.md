@@ -4,14 +4,14 @@ This document tracks development status and priorities for the DeathTerminal des
 
 ## Project Overview
 
-DeathTerminal is a Zig-based, GPU-accelerated terminal emulator with AI-native workflows, SSH tunneling, and Lua scripting. It is a **native desktop application** — not a web app.
+DeathTerminal is a Zig-based, GPU-accelerated terminal emulator. AI suggestions, SSH tunneling, and Lua scripting are planned. It is a **native desktop application** — not a web app.
 
 ## Architecture
 
 ```
 PTY ↔ Terminal Core ↔ Renderer (Vulkan)
            ↓
-        AI Engine (gRPC)
+        AI Engine (HTTP/JSON)
            ↓
         Lua Scripting
 ```
@@ -22,13 +22,13 @@ PTY ↔ Terminal Core ↔ Renderer (Vulkan)
 |--------|------|--------|
 | Terminal core | `src/terminal/` | PTY, ANSI parser, cell buffer — functional |
 | Scrollback | `src/terminal/scrollback.zig` | Functional |
-| Event loop | `src/app/event_loop.zig` | Headless + native GUI |
-| Vulkan renderer | `src/renderer/` | SPIR-V text pipeline; blit/native fallback |
+| Event loop | `src/app/event_loop.zig` | Headless + native GUI; exits when the shell exits |
+| Vulkan renderer | `src/renderer/` | Instance/device (`vulkan_renderer.zig`), swapchain acquire/present (`gpu_present.zig`), SPIR-V glyph pipeline (`text_pipeline.zig`), CPU fallback (`software.zig`) |
 | Window | `src/platform/window.zig` | Wayland, X11, Win32 + HiDPI scale |
-| AI autocomplete | `src/ai/` | gRPC stub |
-| SSH tunneling | `src/ssh/` | Stub |
-| Lua scripting | `src/scripting/` | Stub |
-| Configuration | `src/config/` | Basic file loading |
+| AI autocomplete | `src/ai/` | Stub (planned: OpenAI-compatible HTTP/JSON, default local Ollama) |
+| SSH tunneling | `src/ssh/` | Stub (planned: libssh2) |
+| Lua scripting | `src/scripting/` | Stub (Lua not linked yet) |
+| Configuration | `src/config/` | Reads `~/.config/death-terminal/config.txt` with flat `key = value` lines (`rows`, `cols`, `ai_enabled`, `ai_endpoint`, `scrollback_lines`). `config.example.lua` is the target format for the Lua milestone and is not read yet. |
 
 ## Build Requirements
 
@@ -36,7 +36,7 @@ PTY ↔ Terminal Core ↔ Renderer (Vulkan)
 - Vulkan SDK (`libvulkan-dev` on Linux)
 - Mesa Vulkan ICD (`mesa-vulkan-drivers`) for instance/device tests without a GPU
 - X11 (`libx11-dev`) and/or Wayland (`libwayland-dev`, `libxkbcommon-dev`)
-- Lua 5.4 (for future scripting integration)
+- Lua 5.4 (not required yet; needed once scripting lands)
 
 ```bash
 zig build          # Build
@@ -47,12 +47,15 @@ zig build test     # Test
 
 ## Development Phases
 
-### Phase 1 — Terminal Core (mostly complete)
+### Phase 1 — Terminal Core (partial)
 - [x] PTY creation and shell spawning
 - [x] ANSI/VT100 escape sequence parser
 - [x] Cell buffer and cursor control
 - [x] Scrollback buffer
-- [x] Cross-platform PTY (Unix)
+- [x] PTY on Unix (Linux/macOS)
+- [ ] PTY on Windows (ConPTY)
+- [ ] UTF-8 decoding and wide characters
+- [ ] Scroll regions, alternate screen, insert/delete, 256/true color, mouse, bracketed paste
 
 ### Phase 2 — Rendering
 - [x] Vulkan module structure
@@ -72,9 +75,9 @@ zig build test     # Test
 - [x] Native GUI backends (Wayland / X11 / Win32)
 
 ### Phase 4 — AI Integration
-- [ ] gRPC client
+- [ ] OpenAI-compatible HTTP/JSON client (default: local Ollama)
 - [ ] Context gathering and sanitization
-- [ ] Suggestion UI
+- [ ] Ghost-text suggestion UI (Tab to accept)
 
 ### Phase 5 — SSH & Scripting
 - [ ] libssh2 integration

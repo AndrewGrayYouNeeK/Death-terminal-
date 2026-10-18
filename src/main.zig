@@ -53,8 +53,12 @@ pub fn main() !void {
     var lua = try lua_engine.LuaEngine.init(allocator);
     defer lua.deinit();
 
-    std.debug.print("[4/5] Initializing AI autocomplete...\n", .{});
-    var autocomplete = try ai.Autocomplete.init(allocator);
+    if (cfg.ai_enabled) {
+        std.debug.print("[4/5] Initializing AI autocomplete...\n", .{});
+    } else {
+        std.debug.print("[4/5] AI autocomplete disabled\n", .{});
+    }
+    var autocomplete = try ai.Autocomplete.init(allocator, cfg.ai_enabled);
     defer autocomplete.deinit();
 
     std.debug.print("[5/5] Initializing SSH tunnel manager...\n", .{});
@@ -132,10 +136,10 @@ test {
     _ = @import("terminal/terminal.zig");
     _ = @import("terminal/ansi_parser.zig");
     _ = @import("terminal/scrollback.zig");
+    _ = @import("terminal/grid_test.zig");
     _ = @import("renderer/vulkan_renderer.zig");
     _ = @import("renderer/loader.zig");
     _ = @import("renderer/vulkan_c.zig");
-    _ = @import("renderer/swapchain.zig");
     _ = @import("renderer/pipeline.zig");
     _ = @import("renderer/text_renderer.zig");
     _ = @import("renderer/gpu_present.zig");

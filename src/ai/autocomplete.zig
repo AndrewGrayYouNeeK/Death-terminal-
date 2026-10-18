@@ -6,13 +6,15 @@ pub const Autocomplete = struct {
     enabled: bool,
     grpc_endpoint: []const u8,
 
-    pub fn init(allocator: std.mem.Allocator) !Autocomplete {
-        // TODO: Initialize gRPC client connection to AI service
-        std.debug.print("  → AI autocomplete stub initialized\n", .{});
+    /// When `enabled` is false (e.g. `--no-ai`), the engine stays inert and
+    /// prints nothing.
+    pub fn init(allocator: std.mem.Allocator, enabled: bool) !Autocomplete {
+        // TODO: Initialize client connection to the AI service
+        if (enabled) std.debug.print("  → AI autocomplete stub initialized\n", .{});
 
         return Autocomplete{
             .allocator = allocator,
-            .enabled = true,
+            .enabled = enabled,
             .grpc_endpoint = "localhost:50051",
         };
     }
@@ -49,7 +51,14 @@ pub const Autocomplete = struct {
 
 test "Autocomplete init" {
     const testing = std.testing;
-    var ac = try Autocomplete.init(testing.allocator);
+    var ac = try Autocomplete.init(testing.allocator, true);
     defer ac.deinit();
     try testing.expect(ac.enabled);
+}
+
+test "Autocomplete disabled init" {
+    const testing = std.testing;
+    var ac = try Autocomplete.init(testing.allocator, false);
+    defer ac.deinit();
+    try testing.expect(!ac.enabled);
 }

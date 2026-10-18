@@ -66,13 +66,13 @@ pub const VulkanRenderer = struct {
         };
 
         renderer.loadLibrary() catch {
-            std.debug.print("    → Vulkan loader not found; renderer stays stubbed\n", .{});
+            std.debug.print("    → Vulkan loader not found; using software fallback\n", .{});
             renderer.initialized = true;
             return renderer;
         };
 
         renderer.createInstance() catch |err| {
-            std.debug.print("    → vkCreateInstance failed ({s}); renderer stays stubbed\n", .{@errorName(err)});
+            std.debug.print("    → vkCreateInstance failed ({s}); using software fallback\n", .{@errorName(err)});
             renderer.initialized = true;
             return renderer;
         };
@@ -93,7 +93,7 @@ pub const VulkanRenderer = struct {
         } else if (renderer.has_instance) {
             std.debug.print("  → Vulkan renderer initialized (instance, no device)\n", .{});
         } else {
-            std.debug.print("  → Vulkan renderer initialized (stubbed)\n", .{});
+            std.debug.print("  → Vulkan renderer initialized (software fallback, no Vulkan)\n", .{});
         }
 
         return renderer;
@@ -335,7 +335,8 @@ pub const VulkanRenderer = struct {
         }
     }
 
-    /// Render a frame. Presentation is stubbed until a window/swapchain exists.
+    /// Headless frame hook. Windowed presentation (swapchain acquire/present)
+    /// lives in `gpu_present.zig` and is driven by the GUI event loop.
     pub fn render(self: *VulkanRenderer) !void {
         if (!self.initialized) return error.NotInitialized;
     }

@@ -44,7 +44,13 @@
 - [x] Input/output handling
 - [x] Cursor movement and control
 - [x] Scrollback buffer implementation
-- [x] Cross-platform PTY compatibility (Unix vs Windows)
+- [x] PTY on Unix (Linux/macOS)
+- [ ] PTY on Windows (ConPTY)
+- [ ] UTF-8 decoding, wide characters, combining marks
+- [ ] Scroll regions (DECSTBM), insert/delete line/char, erase char
+- [ ] Alternate screen (?1049), bracketed paste (?2004), mouse reporting
+- [ ] 256-color and true-color SGR
+- [ ] Device status / attribute replies (DSR, DA)
 - [x] Shell integration
 
 ### Phase 2 - Vulkan Rendering (High Priority)
@@ -62,13 +68,13 @@
 - [ ] Performance optimization (batching, minimal state changes)
 
 ### Phase 3 - AI Integration (Medium Priority)
-- [ ] gRPC client implementation
+- [ ] OpenAI-compatible HTTP/JSON client (default: local Ollama, configurable)
 - [ ] AI service connection management
 - [ ] Context gathering (working directory, command history, shell state)
 - [ ] Context sanitization for privacy
 - [ ] Suggestion request/response handling
 - [ ] Async suggestion processing
-- [ ] UI for displaying suggestions
+- [ ] Ghost-text suggestion UI (Tab to accept)
 - [ ] Local vs remote model support
 - [ ] Offline mode handling
 - [ ] Configuration for AI endpoints
@@ -100,15 +106,16 @@
 
 ### Main Event Loop
 - [x] Event loop architecture
-- [x] Input event handling (keyboard, mouse)
+- [x] Keyboard input handling
+- [ ] Mouse input handling
 - [x] Rendering loop integration (GPU text pipeline with blit/XPutImage fallback)
 - [x] Event dispatching to subsystems
 - [x] Graceful shutdown handling
 - [x] Signal handling (SIGTERM, SIGINT, etc.)
 
 ### Testing & Quality
-- [ ] Unit tests for terminal emulation
-- [ ] Unit tests for ANSI parser
+- [x] Unit tests for terminal emulation (basic)
+- [x] Unit tests for ANSI parser (basic)
 - [ ] Integration tests for PTY handling
 - [ ] Rendering tests
 - [ ] AI integration tests
@@ -120,18 +127,19 @@
 - [x] CI/CD pipeline setup
 
 ### Configuration & UX
-- [x] Configuration file loading (from ~/.config/death-terminal/)
+- [x] Configuration file loading (from ~/.config/death-terminal/; reads `config.txt` with flat `key = value` lines; `config.example.lua` is not read yet)
 - [ ] Theme system implementation
 - [ ] Keybinding customization
-- [ ] Font selection and management
+- [ ] Font selection and management (real fonts + optional retro 8x8 bitmap font)
 - [ ] Color scheme support
 - [ ] Terminal size configuration
 - [ ] Preferences persistence
 
 ### Additional Features
 - [ ] Copy/paste functionality
-- [ ] Search in scrollback
-- [ ] Tab/split support (if planned)
+- [ ] Search in scrollback (search function exists, no UI)
+- [ ] Scrollback navigation (Shift+PageUp/PageDown)
+- [ ] Tabs and splits
 - [ ] Hyperlink detection and handling
 - [ ] Image protocol support (optional)
 - [ ] Notifications
@@ -143,13 +151,14 @@
 - [ ] Troubleshooting guide
 - [ ] Video demos or GIFs
 - [ ] Community chat setup
-- [ ] GitHub Actions for CI
+- [x] GitHub Actions for CI
 - [ ] Release automation
 - [ ] Package managers (Homebrew, AUR, etc.)
+- [ ] macOS window backend
 
 ## 📊 Current Status Summary
 
-**Overall Progress**: ~55% (terminal core + Wayland/X11/Win32 GUI + HiDPI + GPU SPIR-V text pipeline)
+**Overall Progress**: ~40% (basic terminal core + Wayland/X11/Win32 GUI + HiDPI + GPU SPIR-V text pipeline; no UTF-8, full-screen app support, AI, SSH, or Lua yet)
 
 **Lines of Code**:
 - terminal/terminal.zig: 650+ lines (PTY + ANSI parser + scrollback)
@@ -162,7 +171,7 @@
 - renderer/text_pipeline.zig: SPIR-V glyph pipeline
 - renderer/text_renderer.zig: cell instance packing
 - renderer/pipeline.zig: shader module + embedded SPIR-V
-- renderer/gpu_present.zig: swapchain acquire/present
+- renderer/gpu_present.zig: swapchain creation, acquire/present (the real swapchain; the old `swapchain.zig` stub was removed)
 - renderer/software.zig: CPU rasterizer fallback
 - main.zig: CLI + subsystem wiring
 - ssh/tunnel.zig: 70 lines (stub)
@@ -177,4 +186,7 @@
 5. ✅ Connect GPU rendering to terminal output (swapchain blit) - COMPLETED
 6. ✅ SPIR-V text pipeline (glyph atlas + instanced draw) - COMPLETED
 7. ✅ HiDPI cell scaling (`--scale`, DPI, compositor buffer scale)
-8. Phase 3 AI integration
+8. UTF-8 + wide characters
+9. Full-screen app escape sequences (vim/htop/less/tmux)
+10. Real fonts, selection/copy-paste, scrollback navigation
+11. Lua config, AI suggestions, SSH, plugins, tabs/splits, packaging
