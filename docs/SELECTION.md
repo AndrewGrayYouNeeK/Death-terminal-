@@ -24,7 +24,9 @@ Selections use absolute line numbers, so they stay on the same text while
 output scrolls and while you scroll the view. Wide (CJK/emoji) cells are
 always selected whole. Trailing blanks are trimmed; soft-wrapped rows are
 copied without a newline. Switching to/from the alternate screen clears the
-selection.
+selection, and so does output that rewrites any selected cell (text that
+merely scrolls keeps its selection). A resize that reflows lines clears it
+too, because the selected positions move.
 
 Releasing the button copies the selection to PRIMARY (X11/Wayland; emulated
 in-process on Windows). With `copy_on_select = true` it is also copied to
@@ -34,7 +36,7 @@ CLIPBOARD.
 
 | Keys | Action |
 |---|---|
-| Ctrl+Shift+C | `copy` selection to CLIPBOARD |
+| Ctrl+Shift+C | `copy` selection to CLIPBOARD (with no selection it does nothing: it is never sent to the shell, so it can't act as Ctrl+C) |
 | Ctrl+Shift+V | `paste` CLIPBOARD |
 | Shift+Insert | `paste_selection` (PRIMARY) |
 | Ctrl+Shift+F | `search` |
@@ -71,7 +73,15 @@ any program (including over SSH) could otherwise read your clipboard.
 
 Ctrl+Shift+F opens a bar at the bottom (seeded with the selection if any).
 Matches in scrollback and on screen highlight as you type; the current match is
-orange.
+orange. Soft-wrapped rows are searched as one line, so a match can continue on
+the next row. While the bar is open, matches follow new output: lines already in
+history keep their matches, the screen is re-searched after each batch of
+output, and the current match stays selected (the view does not jump).
+
+The bar takes the last row. When that row is in use (usually your prompt), the
+view moves up one line so the prompt stays visible above the bar; on a screen
+with free rows below the prompt nothing moves. In the alternate screen (vim,
+less) the bar covers the application's last row.
 
 | Key | Effect |
 |---|---|
@@ -109,8 +119,7 @@ refused.
 
 - X11: selections larger than the server's maximum request size are refused
   (INCR is supported for receiving, not for sending).
-- Search does not match across soft-wrapped rows; case folding is ASCII only;
-  matches are recomputed when the query changes, not when text changes in place.
-- The selection is not cleared when the text under it is rewritten.
+- Search case folding is ASCII only. Regex matches cannot span a hard
+  newline.
 - The Wayland and Win32 clipboard paths compile but were not tested on real
   compositors / Windows; Ctrl+click does nothing on Windows yet.

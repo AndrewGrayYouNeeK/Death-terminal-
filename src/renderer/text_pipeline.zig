@@ -56,8 +56,16 @@ const CmdBindDescriptorSetsFn = *const fn (vk.VkCommandBuffer, vk.raw.VkPipeline
 const CmdDrawIndexedFn = *const fn (vk.VkCommandBuffer, u32, u32, u32, i32, u32) callconv(.C) void;
 const CmdSetViewportFn = *const fn (vk.VkCommandBuffer, u32, u32, [*]const vk.raw.VkViewport) callconv(.C) void;
 const CmdSetScissorFn = *const fn (vk.VkCommandBuffer, u32, u32, [*]const vk.raw.VkRect2D) callconv(.C) void;
+const CmdPushConstantsFn = *const fn (vk.VkCommandBuffer, vk.VkPipelineLayout, vk.raw.VkShaderStageFlags, u32, u32, ?*const anyopaque) callconv(.C) void;
 
-/// GPU glyph atlas + graphics pipeline that draws terminal cells into a swapchain image.
+const SLOTS = gpu_present.MAX_FRAMES_IN_FLIGHT;
+const Rect = @import("../font/atlas.zig").Rect;
+
+/// GPU glyph atlas + graphics pipeline that draws terminal cells into a
+/// swapchain image with one instanced draw. Instance data lives in a CPU
+/// mirror updated from the frame's damage ranges; each frame-in-flight slot
+/// has its own persistently mapped instance buffer that receives only the
+/// ranges it has not seen yet.
 pub const TextPipeline = struct {
     enabled: bool = false,
     allocator: std.mem.Allocator = undefined,
@@ -78,19 +86,26 @@ pub const TextPipeline = struct {
     quad_mem: vk.VkDeviceMemory = null,
     index_buf: vk.VkBuffer = null,
     index_mem: vk.VkDeviceMemory = null,
-    inst_buf: vk.VkBuffer = null,
-    inst_mem: vk.VkDeviceMemory = null,
+    inst_buf: [SLOTS]vk.VkBuffer = .{null} ** SLOTS,
+    inst_mem: [SLOTS]vk.VkDeviceMemory = .{null} ** SLOTS,
+    inst_map: [SLOTS]?[*]text.Instance = .{null} ** SLOTS,
+    inst_cap: u32 = 0,
+    /// Instance ranges each slot's buffer is missing.
+    pending: [SLOTS]text.RangeSet = .{text.RangeSet{}} ** SLOTS,
+    mirror: std.ArrayListUnmanaged(text.Instance) = .{},
+    instance_count: u32 = 0,
+    /// Instances copied to a GPU buffer by the last upload (stats).
+    last_upload: u32 = 0,
     views: []vk.VkImageView = &.{},
     framebuffers: []vk.VkFramebuffer = &.{},
-    scratch: []text.Instance = &.{},
     atlas_uploaded: bool = false,
     /// Side length and generation of the atlas currently on the GPU.
     atlas_size: u32 = 0,
     atlas_gen: u32 = 0,
     atlas_format: vk.raw.VkFormat = vk.raw.VK_FORMAT_R8G8B8A8_UNORM,
-    staging_buf: vk.VkBuffer = null,
-    staging_mem: vk.VkDeviceMemory = null,
-    staging_size: usize = 0,
+    staging_buf: [SLOTS]vk.VkBuffer = .{null} ** SLOTS,
+    staging_mem: [SLOTS]vk.VkDeviceMemory = .{null} ** SLOTS,
+    staging_size: [SLOTS]usize = .{0} ** SLOTS,
 
     vkCreateImage: ?CreateImageFn = null,
     vkDestroyImage: ?DestroyImageFn = null,
@@ -141,6 +156,7 @@ pub const TextPipeline = struct {
     vkCmdDrawIndexed: ?CmdDrawIndexedFn = null,
     vkCmdSetViewport: ?CmdSetViewportFn = null,
     vkCmdSetScissor: ?CmdSetScissorFn = null,
+    vkCmdPushConstants: ?CmdPushConstantsFn = null,
 
     pub fn deinit(self: *TextPipeline, h: Handles) void {
         if (h.queue != null) {
@@ -149,10 +165,8 @@ pub const TextPipeline = struct {
         self.unbindSwapchain(h);
         self.destroyPipeline(h);
         self.destroyAtlas(h);
-        if (self.scratch.len != 0) {
-            self.allocator.free(self.scratch);
-            self.scratch = &.{};
-        }
+        self.mirror.deinit(self.allocator);
+        self.mirror = .{};
         self.enabled = false;
     }
 
@@ -163,14 +177,13 @@ pub const TextPipeline = struct {
         errdefer self.deinit(h);
 
         _ = cmd;
-        self.scratch = try h.allocator.alloc(text.Instance, text.MAX_INSTANCES);
         try self.createSampler(h);
         try self.createDescriptors(h);
         try self.createBuffers(h);
         try self.createRenderPass(h, format);
         try self.createPipeline(h);
         self.enabled = true;
-        std.debug.print("    → GPU text pipeline enabled (SPIR-V glyphs, dynamic atlas)\n", .{});
+        std.debug.print("    → GPU text pipeline enabled (instanced, {d} B/instance, damage uploads, dynamic atlas)\n", .{@sizeOf(text.Instance)});
     }
 
     pub fn unbindSwapchain(self: *TextPipeline, h: Handles) void {
@@ -270,58 +283,123 @@ pub const TextPipeline = struct {
         return self.format == vk.VK_FORMAT_B8G8R8A8_SRGB or self.format == vk.VK_FORMAT_R8G8B8A8_SRGB;
     }
 
-    pub fn packAndUpload(self: *TextPipeline, h: Handles, quads: []const frame_mod.Quad) !u32 {
-        if (!self.enabled or self.extent.width == 0) return error.NotBound;
-        const count = text.packQuads(
-            self.scratch,
-            quads,
-            @floatFromInt(self.extent.width),
-            @floatFromInt(self.extent.height),
-            self.atlas_size,
-            self.srgbTarget(),
-        );
-        if (count == 0) return 0;
-
-        const map = self.vkMapMemory orelse return error.MissingMap;
-        var mapped: ?*anyopaque = null;
-        const bytes = @as(usize, count) * @sizeOf(text.Instance);
-        if (map(h.device, self.inst_mem, 0, bytes, 0, &mapped) != vk.VK_SUCCESS) return error.MapFailed;
-        defer if (self.vkUnmapMemory) |unmap| unmap(h.device, self.inst_mem);
-        const dest: [*]text.Instance = @ptrCast(@alignCast(mapped.?));
-        @memcpy(dest[0..count], self.scratch[0..count]);
-        return count;
+    /// Bring the CPU instance mirror up to date with `fr` (repacking only
+    /// its damage ranges) and queue those ranges for every slot. Call
+    /// growInstances first when `needsIdle` says so.
+    pub fn updateInstances(self: *TextPipeline, fr: *const frame_mod.Frame) !void {
+        if (!self.enabled) return error.NotEnabled;
+        const quads = fr.quads.items;
+        const count: u32 = @intCast(@min(quads.len, self.inst_cap));
+        try self.mirror.resize(self.allocator, count);
+        if (fr.full_damage or self.instance_count == 0) {
+            _ = text.packQuads(self.mirror.items, quads[0..count]);
+            for (&self.pending) |*p| p.setAll();
+        } else {
+            for (fr.damage.items) |r| {
+                const end = @min(r.end, count);
+                if (r.start >= end) continue;
+                _ = text.packQuads(self.mirror.items[r.start..end], quads[r.start..end]);
+                for (&self.pending) |*p| p.add(.{ .start = r.start, .end = end });
+            }
+        }
+        self.instance_count = count;
     }
 
-    /// Bring the GPU atlas up to date with `atlas`: re-create the image when
-    /// it grew or the cache was reset, otherwise upload the dirty region.
-    /// Uses `cmd` for a one-off submit (call before beginPresent).
-    pub fn syncAtlas(self: *TextPipeline, h: Handles, cmd: vk.VkCommandBuffer, atlas: *Atlas) !void {
-        if (!self.enabled) return error.NotEnabled;
-        var full = false;
-        if (self.atlas_image == null or self.atlas_size != atlas.size) {
-            if (h.queue != null) {
-                if (self.vkQueueWaitIdle) |wait| _ = wait(h.queue);
+    /// Copy the ranges slot `slot` is missing into its mapped buffer. The
+    /// caller has waited for the slot's previous frame (beginFrame).
+    fn uploadInstances(self: *TextPipeline, slot: u32) void {
+        const dst = self.inst_map[slot] orelse return;
+        const p = &self.pending[slot];
+        var copied: u32 = 0;
+        if (p.all) {
+            @memcpy(dst[0..self.instance_count], self.mirror.items[0..self.instance_count]);
+            copied = self.instance_count;
+        } else {
+            for (p.slice()) |r| {
+                const end = @min(r.end, self.instance_count);
+                if (r.start >= end) continue;
+                @memcpy(dst[r.start..end], self.mirror.items[r.start..end]);
+                copied += end - r.start;
             }
+        }
+        p.clear();
+        self.last_upload = copied;
+    }
+
+    /// Re-create the per-slot instance buffers with room for `need`
+    /// instances. The GPU must be idle.
+    pub fn growInstances(self: *TextPipeline, h: Handles, need: u32) !void {
+        var cap: u32 = @max(self.inst_cap, 4096);
+        while (cap < need) cap *= 2;
+        cap = @min(cap, text.MAX_INSTANCES);
+        self.destroyInstanceBuffers(h);
+        const map = self.vkMapMemory orelse return error.MissingMap;
+        for (0..SLOTS) |i| {
+            try self.createHostBuffer(h, @as(usize, cap) * @sizeOf(text.Instance), vk.raw.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, &self.inst_buf[i], &self.inst_mem[i]);
+            var mapped: ?*anyopaque = null;
+            if (map(h.device, self.inst_mem[i], 0, vk.raw.VK_WHOLE_SIZE, 0, &mapped) != vk.VK_SUCCESS) return error.MapFailed;
+            self.inst_map[i] = @ptrCast(@alignCast(mapped.?));
+            self.pending[i].setAll();
+        }
+        self.inst_cap = cap;
+    }
+
+    fn destroyInstanceBuffers(self: *TextPipeline, h: Handles) void {
+        for (0..SLOTS) |i| {
+            if (self.inst_map[i] != null) {
+                if (self.vkUnmapMemory) |unmap| unmap(h.device, self.inst_mem[i]);
+                self.inst_map[i] = null;
+            }
+            if (self.inst_buf[i] != null) {
+                if (self.vkDestroyBuffer) |d| d(h.device, self.inst_buf[i], null);
+                self.inst_buf[i] = null;
+            }
+            if (self.inst_mem[i] != null) {
+                if (self.vkFreeMemory) |d| d(h.device, self.inst_mem[i], null);
+                self.inst_mem[i] = null;
+            }
+        }
+        self.inst_cap = 0;
+    }
+
+    /// True when the next frame needs more instance capacity or a new atlas
+    /// image; both require the GPU to be idle (prepare).
+    pub fn needsIdle(self: *const TextPipeline, fr: *const frame_mod.Frame, atlas: *const Atlas) bool {
+        const want = @min(fr.quads.items.len, text.MAX_INSTANCES);
+        return want > self.inst_cap or self.atlas_image == null or self.atlas_size != atlas.size;
+    }
+
+    /// Grow instance buffers / re-create the atlas image. GPU must be idle.
+    pub fn prepare(self: *TextPipeline, h: Handles, fr: *const frame_mod.Frame, atlas: *const Atlas) !void {
+        const want: u32 = @intCast(@min(fr.quads.items.len, text.MAX_INSTANCES));
+        if (want > self.inst_cap) try self.growInstances(h, want);
+        if (self.atlas_image == null or self.atlas_size != atlas.size) {
             self.destroyAtlasImage(h);
             try self.createAtlasImage(h, atlas.size);
             try self.writeDescriptor(h);
-            full = true;
-        } else if (self.atlas_gen != atlas.generation) {
-            full = true;
         }
-        const region: ?@import("../font/atlas.zig").Rect = if (full)
-            .{ .x = 0, .y = 0, .w = atlas.size, .h = atlas.size }
-        else
-            atlas.takeDirty();
+    }
+
+    /// Record glyph uploads (dirty region, or everything after a reset or
+    /// re-create) into this frame's command buffer, before the render pass.
+    pub fn recordAtlasUpload(self: *TextPipeline, h: Handles, slot: u32, cmd: vk.VkCommandBuffer, atlas: *Atlas) !void {
+        const full = self.atlas_gen != atlas.generation or !self.atlas_uploaded;
+        const region: ?Rect = if (full) .{ .x = 0, .y = 0, .w = atlas.size, .h = atlas.size } else atlas.takeDirty();
         if (full) _ = atlas.takeDirty();
         self.atlas_gen = atlas.generation;
         const r = region orelse return;
         if (r.w == 0 or r.h == 0) return;
-        try self.uploadRegion(h, cmd, atlas, r, full);
+        try self.uploadRegion(h, slot, cmd, atlas, r);
         self.atlas_uploaded = true;
     }
 
-    pub fn record(self: *TextPipeline, cmd: vk.VkCommandBuffer, image_index: u32, instance_count: u32, clear_rgb: u32) !void {
+    /// Upload the slot's pending instances and record the render pass.
+    pub fn recordFrame(self: *TextPipeline, slot: u32, cmd: vk.VkCommandBuffer, image_index: u32, clear_rgb: u32) !void {
+        self.uploadInstances(slot);
+        try self.record(cmd, slot, image_index, self.instance_count, clear_rgb);
+    }
+
+    fn record(self: *TextPipeline, cmd: vk.VkCommandBuffer, slot: u32, image_index: u32, instance_count: u32, clear_rgb: u32) !void {
         if (image_index >= self.framebuffers.len) return error.BadImageIndex;
         const begin_rp = self.vkCmdBeginRenderPass orelse return error.MissingBeginRP;
         const end_rp = self.vkCmdEndRenderPass orelse return error.MissingEndRP;
@@ -349,7 +427,7 @@ pub const TextPipeline = struct {
         scissor.extent = self.extent;
         if (self.vkCmdSetScissor) |set| set(cmd, 0, 1, @ptrCast(&scissor));
 
-        if (self.atlas_image == null) {
+        if (self.atlas_image == null or self.inst_buf[slot] == null) {
             end_rp(cmd);
             return;
         }
@@ -357,9 +435,11 @@ pub const TextPipeline = struct {
         if (self.vkCmdBindDescriptorSets) |bind| {
             bind(cmd, vk.raw.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipeline_layout, 0, 1, @ptrCast(&self.desc_set), 0, null);
         }
+        const pc = text.pushConstants(self.extent.width, self.extent.height, self.atlas_size, self.srgbTarget());
+        if (self.vkCmdPushConstants) |push| push(cmd, self.pipeline_layout, vk.raw.VK_SHADER_STAGE_VERTEX_BIT, 0, @sizeOf(text.PushConstants), &pc);
         const zero: vk.raw.VkDeviceSize = 0;
         if (self.vkCmdBindVertexBuffers) |bind| {
-            const bufs = [_]vk.VkBuffer{ self.quad_buf, self.inst_buf };
+            const bufs = [_]vk.VkBuffer{ self.quad_buf, self.inst_buf[slot] };
             const offs = [_]vk.raw.VkDeviceSize{ zero, zero };
             bind(cmd, 0, 2, &bufs, &offs);
         }
@@ -425,8 +505,9 @@ pub const TextPipeline = struct {
         self.vkCmdDrawIndexed = loader_mod.Loader.loadDevice(gdp, dev, CmdDrawIndexedFn, "vkCmdDrawIndexed");
         self.vkCmdSetViewport = loader_mod.Loader.loadDevice(gdp, dev, CmdSetViewportFn, "vkCmdSetViewport");
         self.vkCmdSetScissor = loader_mod.Loader.loadDevice(gdp, dev, CmdSetScissorFn, "vkCmdSetScissor");
+        self.vkCmdPushConstants = loader_mod.Loader.loadDevice(gdp, dev, CmdPushConstantsFn, "vkCmdPushConstants");
 
-        if (self.vkCreateGraphicsPipelines == null or self.vkCreateRenderPass == null or self.vkCreateShaderModule == null) {
+        if (self.vkCreateGraphicsPipelines == null or self.vkCreateRenderPass == null or self.vkCreateShaderModule == null or self.vkCmdPushConstants == null) {
             return error.MissingTextProcs;
         }
     }
@@ -462,15 +543,7 @@ pub const TextPipeline = struct {
             if (self.vkFreeMemory) |d| d(h.device, self.atlas_mem, null);
             self.atlas_mem = null;
         }
-        if (self.staging_buf != null) {
-            if (self.vkDestroyBuffer) |d| d(h.device, self.staging_buf, null);
-            self.staging_buf = null;
-        }
-        if (self.staging_mem != null) {
-            if (self.vkFreeMemory) |d| d(h.device, self.staging_mem, null);
-            self.staging_mem = null;
-        }
-        self.staging_size = 0;
+        self.destroyStaging(h);
         self.atlas_size = 0;
         self.atlas_uploaded = false;
     }
@@ -520,64 +593,69 @@ pub const TextPipeline = struct {
         if (create_view(h.device, &view_info, null, &view) != vk.VK_SUCCESS or view == null) return error.CreateAtlasViewFailed;
         self.atlas_view = view;
 
-        self.staging_size = @as(usize, size) * size * 4;
-        try self.createHostBuffer(h, self.staging_size, vk.raw.VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &self.staging_buf, &self.staging_mem);
         self.atlas_size = size;
     }
 
-    fn uploadRegion(self: *TextPipeline, h: Handles, cmd: vk.VkCommandBuffer, atlas: *const Atlas, r: @import("../font/atlas.zig").Rect, first: bool) !void {
+    fn destroyStaging(self: *TextPipeline, h: Handles) void {
+        for (0..SLOTS) |i| self.freeStaging(h, @intCast(i));
+    }
+
+    fn freeStaging(self: *TextPipeline, h: Handles, slot: u32) void {
+        if (self.staging_buf[slot] != null) {
+            if (self.vkDestroyBuffer) |d| d(h.device, self.staging_buf[slot], null);
+            self.staging_buf[slot] = null;
+        }
+        if (self.staging_mem[slot] != null) {
+            if (self.vkFreeMemory) |d| d(h.device, self.staging_mem[slot], null);
+            self.staging_mem[slot] = null;
+        }
+        self.staging_size[slot] = 0;
+    }
+
+    /// Copy atlas region `r` through the slot's staging buffer (tightly
+    /// packed, grown on demand) into the image, inside `cmd`.
+    fn uploadRegion(self: *TextPipeline, h: Handles, slot: u32, cmd: vk.VkCommandBuffer, atlas: *const Atlas, r_in: Rect) !void {
+        // A fresh (UNDEFINED) image must be fully initialised: copy it all.
+        const fresh = !self.atlas_uploaded;
+        const r: Rect = if (fresh) .{ .x = 0, .y = 0, .w = atlas.size, .h = atlas.size } else r_in;
+        const bytes = @as(usize, r.w) * r.h * 4;
+        if (self.staging_size[slot] < bytes) {
+            self.freeStaging(h, slot);
+            const size = @max(bytes, 256 * 1024);
+            try self.createHostBuffer(h, size, vk.raw.VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &self.staging_buf[slot], &self.staging_mem[slot]);
+            self.staging_size[slot] = size;
+        }
         const map = self.vkMapMemory orelse return error.MissingMap;
         var mapped: ?*anyopaque = null;
-        if (map(h.device, self.staging_mem, 0, self.staging_size, 0, &mapped) != vk.VK_SUCCESS) return error.MapFailed;
-        const dst = @as([*]u8, @ptrCast(mapped.?))[0..self.staging_size];
-        // Staging mirrors the atlas layout; copy just the dirty rows.
-        var y = r.y;
-        while (y < r.y + r.h) : (y += 1) {
-            const off = (@as(usize, y) * atlas.size + r.x) * 4;
-            @memcpy(dst[off..][0 .. r.w * 4], atlas.pixels[off..][0 .. r.w * 4]);
+        if (map(h.device, self.staging_mem[slot], 0, bytes, 0, &mapped) != vk.VK_SUCCESS) return error.MapFailed;
+        const dst = @as([*]u8, @ptrCast(mapped.?))[0..bytes];
+        const row_bytes = @as(usize, r.w) * 4;
+        var y: u32 = 0;
+        while (y < r.h) : (y += 1) {
+            const off = (@as(usize, r.y + y) * atlas.size + r.x) * 4;
+            @memcpy(dst[y * row_bytes ..][0..row_bytes], atlas.pixels[off..][0..row_bytes]);
         }
-        if (self.vkUnmapMemory) |unmap| unmap(h.device, self.staging_mem);
+        if (self.vkUnmapMemory) |unmap| unmap(h.device, self.staging_mem[slot]);
 
-        if (self.vkResetCommandBuffer) |reset| _ = reset(cmd, 0);
-        var begin_info = std.mem.zeroes(vk.raw.VkCommandBufferBeginInfo);
-        begin_info.sType = vk.raw.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        begin_info.flags = vk.raw.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        const begin = self.vkBeginCommandBuffer orelse return error.MissingBegin;
-        if (begin(cmd, &begin_info) != vk.VK_SUCCESS) return error.BeginFailed;
-
+        // Earlier frames may still sample the atlas: the barrier orders this
+        // copy after their fragment work (same queue, submission order).
         const barrier_fn = self.vkCmdPipelineBarrier orelse return error.MissingBarrier;
-        const old_layout: vk.raw.VkImageLayout = if (first or !self.atlas_uploaded) vk.raw.VK_IMAGE_LAYOUT_UNDEFINED else vk.raw.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        var to_dst = imageBarrier(self.atlas_image, old_layout, vk.raw.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, if (old_layout == vk.raw.VK_IMAGE_LAYOUT_UNDEFINED) 0 else vk.raw.VK_ACCESS_SHADER_READ_BIT, vk.raw.VK_ACCESS_TRANSFER_WRITE_BIT);
+        const old_layout: vk.raw.VkImageLayout = if (fresh) vk.raw.VK_IMAGE_LAYOUT_UNDEFINED else vk.raw.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        var to_dst = imageBarrier(self.atlas_image, old_layout, vk.raw.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, if (fresh) 0 else vk.raw.VK_ACCESS_SHADER_READ_BIT, vk.raw.VK_ACCESS_TRANSFER_WRITE_BIT);
         barrier_fn(cmd, vk.raw.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT | vk.raw.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, vk.raw.VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, null, 0, null, 1, @ptrCast(&to_dst));
 
         var region = std.mem.zeroes(vk.raw.VkBufferImageCopy);
-        region.bufferOffset = (@as(u64, r.y) * atlas.size + r.x) * 4;
-        region.bufferRowLength = atlas.size;
-        region.bufferImageHeight = atlas.size;
+        region.bufferOffset = 0;
+        region.bufferRowLength = r.w;
+        region.bufferImageHeight = r.h;
         region.imageSubresource.aspectMask = vk.raw.VK_IMAGE_ASPECT_COLOR_BIT;
         region.imageSubresource.layerCount = 1;
         region.imageOffset = .{ .x = @intCast(r.x), .y = @intCast(r.y), .z = 0 };
         region.imageExtent = .{ .width = r.w, .height = r.h, .depth = 1 };
-        // A fresh (UNDEFINED) image must be fully initialised: copy it all.
-        if (old_layout == vk.raw.VK_IMAGE_LAYOUT_UNDEFINED and !(r.x == 0 and r.y == 0 and r.w == atlas.size and r.h == atlas.size)) {
-            region.bufferOffset = 0;
-            region.imageOffset = .{ .x = 0, .y = 0, .z = 0 };
-            region.imageExtent = .{ .width = atlas.size, .height = atlas.size, .depth = 1 };
-            @memcpy(dst, atlas.pixels[0..self.staging_size]);
-        }
-        (self.vkCmdCopyBufferToImage orelse return error.MissingCopy)(cmd, self.staging_buf, self.atlas_image, vk.raw.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, @ptrCast(&region));
+        (self.vkCmdCopyBufferToImage orelse return error.MissingCopy)(cmd, self.staging_buf[slot], self.atlas_image, vk.raw.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, @ptrCast(&region));
 
         var to_shader = imageBarrier(self.atlas_image, vk.raw.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.raw.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, vk.raw.VK_ACCESS_TRANSFER_WRITE_BIT, vk.raw.VK_ACCESS_SHADER_READ_BIT);
         barrier_fn(cmd, vk.raw.VK_PIPELINE_STAGE_TRANSFER_BIT, vk.raw.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, null, 0, null, 1, @ptrCast(&to_shader));
-
-        const end = self.vkEndCommandBuffer orelse return error.MissingEnd;
-        if (end(cmd) != vk.VK_SUCCESS) return error.EndFailed;
-        var submit = std.mem.zeroes(vk.raw.VkSubmitInfo);
-        submit.sType = vk.raw.VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit.commandBufferCount = 1;
-        submit.pCommandBuffers = @ptrCast(&cmd);
-        if ((self.vkQueueSubmit orelse return error.MissingSubmit)(h.queue, 1, @ptrCast(&submit), null) != vk.VK_SUCCESS) return error.SubmitFailed;
-        if (self.vkQueueWaitIdle) |wait| _ = wait(h.queue);
     }
 
     fn writeDescriptor(self: *TextPipeline, h: Handles) !void {
@@ -637,10 +715,17 @@ pub const TextPipeline = struct {
         }
         self.desc_set = set;
 
+        var push_range = vk.raw.VkPushConstantRange{
+            .stageFlags = vk.raw.VK_SHADER_STAGE_VERTEX_BIT,
+            .offset = 0,
+            .size = @sizeOf(text.PushConstants),
+        };
         var pl_info = std.mem.zeroes(vk.raw.VkPipelineLayoutCreateInfo);
         pl_info.sType = vk.raw.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pl_info.setLayoutCount = 1;
         pl_info.pSetLayouts = @ptrCast(&dsl);
+        pl_info.pushConstantRangeCount = 1;
+        pl_info.pPushConstantRanges = @ptrCast(&push_range);
         var layout: vk.VkPipelineLayout = null;
         if ((self.vkCreatePipelineLayout orelse return error.MissingPipeLayout)(h.device, &pl_info, null, &layout) != vk.VK_SUCCESS or layout == null) {
             return error.CreatePipelineLayoutFailed;
@@ -653,13 +738,7 @@ pub const TextPipeline = struct {
         try self.writeBuffer(h, self.quad_mem, std.mem.asBytes(&text.QUAD_VERTS));
         try self.createHostBuffer(h, @sizeOf(@TypeOf(text.QUAD_INDICES)), vk.raw.VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &self.index_buf, &self.index_mem);
         try self.writeBuffer(h, self.index_mem, std.mem.asBytes(&text.QUAD_INDICES));
-        try self.createHostBuffer(
-            h,
-            @as(usize, text.MAX_INSTANCES) * @sizeOf(text.Instance),
-            vk.raw.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            &self.inst_buf,
-            &self.inst_mem,
-        );
+        try self.growInstances(h, 16384);
     }
 
     fn createRenderPass(self: *TextPipeline, h: Handles, format: vk.VkFormat) !void {
@@ -734,12 +813,12 @@ pub const TextPipeline = struct {
         };
         var attrs = [_]vk.raw.VkVertexInputAttributeDescription{
             .{ .location = 0, .binding = 0, .format = vk.raw.VK_FORMAT_R32G32_SFLOAT, .offset = 0 },
-            .{ .location = 1, .binding = 1, .format = vk.raw.VK_FORMAT_R32G32_SFLOAT, .offset = 0 },
-            .{ .location = 2, .binding = 1, .format = vk.raw.VK_FORMAT_R32G32_SFLOAT, .offset = 8 },
-            .{ .location = 3, .binding = 1, .format = vk.raw.VK_FORMAT_R32G32_SFLOAT, .offset = 16 },
-            .{ .location = 4, .binding = 1, .format = vk.raw.VK_FORMAT_R32G32_SFLOAT, .offset = 24 },
-            .{ .location = 5, .binding = 1, .format = vk.raw.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 32 },
-            .{ .location = 6, .binding = 1, .format = vk.raw.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 48 },
+            .{ .location = 1, .binding = 1, .format = vk.raw.VK_FORMAT_R32G32_SFLOAT, .offset = @offsetOf(text.Instance, "origin") },
+            .{ .location = 2, .binding = 1, .format = vk.raw.VK_FORMAT_R32G32_SFLOAT, .offset = @offsetOf(text.Instance, "size") },
+            .{ .location = 3, .binding = 1, .format = vk.raw.VK_FORMAT_R16G16_UINT, .offset = @offsetOf(text.Instance, "uv_origin") },
+            .{ .location = 4, .binding = 1, .format = vk.raw.VK_FORMAT_R16G16_UINT, .offset = @offsetOf(text.Instance, "uv_size") },
+            .{ .location = 5, .binding = 1, .format = vk.raw.VK_FORMAT_R8G8B8A8_UNORM, .offset = @offsetOf(text.Instance, "color") },
+            .{ .location = 6, .binding = 1, .format = vk.raw.VK_FORMAT_R32_UINT, .offset = @offsetOf(text.Instance, "kind") },
         };
         var vi = std.mem.zeroes(vk.raw.VkPipelineVertexInputStateCreateInfo);
         vi.sType = vk.raw.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -825,14 +904,7 @@ pub const TextPipeline = struct {
     }
 
     fn destroyAtlas(self: *TextPipeline, h: Handles) void {
-        if (self.inst_buf != null) {
-            if (self.vkDestroyBuffer) |d| d(h.device, self.inst_buf, null);
-            self.inst_buf = null;
-        }
-        if (self.inst_mem != null) {
-            if (self.vkFreeMemory) |d| d(h.device, self.inst_mem, null);
-            self.inst_mem = null;
-        }
+        self.destroyInstanceBuffers(h);
         if (self.index_buf != null) {
             if (self.vkDestroyBuffer) |d| d(h.device, self.index_buf, null);
             self.index_buf = null;

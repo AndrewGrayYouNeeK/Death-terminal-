@@ -39,6 +39,44 @@ const CreateFenceFn = *const fn (vk.VkDevice, *const vk.raw.VkFenceCreateInfo, ?
 const DestroyFenceFn = *const fn (vk.VkDevice, vk.VkFence, ?*const anyopaque) callconv(.C) void;
 const WaitForFencesFn = *const fn (vk.VkDevice, u32, [*]const vk.VkFence, vk.raw.VkBool32, u64) callconv(.C) vk.VkResult;
 const ResetFencesFn = *const fn (vk.VkDevice, u32, [*]const vk.VkFence) callconv(.C) vk.VkResult;
+const CreateSemaphoreFn = *const fn (vk.VkDevice, *const vk.raw.VkSemaphoreCreateInfo, ?*const anyopaque, *vk.VkSemaphore) callconv(.C) vk.VkResult;
+const DestroySemaphoreFn = *const fn (vk.VkDevice, vk.VkSemaphore, ?*const anyopaque) callconv(.C) void;
+
+/// Frames the CPU may record ahead of the GPU.
+pub const MAX_FRAMES_IN_FLIGHT = 2;
+
+/// Swapchain present mode preference (`present_mode` config key).
+pub const PresentMode = enum {
+    /// Vsync, never tears (always supported).
+    fifo,
+    /// Vsync but late frames tear (adaptive).
+    fifo_relaxed,
+    /// Latest frame wins at vblank: low latency, no tearing.
+    mailbox,
+    /// No vsync; may tear.
+    immediate,
+
+    pub fn parse(s: []const u8) ?PresentMode {
+        if (std.ascii.eqlIgnoreCase(s, "vsync")) return .fifo;
+        return std.meta.stringToEnum(PresentMode, s);
+    }
+
+    fn vk_value(self: PresentMode) vk.VkPresentModeKHR {
+        return switch (self) {
+            .fifo => vk.raw.VK_PRESENT_MODE_FIFO_KHR,
+            .fifo_relaxed => vk.raw.VK_PRESENT_MODE_FIFO_RELAXED_KHR,
+            .mailbox => vk.raw.VK_PRESENT_MODE_MAILBOX_KHR,
+            .immediate => vk.raw.VK_PRESENT_MODE_IMMEDIATE_KHR,
+        };
+    }
+};
+
+/// The frame being recorded: swapchain image + per-frame slot resources.
+pub const FrameCtx = struct {
+    image: u32,
+    slot: u32,
+    cmd: vk.VkCommandBuffer,
+};
 
 pub const Handles = struct {
     allocator: std.mem.Allocator,
@@ -50,7 +88,11 @@ pub const Handles = struct {
     queue_family: u32,
 };
 
-/// Copies the software RGBA framebuffer into a Vulkan swapchain image and presents it.
+/// Owns the surface + swapchain and paces frames: each of the
+/// MAX_FRAMES_IN_FLIGHT slots has its own command buffer, image-available
+/// semaphore and fence, so the CPU records frame N+1 while the GPU draws N
+/// and never waits for the queue to go idle. Also presents the software
+/// RGBA framebuffer by copying it into a swapchain image.
 pub const GpuPresent = struct {
     enabled: bool = false,
     surface: vk.VkSurfaceKHR = null,
@@ -59,14 +101,27 @@ pub const GpuPresent = struct {
     format: vk.VkFormat = vk.VK_FORMAT_B8G8R8A8_SRGB,
     extent: vk.VkExtent2D = .{ .width = 0, .height = 0 },
     command_pool: vk.VkCommandPool = null,
-    command_buffer: vk.VkCommandBuffer = null,
-    staging: vk.VkBuffer = null,
-    staging_mem: vk.VkDeviceMemory = null,
+    command_buffers: [MAX_FRAMES_IN_FLIGHT]vk.VkCommandBuffer = .{null} ** MAX_FRAMES_IN_FLIGHT,
+    image_available: [MAX_FRAMES_IN_FLIGHT]vk.VkSemaphore = .{null} ** MAX_FRAMES_IN_FLIGHT,
+    in_flight: [MAX_FRAMES_IN_FLIGHT]vk.VkFence = .{null} ** MAX_FRAMES_IN_FLIGHT,
+    /// Per swapchain image: signalled when its rendering is done.
+    render_finished: []vk.VkSemaphore = &.{},
+    /// Per swapchain image: fence of the slot that last rendered it.
+    images_in_flight: []vk.VkFence = &.{},
+    slot: u32 = 0,
+    /// Software-framebuffer staging, one per slot.
+    staging: [MAX_FRAMES_IN_FLIGHT]vk.VkBuffer = .{null} ** MAX_FRAMES_IN_FLIGHT,
+    staging_mem: [MAX_FRAMES_IN_FLIGHT]vk.VkDeviceMemory = .{null} ** MAX_FRAMES_IN_FLIGHT,
     staging_size: usize = 0,
-    acquire_fence: vk.VkFence = null,
     allocator: std.mem.Allocator = undefined,
     can_blit: bool = false,
     can_draw: bool = false,
+    present_pref: PresentMode = .fifo,
+    present_mode: PresentMode = .fifo,
+    /// Set when present/acquire reported the swapchain out of date or
+    /// suboptimal; the owner should call `recreate`.
+    needs_recreate: bool = false,
+    frames_presented: u64 = 0,
 
     vkCreateXlibSurfaceKHR: ?CreateXlibSurfaceFn = null,
     vkCreateWaylandSurfaceKHR: ?CreateWaylandSurfaceFn = null,
@@ -104,11 +159,11 @@ pub const GpuPresent = struct {
     vkDestroyFence: ?DestroyFenceFn = null,
     vkWaitForFences: ?WaitForFencesFn = null,
     vkResetFences: ?ResetFencesFn = null,
+    vkCreateSemaphore: ?CreateSemaphoreFn = null,
+    vkDestroySemaphore: ?DestroySemaphoreFn = null,
 
     pub fn deinit(self: *GpuPresent, h: Handles) void {
-        if (h.queue != null) {
-            if (self.vkQueueWaitIdle) |wait| _ = wait(h.queue);
-        }
+        self.waitIdle(h);
         self.destroySwapchain(h);
         if (self.surface != null) {
             if (self.vkDestroySurfaceKHR) |destroy| destroy(h.instance, self.surface, null);
@@ -202,9 +257,12 @@ pub const GpuPresent = struct {
         try self.createSwapchain(h, width, height);
         try self.createCommands(h);
         self.enabled = true;
-        std.debug.print("    → Vulkan swapchain present enabled ({d}x{d}) draw={} blit={}\n", .{
+        std.debug.print("    → Vulkan swapchain present enabled ({d}x{d}, {d} images, {s}, {d} frames in flight) draw={} blit={}\n", .{
             self.extent.width,
             self.extent.height,
+            self.images.len,
+            @tagName(self.present_mode),
+            MAX_FRAMES_IN_FLIGHT,
             self.can_draw,
             self.can_blit,
         });
@@ -212,57 +270,100 @@ pub const GpuPresent = struct {
 
     pub fn recreate(self: *GpuPresent, h: Handles, width: u32, height: u32) !void {
         if (!self.enabled) return error.NotEnabled;
-        if (h.queue != null) {
-            if (self.vkQueueWaitIdle) |wait| _ = wait(h.queue);
-        }
+        self.waitIdle(h);
         self.destroySwapchain(h);
         try self.createSwapchain(h, width, height);
         try self.createCommands(h);
+        self.needs_recreate = false;
     }
 
-    pub fn beginPresent(self: *GpuPresent, h: Handles) !u32 {
+    /// Wait until no frame is in flight (before destroying or rewriting
+    /// resources the GPU may still read). Never called per frame.
+    pub fn waitIdle(self: *GpuPresent, h: Handles) void {
+        if (h.device == null) return;
+        const wait = self.vkWaitForFences orelse return;
+        var fences: [MAX_FRAMES_IN_FLIGHT]vk.VkFence = undefined;
+        var n: u32 = 0;
+        for (self.in_flight) |f| if (f != null) {
+            fences[n] = f;
+            n += 1;
+        };
+        if (n > 0) _ = wait(h.device, n, &fences, vk.VK_TRUE, std.math.maxInt(u64));
+    }
+
+    /// Wait for this slot's previous frame, acquire an image and begin the
+    /// slot's command buffer. error.OutOfDate means: recreate and retry.
+    pub fn beginFrame(self: *GpuPresent, h: Handles) !FrameCtx {
         if (!self.enabled) return error.NotEnabled;
-        var index: u32 = 0;
         const acquire = self.vkAcquireNextImageKHR orelse return error.MissingAcquire;
         const wait_fences = self.vkWaitForFences orelse return error.MissingWaitFence;
         const reset_fences = self.vkResetFences orelse return error.MissingResetFence;
-        _ = reset_fences(h.device, 1, @ptrCast(&self.acquire_fence));
-        const acq = acquire(h.device, self.swapchain, std.math.maxInt(u64), null, self.acquire_fence, &index);
-        if (acq != vk.VK_SUCCESS and acq != vk.raw.VK_SUBOPTIMAL_KHR) return error.AcquireFailed;
-        _ = wait_fences(h.device, 1, @ptrCast(&self.acquire_fence), vk.VK_TRUE, std.math.maxInt(u64));
-        if (index >= self.images.len) return error.BadImageIndex;
+        const slot = self.slot;
+        const fence = self.in_flight[slot];
+        // Blocks only when the GPU is MAX_FRAMES_IN_FLIGHT frames behind.
+        _ = wait_fences(h.device, 1, @ptrCast(&fence), vk.VK_TRUE, std.math.maxInt(u64));
 
-        const cmd = self.command_buffer orelse return error.NoCommandBuffer;
+        var index: u32 = 0;
+        const acq = acquire(h.device, self.swapchain, std.math.maxInt(u64), self.image_available[slot], null, &index);
+        if (acq == vk.raw.VK_ERROR_OUT_OF_DATE_KHR) {
+            self.needs_recreate = true;
+            return error.OutOfDate;
+        }
+        if (acq == vk.raw.VK_SUBOPTIMAL_KHR) self.needs_recreate = true;
+        if (acq != vk.VK_SUCCESS and acq != vk.raw.VK_SUBOPTIMAL_KHR) return error.AcquireFailed;
+        if (index >= self.images.len) return error.BadImageIndex;
+        // An image acquired out of order may still be in use by another slot.
+        if (self.images_in_flight[index]) |other| {
+            if (other != fence) _ = wait_fences(h.device, 1, @ptrCast(&other), vk.VK_TRUE, std.math.maxInt(u64));
+        }
+        self.images_in_flight[index] = fence;
+        _ = reset_fences(h.device, 1, @ptrCast(&fence));
+
+        const cmd = self.command_buffers[slot] orelse return error.NoCommandBuffer;
         if (self.vkResetCommandBuffer) |reset| _ = reset(cmd, 0);
         var begin_info = std.mem.zeroes(vk.raw.VkCommandBufferBeginInfo);
         begin_info.sType = vk.raw.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         begin_info.flags = vk.raw.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         const begin = self.vkBeginCommandBuffer orelse return error.MissingBegin;
         if (begin(cmd, &begin_info) != vk.VK_SUCCESS) return error.BeginFailed;
-        return index;
+        return .{ .image = index, .slot = slot, .cmd = cmd };
     }
 
-    pub fn submitPresent(self: *GpuPresent, h: Handles, index: u32) !void {
-        const cmd = self.command_buffer orelse return error.NoCommandBuffer;
+    /// End, submit (signalling the slot fence) and queue the present. Does
+    /// not wait for the GPU.
+    pub fn endFrame(self: *GpuPresent, h: Handles, f: FrameCtx, wait_stage: u32) !void {
         const end = self.vkEndCommandBuffer orelse return error.MissingEnd;
-        if (end(cmd) != vk.VK_SUCCESS) return error.EndFailed;
+        if (end(f.cmd) != vk.VK_SUCCESS) return error.EndFailed;
 
+        var stage: vk.raw.VkPipelineStageFlags = wait_stage;
         var submit = std.mem.zeroes(vk.raw.VkSubmitInfo);
         submit.sType = vk.raw.VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.waitSemaphoreCount = 1;
+        submit.pWaitSemaphores = @ptrCast(&self.image_available[f.slot]);
+        submit.pWaitDstStageMask = @ptrCast(&stage);
         submit.commandBufferCount = 1;
-        submit.pCommandBuffers = @ptrCast(&cmd);
+        submit.pCommandBuffers = @ptrCast(&f.cmd);
+        submit.signalSemaphoreCount = 1;
+        submit.pSignalSemaphores = @ptrCast(&self.render_finished[f.image]);
         const qsubmit = self.vkQueueSubmit orelse return error.MissingSubmit;
-        if (qsubmit(h.queue, 1, @ptrCast(&submit), null) != vk.VK_SUCCESS) return error.SubmitFailed;
-        if (self.vkQueueWaitIdle) |wait| _ = wait(h.queue);
+        if (qsubmit(h.queue, 1, @ptrCast(&submit), self.in_flight[f.slot]) != vk.VK_SUCCESS) return error.SubmitFailed;
+        self.slot = (self.slot + 1) % MAX_FRAMES_IN_FLIGHT;
 
         var present_info = std.mem.zeroes(vk.raw.VkPresentInfoKHR);
         present_info.sType = vk.raw.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        present_info.waitSemaphoreCount = 1;
+        present_info.pWaitSemaphores = @ptrCast(&self.render_finished[f.image]);
         present_info.swapchainCount = 1;
         present_info.pSwapchains = @ptrCast(&self.swapchain);
-        present_info.pImageIndices = &index;
+        present_info.pImageIndices = &f.image;
         const qpresent = self.vkQueuePresentKHR orelse return error.MissingPresent;
         const pres = qpresent(h.queue, &present_info);
-        if (pres != vk.VK_SUCCESS and pres != vk.raw.VK_SUBOPTIMAL_KHR) return error.PresentFailed;
+        self.frames_presented += 1;
+        if (pres == vk.raw.VK_ERROR_OUT_OF_DATE_KHR or pres == vk.raw.VK_SUBOPTIMAL_KHR) {
+            self.needs_recreate = true;
+            return;
+        }
+        if (pres != vk.VK_SUCCESS) return error.PresentFailed;
     }
 
     pub fn present(self: *GpuPresent, h: Handles, pixels: []const u32, width: u32, height: u32) bool {
@@ -319,6 +420,8 @@ pub const GpuPresent = struct {
             self.vkDestroyFence = loader_mod.Loader.loadDevice(get_dev, dev, DestroyFenceFn, "vkDestroyFence");
             self.vkWaitForFences = loader_mod.Loader.loadDevice(get_dev, dev, WaitForFencesFn, "vkWaitForFences");
             self.vkResetFences = loader_mod.Loader.loadDevice(get_dev, dev, ResetFencesFn, "vkResetFences");
+            self.vkCreateSemaphore = loader_mod.Loader.loadDevice(get_dev, dev, CreateSemaphoreFn, "vkCreateSemaphore");
+            self.vkDestroySemaphore = loader_mod.Loader.loadDevice(get_dev, dev, DestroySemaphoreFn, "vkDestroySemaphore");
         }
 
         const has_surface = self.vkCreateXlibSurfaceKHR != null or
@@ -373,7 +476,10 @@ pub const GpuPresent = struct {
         }
         if (extent.width == 0 or extent.height == 0) return error.ZeroExtent;
 
+        self.present_mode = self.choosePresentMode(h);
         var image_count = caps.minImageCount + 1;
+        // Mailbox needs a spare image to replace.
+        if (self.present_mode == .mailbox) image_count = @max(image_count, 3);
         if (caps.maxImageCount > 0 and image_count > caps.maxImageCount) image_count = caps.maxImageCount;
 
         var sci = std.mem.zeroes(vk.VkSwapchainCreateInfoKHR);
@@ -388,7 +494,7 @@ pub const GpuPresent = struct {
         sci.imageSharingMode = vk.raw.VK_SHARING_MODE_EXCLUSIVE;
         sci.preTransform = caps.currentTransform;
         sci.compositeAlpha = vk.raw.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-        sci.presentMode = vk.VK_PRESENT_MODE_FIFO_KHR;
+        sci.presentMode = self.present_mode.vk_value();
         sci.clipped = vk.VK_TRUE;
 
         const create = self.vkCreateSwapchainKHR orelse return error.MissingCreateSwapchain;
@@ -409,6 +515,29 @@ pub const GpuPresent = struct {
         self.images = images;
     }
 
+    fn choosePresentMode(self: *GpuPresent, h: Handles) PresentMode {
+        const want = self.present_pref;
+        if (want == .fifo) return .fifo;
+        const modes_fn = self.vkGetPhysicalDeviceSurfacePresentModesKHR orelse return .fifo;
+        var count: u32 = 0;
+        if (modes_fn(h.physical_device, self.surface, &count, null) != vk.VK_SUCCESS or count == 0) return .fifo;
+        var buf: [16]vk.VkPresentModeKHR = undefined;
+        count = @min(count, buf.len);
+        if (modes_fn(h.physical_device, self.surface, &count, &buf) != vk.VK_SUCCESS and count == 0) return .fifo;
+        const has = struct {
+            fn f(list: []const vk.VkPresentModeKHR, m: PresentMode) bool {
+                for (list) |x| if (x == m.vk_value()) return true;
+                return false;
+            }
+        }.f;
+        const list = buf[0..count];
+        if (has(list, want)) return want;
+        // vsync off: mailbox is the tear-free fallback, then immediate.
+        if (want == .immediate and has(list, .mailbox)) return .mailbox;
+        if (want == .mailbox and has(list, .immediate)) return .immediate;
+        return .fifo;
+    }
+
     fn createCommands(self: *GpuPresent, h: Handles) !void {
         var pool_info = std.mem.zeroes(vk.raw.VkCommandPoolCreateInfo);
         pool_info.sType = vk.raw.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -424,25 +553,37 @@ pub const GpuPresent = struct {
         alloc_info.sType = vk.raw.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
         alloc_info.commandPool = pool;
         alloc_info.level = vk.raw.VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        alloc_info.commandBufferCount = 1;
-
+        alloc_info.commandBufferCount = MAX_FRAMES_IN_FLIGHT;
         const alloc = self.vkAllocateCommandBuffers orelse return error.MissingAllocCmd;
-        var cmd: vk.VkCommandBuffer = null;
-        if (alloc(h.device, &alloc_info, @ptrCast(&cmd)) != vk.VK_SUCCESS or cmd == null) return error.AllocCommandBufferFailed;
-        self.command_buffer = cmd;
+        if (alloc(h.device, &alloc_info, @ptrCast(&self.command_buffers)) != vk.VK_SUCCESS) return error.AllocCommandBufferFailed;
 
-        const bytes = @as(usize, self.extent.width) * @as(usize, self.extent.height) * 4;
-        try self.createStaging(h, bytes);
-
+        const create_fence = self.vkCreateFence orelse return error.MissingFence;
+        const create_sem = self.vkCreateSemaphore orelse return error.MissingSemaphore;
         var fence_info = std.mem.zeroes(vk.raw.VkFenceCreateInfo);
         fence_info.sType = vk.raw.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        const create_fence = self.vkCreateFence orelse return error.MissingFence;
-        var fence: vk.VkFence = null;
-        if (create_fence(h.device, &fence_info, null, &fence) != vk.VK_SUCCESS or fence == null) return error.CreateFenceFailed;
-        self.acquire_fence = fence;
+        fence_info.flags = vk.raw.VK_FENCE_CREATE_SIGNALED_BIT; // first wait returns at once
+        var sem_info = std.mem.zeroes(vk.raw.VkSemaphoreCreateInfo);
+        sem_info.sType = vk.raw.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        for (0..MAX_FRAMES_IN_FLIGHT) |i| {
+            if (create_fence(h.device, &fence_info, null, &self.in_flight[i]) != vk.VK_SUCCESS) return error.CreateFenceFailed;
+            if (create_sem(h.device, &sem_info, null, &self.image_available[i]) != vk.VK_SUCCESS) return error.CreateSemaphoreFailed;
+        }
+        self.render_finished = try h.allocator.alloc(vk.VkSemaphore, self.images.len);
+        @memset(self.render_finished, null);
+        for (self.render_finished) |*sem| {
+            if (create_sem(h.device, &sem_info, null, sem) != vk.VK_SUCCESS) return error.CreateSemaphoreFailed;
+        }
+        self.images_in_flight = try h.allocator.alloc(vk.VkFence, self.images.len);
+        @memset(self.images_in_flight, null);
+        self.slot = 0;
+
+        if (self.can_blit) {
+            const bytes = @as(usize, self.extent.width) * @as(usize, self.extent.height) * 4;
+            for (0..MAX_FRAMES_IN_FLIGHT) |i| try self.createStaging(h, bytes, i);
+        }
     }
 
-    fn createStaging(self: *GpuPresent, h: Handles, bytes: usize) !void {
+    fn createStaging(self: *GpuPresent, h: Handles, bytes: usize, slot: usize) !void {
         var buf_info = std.mem.zeroes(vk.raw.VkBufferCreateInfo);
         buf_info.sType = vk.raw.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         buf_info.size = bytes;
@@ -475,28 +616,41 @@ pub const GpuPresent = struct {
         const bind = self.vkBindBufferMemory orelse return error.MissingBind;
         if (bind(h.device, buffer, memory, 0) != vk.VK_SUCCESS) return error.BindMemoryFailed;
 
-        self.staging = buffer;
-        self.staging_mem = memory;
+        self.staging[slot] = buffer;
+        self.staging_mem[slot] = memory;
         self.staging_size = bytes;
     }
 
     fn destroySwapchain(self: *GpuPresent, h: Handles) void {
-        if (self.acquire_fence != null) {
-            if (self.vkDestroyFence) |d| d(h.device, self.acquire_fence, null);
-            self.acquire_fence = null;
+        for (0..MAX_FRAMES_IN_FLIGHT) |i| {
+            if (self.in_flight[i] != null) {
+                if (self.vkDestroyFence) |d| d(h.device, self.in_flight[i], null);
+                self.in_flight[i] = null;
+            }
+            if (self.image_available[i] != null) {
+                if (self.vkDestroySemaphore) |d| d(h.device, self.image_available[i], null);
+                self.image_available[i] = null;
+            }
+            if (self.staging[i] != null) {
+                if (self.vkDestroyBuffer) |d| d(h.device, self.staging[i], null);
+                self.staging[i] = null;
+            }
+            if (self.staging_mem[i] != null) {
+                if (self.vkFreeMemory) |d| d(h.device, self.staging_mem[i], null);
+                self.staging_mem[i] = null;
+            }
         }
-        if (self.staging != null) {
-            if (self.vkDestroyBuffer) |d| d(h.device, self.staging, null);
-            self.staging = null;
+        for (self.render_finished) |sem| {
+            if (sem != null) if (self.vkDestroySemaphore) |d| d(h.device, sem, null);
         }
-        if (self.staging_mem != null) {
-            if (self.vkFreeMemory) |d| d(h.device, self.staging_mem, null);
-            self.staging_mem = null;
-        }
+        if (self.render_finished.len != 0) self.allocator.free(self.render_finished);
+        self.render_finished = &.{};
+        if (self.images_in_flight.len != 0) self.allocator.free(self.images_in_flight);
+        self.images_in_flight = &.{};
         if (self.command_pool != null) {
             if (self.vkDestroyCommandPool) |d| d(h.device, self.command_pool, null);
             self.command_pool = null;
-            self.command_buffer = null;
+            self.command_buffers = .{null} ** MAX_FRAMES_IN_FLIGHT;
         }
         if (self.swapchain != null) {
             if (self.vkDestroySwapchainKHR) |d| d(h.device, self.swapchain, null);
@@ -514,42 +668,43 @@ pub const GpuPresent = struct {
         const copy_h = @min(height, self.extent.height);
         if (copy_w == 0 or copy_h == 0) return error.ZeroCopy;
 
-        try self.uploadStaging(h, pixels, width, height, copy_w, copy_h);
-        const index = try self.beginPresent(h);
-        const cmd = self.command_buffer orelse return error.NoCommandBuffer;
-        const image = self.images[index];
+        // beginFrame waited for this slot's fence, so its staging is free.
+        const f = try self.beginFrame(h);
+        try self.uploadStaging(h, f.slot, pixels, width, height, copy_w, copy_h);
+        const cmd = f.cmd;
+        const image = self.images[f.image];
         const barrier_fn = self.vkCmdPipelineBarrier orelse return error.MissingBarrier;
         var to_dst = imageBarrier(image, vk.raw.VK_IMAGE_LAYOUT_UNDEFINED, vk.raw.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, vk.raw.VK_ACCESS_TRANSFER_WRITE_BIT);
-        barrier_fn(cmd, vk.raw.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, vk.raw.VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, null, 0, null, 1, @ptrCast(&to_dst));
+        barrier_fn(cmd, vk.raw.VK_PIPELINE_STAGE_TRANSFER_BIT, vk.raw.VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, null, 0, null, 1, @ptrCast(&to_dst));
 
         var region = std.mem.zeroes(vk.raw.VkBufferImageCopy);
         region.imageSubresource.aspectMask = vk.raw.VK_IMAGE_ASPECT_COLOR_BIT;
         region.imageSubresource.layerCount = 1;
         region.imageExtent = .{ .width = copy_w, .height = copy_h, .depth = 1 };
         const copy_fn = self.vkCmdCopyBufferToImage orelse return error.MissingCopy;
-        copy_fn(cmd, self.staging, image, vk.raw.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, @ptrCast(&region));
+        copy_fn(cmd, self.staging[f.slot], image, vk.raw.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, @ptrCast(&region));
 
-        var to_present = imageBarrier(image, vk.raw.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.raw.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, vk.raw.VK_ACCESS_TRANSFER_WRITE_BIT, vk.raw.VK_ACCESS_MEMORY_READ_BIT);
+        var to_present = imageBarrier(image, vk.raw.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.raw.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, vk.raw.VK_ACCESS_TRANSFER_WRITE_BIT, 0);
         barrier_fn(cmd, vk.raw.VK_PIPELINE_STAGE_TRANSFER_BIT, vk.raw.VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, null, 0, null, 1, @ptrCast(&to_present));
-        try self.submitPresent(h, index);
+        try self.endFrame(h, f, vk.raw.VK_PIPELINE_STAGE_TRANSFER_BIT);
     }
 
-    fn uploadStaging(self: *GpuPresent, h: Handles, pixels: []const u32, src_w: u32, src_h: u32, copy_w: u32, copy_h: u32) !void {
+    fn uploadStaging(self: *GpuPresent, h: Handles, slot: u32, pixels: []const u32, src_w: u32, src_h: u32, copy_w: u32, copy_h: u32) !void {
         _ = src_h;
         const map = self.vkMapMemory orelse return error.MissingMap;
         var mapped: ?*anyopaque = null;
-        if (map(h.device, self.staging_mem, 0, self.staging_size, 0, &mapped) != vk.VK_SUCCESS) return error.MapFailed;
-        defer if (self.vkUnmapMemory) |unmap| unmap(h.device, self.staging_mem);
+        if (map(h.device, self.staging_mem[slot], 0, self.staging_size, 0, &mapped) != vk.VK_SUCCESS) return error.MapFailed;
+        defer if (self.vkUnmapMemory) |unmap| unmap(h.device, self.staging_mem[slot]);
 
         const dest = @as([*]u32, @ptrCast(@alignCast(mapped.?)));
         const dst_w = self.extent.width;
         var y: u32 = 0;
         while (y < copy_h) : (y += 1) {
-            var x: u32 = 0;
-            while (x < copy_w) : (x += 1) {
-                const src = pixels[y * src_w + x];
-                dest[y * dst_w + x] = swizzle(self.format, src);
-            }
+            const src_row = pixels[y * src_w ..][0..copy_w];
+            const dst_row = dest[y * dst_w ..][0..copy_w];
+            if (self.format == vk.VK_FORMAT_R8G8B8A8_SRGB or self.format == vk.raw.VK_FORMAT_R8G8B8A8_UNORM) {
+                for (dst_row, src_row) |*d, px| d.* = swizzle(self.format, px);
+            } else @memcpy(dst_row, src_row);
         }
     }
 };
@@ -596,6 +751,12 @@ fn findMemoryType(props: vk.raw.VkPhysicalDeviceMemoryProperties, type_filter: u
         }
     }
     return null;
+}
+
+test "present mode names" {
+    try std.testing.expectEqual(PresentMode.mailbox, PresentMode.parse("mailbox").?);
+    try std.testing.expectEqual(PresentMode.fifo, PresentMode.parse("vsync").?);
+    try std.testing.expect(PresentMode.parse("bogus") == null);
 }
 
 test "GpuPresent starts disabled" {

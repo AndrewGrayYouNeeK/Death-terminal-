@@ -2,7 +2,8 @@
 //!
 //! Matches are reported in cell coordinates: an absolute line (see
 //! `Terminal.lineAt`) and an inclusive column range that covers both
-//! halves of wide characters. Matches do not span soft-wrapped lines.
+//! halves of wide characters. Soft-wrapped rows are searched as one
+//! logical line, so a match may start on one row and end on a later one.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -20,8 +21,17 @@ pub const Options = struct {
 pub const Match = struct {
     line: i64,
     start: u16,
+    /// Line of the last cell (> line when the match crosses a wrap).
+    end_line: i64,
     end: u16,
+
+    pub fn single(line: i64, start: u16, end: u16) Match {
+        return .{ .line = line, .start = start, .end_line = line, .end = end };
+    }
 };
+
+/// Byte position → (row within the logical line, column).
+const Pos = struct { row: u32, col: u16 };
 
 pub const regex_supported = have_regex;
 const regex_block = 256;
@@ -32,7 +42,8 @@ pub const Searcher = struct {
     needle: []u8,
     compiled: if (have_regex) ?*re.regex_t else void = if (have_regex) null else {},
     text: std.ArrayList(u8),
-    cols: std.ArrayList(u16),
+    pos: std.ArrayList(Pos),
+    rows_buf: std.ArrayList([]const Cell),
 
     /// error.BadRegex for an invalid pattern; error.RegexUnsupported when
     /// the platform lacks <regex.h>.
@@ -42,7 +53,8 @@ pub const Searcher = struct {
             .opts = opts,
             .needle = try allocator.dupe(u8, query),
             .text = std.ArrayList(u8).init(allocator),
-            .cols = std.ArrayList(u16).init(allocator),
+            .pos = std.ArrayList(Pos).init(allocator),
+            .rows_buf = std.ArrayList([]const Cell).init(allocator),
         };
         errdefer s.deinit();
         if (opts.regex) {
@@ -76,13 +88,21 @@ pub const Searcher = struct {
         }
         self.allocator.free(self.needle);
         self.text.deinit();
-        self.cols.deinit();
+        self.pos.deinit();
+        self.rows_buf.deinit();
     }
 
-    /// Append the matches in one line, left to right.
+    /// Append the matches in one (unwrapped) line, left to right.
     pub fn searchLine(self: *Searcher, line: i64, cells: []const Cell, out: *std.ArrayList(Match)) !void {
+        const one = [_][]const Cell{cells};
+        try self.searchLogical(line, &one, out);
+    }
+
+    /// Append the matches in a logical line made of soft-wrapped `rows`
+    /// starting at absolute line `first`.
+    pub fn searchLogical(self: *Searcher, first: i64, rows: []const []const Cell, out: *std.ArrayList(Match)) !void {
         if (self.needle.len == 0) return;
-        try self.buildText(cells);
+        try self.buildText(rows);
         const hay = self.text.items[0 .. self.text.items.len - 1]; // drop NUL
         if (self.opts.regex) {
             if (!have_regex) return;
@@ -94,51 +114,88 @@ pub const Searcher = struct {
                 if (re.regexec(r, self.text.items[off..].ptr, 1, &m, flags) != 0) break;
                 const b0 = off + @as(usize, @intCast(m[0].rm_so));
                 const b1 = off + @as(usize, @intCast(m[0].rm_eo));
-                if (b1 > b0) try self.emit(line, cells, b0, b1, out);
+                if (b1 > b0) try self.emit(first, rows, b0, b1, out);
                 off = if (b1 > b0) b1 else b0 + 1;
             }
         } else {
             var off: usize = 0;
             while (std.mem.indexOfPos(u8, hay, off, self.needle)) |b0| {
-                try self.emit(line, cells, b0, b0 + self.needle.len, out);
+                try self.emit(first, rows, b0, b0 + self.needle.len, out);
                 off = b0 + self.needle.len;
             }
         }
     }
 
-    fn buildText(self: *Searcher, cells: []const Cell) !void {
+    fn buildText(self: *Searcher, rows: []const []const Cell) !void {
         self.text.clearRetainingCapacity();
-        self.cols.clearRetainingCapacity();
-        for (cells, 0..) |cell, col| {
-            if (cell.isSpacer()) continue;
-            const start = self.text.items.len;
-            var c = cell;
-            if (c.char == 0) c.char = ' ';
-            try c.writeUtf8(self.text.writer());
-            if (!self.opts.case_sensitive and !self.opts.regex) {
-                for (self.text.items[start..]) |*b| b.* = std.ascii.toLower(b.*);
+        self.pos.clearRetainingCapacity();
+        for (rows, 0..) |cells, ri| {
+            for (cells, 0..) |cell, col| {
+                if (cell.isSpacer()) continue;
+                // The blank pad left when a wide char wrapped early.
+                if (ri + 1 < rows.len and col + 1 == cells.len and cell.char == 0 and rows[ri + 1].len > 0 and rows[ri + 1][0].width == 2) continue;
+                const start = self.text.items.len;
+                var c = cell;
+                if (c.char == 0) c.char = ' ';
+                try c.writeUtf8(self.text.writer());
+                if (!self.opts.case_sensitive and !self.opts.regex) {
+                    for (self.text.items[start..]) |*b| b.* = std.ascii.toLower(b.*);
+                }
+                for (self.text.items[start..]) |_| try self.pos.append(.{ .row = @intCast(ri), .col = @intCast(col) });
             }
-            for (self.text.items[start..]) |_| try self.cols.append(@intCast(col));
         }
         try self.text.append(0);
-        try self.cols.append(@intCast(cells.len));
+        try self.pos.append(.{ .row = @intCast(rows.len), .col = 0 });
     }
 
-    fn emit(self: *Searcher, line: i64, cells: []const Cell, b0: usize, b1: usize, out: *std.ArrayList(Match)) !void {
-        const c0 = self.cols.items[b0];
-        var c1 = self.cols.items[b1 - 1];
-        if (c1 < cells.len and cells[c1].width == 2) c1 += 1;
-        try out.append(.{ .line = line, .start = c0, .end = c1 });
+    fn emit(self: *Searcher, first: i64, rows: []const []const Cell, b0: usize, b1: usize, out: *std.ArrayList(Match)) !void {
+        const p0 = self.pos.items[b0];
+        const p1 = self.pos.items[b1 - 1];
+        var c1 = p1.col;
+        const last = rows[p1.row];
+        if (c1 < last.len and last[c1].width == 2) c1 += 1;
+        try out.append(.{ .line = first + p0.row, .start = p0.col, .end_line = first + p1.row, .end = c1 });
     }
 };
 
+fn wraps(cells: []const Cell) bool {
+    return cells.len > 0 and cells[cells.len - 1].soft_wrap;
+}
+
+/// First line of the logical line containing `line` (walks back over
+/// soft wraps, not past `floor`).
+pub fn logicalStart(lines: anytype, line: i64, floor: i64) i64 {
+    var l = line;
+    while (l > floor) {
+        const prev = lines.lineAt(l - 1) orelse break;
+        if (!wraps(prev)) break;
+        l -= 1;
+    }
+    return l;
+}
+
 /// Search lines `first..=last` of `lines` (anything with
 /// `lineAt(i64) ?[]const Cell`) and append every match, oldest first.
+/// Soft-wrapped rows are joined into logical lines; `first` should be the
+/// start of one (see `logicalStart`).
 pub fn searchAll(searcher: *Searcher, lines: anytype, first: i64, last: i64, out: *std.ArrayList(Match)) !void {
     var line = first;
-    while (line <= last) : (line += 1) {
-        const cells = lines.lineAt(line) orelse continue;
-        try searcher.searchLine(line, cells, out);
+    while (line <= last) {
+        const cells = lines.lineAt(line) orelse {
+            line += 1;
+            continue;
+        };
+        searcher.rows_buf.clearRetainingCapacity();
+        try searcher.rows_buf.append(cells);
+        var next = line + 1;
+        var cur = cells;
+        while (wraps(cur) and next <= last) {
+            cur = lines.lineAt(next) orelse break;
+            try searcher.rows_buf.append(cur);
+            next += 1;
+        }
+        try searcher.searchLogical(line, searcher.rows_buf.items, out);
+        line = next;
     }
 }
 
@@ -164,9 +221,9 @@ test "plain search is case-insensitive by default and maps wide columns" {
     defer out.deinit();
     try searchAll(&s, lines, 0, 2, &out);
     try testing.expectEqual(@as(usize, 3), out.items.len);
-    try testing.expectEqual(Match{ .line = 0, .start = 0, .end = 4 }, out.items[0]);
+    try testing.expectEqual(Match.single(0, 0, 4), out.items[0]);
     // "error" after two wide chars starts at col 12.
-    try testing.expectEqual(Match{ .line = 0, .start = 12, .end = 16 }, out.items[1]);
+    try testing.expectEqual(Match.single(0, 12, 16), out.items[1]);
     try testing.expectEqual(@as(i64, 2), out.items[2].line);
 
     var cs = try Searcher.init(testing.allocator, "error", .{ .case_sensitive = true });
@@ -179,7 +236,7 @@ test "plain search is case-insensitive by default and maps wide columns" {
     defer wide.deinit();
     out.clearRetainingCapacity();
     try searchAll(&wide, lines, 0, 0, &out);
-    try testing.expectEqual(Match{ .line = 0, .start = 9, .end = 10 }, out.items[0]);
+    try testing.expectEqual(Match.single(0, 9, 10), out.items[0]);
 }
 
 test "regex search" {
@@ -192,7 +249,7 @@ test "regex search" {
     defer out.deinit();
     try searchAll(&s, sel.TestLines{ .rows = rows }, 0, 0, &out);
     try testing.expectEqual(@as(usize, 2), out.items.len);
-    try testing.expectEqual(Match{ .line = 0, .start = 6, .end = 9 }, out.items[1]);
+    try testing.expectEqual(Match.single(0, 6, 9), out.items[1]);
     try testing.expectError(error.BadRegex, Searcher.init(testing.allocator, "(", .{ .regex = true }));
     // Zero-length matches don't loop forever.
     var z = try Searcher.init(testing.allocator, "x*", .{ .regex = true });
@@ -203,9 +260,24 @@ test "regex search" {
 }
 
 test "step wraps in both directions" {
-    const m = [_]Match{ .{ .line = 0, .start = 0, .end = 0 }, .{ .line = 1, .start = 0, .end = 0 } };
+    const m = [_]Match{ Match.single(0, 0, 0), Match.single(1, 0, 0) };
     try testing.expectEqual(@as(?usize, 1), step(&m, null, false));
     try testing.expectEqual(@as(?usize, 0), step(&m, 1, true));
     try testing.expectEqual(@as(?usize, 1), step(&m, 0, false));
     try testing.expectEqual(@as(?usize, null), step(&[_]Match{}, null, true));
+}
+
+test "matches span soft-wrapped rows" {
+    var term = try terminal.Terminal.initBuffer(testing.allocator, 4, 8, 10);
+    defer term.deinit();
+    // "hello world" wraps after "hello wo".
+    try term.processOutput("hello world\r\nxx");
+    var s = try Searcher.init(testing.allocator, "world", .{});
+    defer s.deinit();
+    var out = std.ArrayList(Match).init(testing.allocator);
+    defer out.deinit();
+    try searchAll(&s, &term, term.screenTop(), term.screenTop() + 3, &out);
+    try testing.expectEqual(@as(usize, 1), out.items.len);
+    try testing.expectEqual(Match{ .line = 0, .start = 6, .end_line = 1, .end = 2 }, out.items[0]);
+    try testing.expectEqual(@as(i64, 0), logicalStart(&term, 1, 0));
 }

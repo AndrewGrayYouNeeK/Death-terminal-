@@ -72,6 +72,20 @@ pub fn build(b: *std.Build) void {
     addPlatform(b, unit_tests, target);
     addFonts(b, unit_tests);
 
+    // `zig build bench`: throughput benchmark, always optimised.
+    const bench_exe = b.addExecutable(.{
+        .name = "deathterminal-bench",
+        .root_source_file = b.path("src/bench.zig"),
+        .target = target,
+        .optimize = if (optimize == .Debug) .ReleaseFast else optimize,
+    });
+    addPlatform(b, bench_exe, target);
+    addFonts(b, bench_exe);
+    const run_bench = b.addRunArtifact(bench_exe);
+    if (b.args) |args| run_bench.addArgs(args);
+    const bench_step = b.step("bench", "Run the throughput benchmark (ReleaseFast)");
+    bench_step.dependOn(&run_bench.step);
+
     const test_step = b.step("test", "Run unit tests");
     const run_unit_tests = b.addRunArtifact(unit_tests);
     test_step.dependOn(&run_unit_tests.step);

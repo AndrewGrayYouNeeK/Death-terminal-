@@ -29,7 +29,7 @@ PTY ↔ Terminal Core ↔ Renderer (Vulkan)
 | AI autocomplete | `src/ai/` | Stub (planned: OpenAI-compatible HTTP/JSON, default local Ollama) |
 | SSH tunneling | `src/ssh/` | Stub (planned: libssh2) |
 | Lua scripting | `src/scripting/` | Stub (Lua not linked yet) |
-| Configuration | `src/config/` | Reads `~/.config/death-terminal/config.txt` with flat `key = value` lines (`rows`, `cols`, `ai_enabled`, `ai_endpoint`, `scrollback_lines`, `font`, `font_family`, `font_size`, `line_height`, `font_ligatures`, plus the selection/clipboard/search keys `copy_on_select`, `paste_confirm`, `osc52`, `scrollbar`, `scroll_lines`, `word_chars`, `url_open_command`, `selection_background`, `selection_foreground`, `keybind` — see `docs/SELECTION.md`). `config.example.lua` is the target format for the Lua milestone and is not read yet. |
+| Configuration | `src/config/` | Reads `~/.config/death-terminal/config.txt` with flat `key = value` lines (`rows`, `cols`, `ai_enabled`, `ai_endpoint`, `scrollback_lines`, `font`, `font_family`, `font_size`, `line_height`, `font_ligatures`, plus the selection/clipboard/search keys `copy_on_select`, `paste_confirm`, `osc52`, `scrollbar`, `scroll_lines`, `word_chars`, `url_open_command`, `selection_background`, `selection_foreground`, `keybind` — see `docs/SELECTION.md` — and the performance keys `present_mode`, `vsync`, `max_fps`, `read_budget_kb` — see `docs/PERFORMANCE.md`). `config.example.lua` is the target format for the Lua milestone and is not read yet. |
 
 ## Build Requirements
 
@@ -94,3 +94,19 @@ zig build test     # Test
 ## CI/CD
 
 GitHub Actions runs `zig build` and `zig build test` on every push and pull request.
+
+## Shaders and benchmarks
+
+The GPU text shaders live in `src/renderer/shaders/text.vert` / `text.frag`.
+The compiled SPIR-V (`*.spv`) is committed and embedded with `@embedFile`, so
+building does not need glslang. After editing a shader, rebuild it with:
+
+```sh
+glslangValidator -V src/renderer/shaders/text.vert -o src/renderer/shaders/text.vert.spv
+glslangValidator -V src/renderer/shaders/text.frag -o src/renderer/shaders/text.frag.spv
+```
+
+The vertex input layout in `src/renderer/text_pipeline.zig` must match
+`text_renderer.Instance` (32 bytes). `zig build bench` runs the throughput
+benchmark; see `docs/PERFORMANCE.md`.
+

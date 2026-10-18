@@ -17,8 +17,11 @@ const frame_mod = @import("../renderer/frame.zig");
 const events = @import("../platform/events.zig");
 const ui_mod = @import("ui.zig");
 
-const POLL_TIMEOUT_MS: i32 = 16;
-const READ_BUFFER_SIZE: usize = 4096;
+/// Headless mode polls with this timeout so Ctrl+C / SIGTERM are noticed.
+const HEADLESS_POLL_MS: i32 = 250;
+const READ_BUFFER_SIZE: usize = 64 * 1024;
+/// Longest the GUI parses PTY output before servicing input and drawing.
+const READ_TIME_BUDGET_NS: u64 = 8 * std.time.ns_per_ms;
 
 var shutdown_requested = std.atomic.Value(bool).init(false);
 
@@ -101,14 +104,20 @@ pub const EventLoop = struct {
             try regrid(term, &fonts, &soft, window.width, window.height);
         }
         defer vulkan_renderer.detachPresent();
+        vulkan_renderer.setPresentMode(renderer.PresentMode.parse(self.cfg.present_mode) orelse .fifo);
         attachPresent(vulkan_renderer, &window);
 
         const pty_fd = term.getPtyFd() orelse return error.NoPty;
         try setNonBlocking(pty_fd);
         try installSignalHandlers();
 
-        var read_buf: [READ_BUFFER_SIZE]u8 = undefined;
+        const read_buf = try self.allocator.alloc(u8, READ_BUFFER_SIZE);
+        defer self.allocator.free(read_buf);
         var mouse = MouseState{};
+        var pace = Pacer{
+            .frame_ns = if (self.cfg.max_fps == 0) 0 else std.time.ns_per_s / @as(u64, self.cfg.max_fps),
+            .read_budget = @as(usize, self.cfg.read_budget_kb) * 1024,
+        };
 
         installBindings(self.cfg);
         var ui = ui_mod.Ui.init(self.allocator, .{
@@ -138,7 +147,15 @@ pub const EventLoop = struct {
             window.scale,
         });
         var focused = true;
-        try gui.present(focused);
+        _ = try gui.present(focused, true);
+        pace.presented(nowNs());
+        // Set when something visible changed; drawn at the next frame slot.
+        var need_present = false;
+        // Expose/resize: the window contents are gone, redraw even if the
+        // frame is unchanged.
+        var force_present = false;
+        // The last read stopped at the budget: more output is waiting.
+        var pty_backlog = false;
 
         while (!shutdown_requested.load(.seq_cst)) {
             var poll_fds = [_]posix.pollfd{
@@ -146,10 +163,17 @@ pub const EventLoop = struct {
                 .{ .fd = window.connectionFd() orelse -1, .events = posix.POLL.IN, .revents = 0 },
             };
             const nfd: usize = if (window.connectionFd() != null) 2 else 1;
-            const timeout: i32 = if (window.hasPending()) 0 else POLL_TIMEOUT_MS;
+            // Sleep until input, output or the next frame slot; with nothing
+            // to do the timeout is infinite (no wakeups when idle).
+            const timeout: i32 = if (window.hasPending() or pty_backlog)
+                0
+            else if (need_present or force_present)
+                pace.msUntilNext(nowNs())
+            else
+                -1;
             _ = posix.poll(poll_fds[0..nfd], timeout) catch 0;
+            pace.wakeups += 1;
 
-            var need_present = false;
             while (true) {
                 switch (window.poll()) {
                     .none => break,
@@ -162,7 +186,9 @@ pub const EventLoop = struct {
                         if (window.scale != fonts.scale) _ = try fonts.setScale(window.scale);
                         try regrid(term, &fonts, &soft, sz.width, sz.height);
                         try vulkan_renderer.resize(sz.width, sz.height);
+                        ui.sync(term);
                         need_present = true;
+                        force_present = true;
                     },
                     .action => |a| {
                         const step: ?i8 = switch (a.action) {
@@ -190,13 +216,16 @@ pub const EventLoop = struct {
                         try ui.onPaste(term, p.data, p.target, p.purpose);
                         need_present = true;
                     },
-                    .redraw => need_present = true,
+                    .redraw => {
+                        need_present = true;
+                        force_present = true;
+                    },
                     .input => |bytes| {
                         if (try ui.handleText(term, bytes)) {
                             need_present = true;
                         } else {
                             // Ctrl+C arrives as 0x03 and goes to the shell like any key.
-                            ui.userTyped();
+                            if (ui.userTyped()) need_present = true;
                             _ = try term.write(bytes);
                             if (autocomplete.enabled) {
                                 _ = autocomplete.getSuggestions("", bytes) catch {};
@@ -207,7 +236,7 @@ pub const EventLoop = struct {
                         if (try ui.handleKey(term, k.key, k.mods)) {
                             need_present = true;
                         } else {
-                            ui.userTyped();
+                            if (ui.userTyped()) need_present = true;
                             const seq = input.encodeKey(k.key, k.mods, term.modes);
                             _ = try term.write(seq.constSlice());
                         }
@@ -235,29 +264,51 @@ pub const EventLoop = struct {
                 break;
             }
 
-            if (poll_fds[0].revents & posix.POLL.IN != 0) {
-                const n = posix.read(pty_fd, &read_buf) catch |err| switch (err) {
-                    error.WouldBlock => 0,
-                    // Linux reports EIO on the master once the shell exits.
-                    error.InputOutput => {
-                        std.debug.print("\nShell exited.\n", .{});
+            if (pty_backlog or poll_fds[0].revents & posix.POLL.IN != 0) {
+                // Coalesce: parse everything available up to the byte/time
+                // budget, then let input and drawing run before more.
+                const start = nowNs();
+                var total: usize = 0;
+                pty_backlog = false;
+                var exited = false;
+                while (true) {
+                    const n = posix.read(pty_fd, read_buf) catch |err| switch (err) {
+                        error.WouldBlock => break,
+                        // Linux reports EIO on the master once the shell exits.
+                        error.InputOutput => {
+                            exited = true;
+                            break;
+                        },
+                        else => return err,
+                    };
+                    if (n == 0) {
+                        exited = true;
                         break;
-                    },
-                    else => return err,
-                };
-                if (n == 0) {
+                    }
+                    try term.processOutput(read_buf[0..n]);
+                    total += n;
+                    if (total >= pace.read_budget or nowNs() - start >= READ_TIME_BUDGET_NS) {
+                        pty_backlog = true;
+                        break;
+                    }
+                }
+                if (total > 0) {
+                    pace.bytes += total;
+                    pace.batches += 1;
+                    if (term.clipboard_ops.items.len > 0) {
+                        const ops = try term.takeClipboardOps();
+                        defer term.freeClipboardOps(ops);
+                        try ui.onClipboardOps(ops);
+                        try gui.runEffects();
+                    }
+                    ui.sync(term);
+                    need_present = true;
+                }
+                if (exited) {
+                    if (total > 0) _ = try gui.present(focused, true);
                     std.debug.print("\nShell exited.\n", .{});
                     break;
                 }
-                try term.processOutput(read_buf[0..n]);
-                if (term.clipboard_ops.items.len > 0) {
-                    const ops = try term.takeClipboardOps();
-                    defer term.freeClipboardOps(ops);
-                    try ui.onClipboardOps(ops);
-                    try gui.runEffects();
-                }
-                ui.sync(term);
-                need_present = true;
             }
 
             if (term.title_changed) {
@@ -265,10 +316,15 @@ pub const EventLoop = struct {
                 window.setTitle(term.title);
             }
 
-            if (need_present) {
-                try gui.present(focused);
+            if ((need_present or force_present) and pace.due(nowNs())) {
+                const drawn = try gui.present(focused, force_present);
+                pace.presented(nowNs());
+                if (drawn) pace.frames += 1 else pace.skipped += 1;
+                need_present = false;
+                force_present = false;
             }
         }
+        if (std.posix.getenv("DT_PERF_STATS") != null) pace.report();
     }
 
     fn runHeadless(
@@ -290,8 +346,12 @@ pub const EventLoop = struct {
 
         try installSignalHandlers();
 
-        var read_buf: [READ_BUFFER_SIZE]u8 = undefined;
-        var input_buf: [READ_BUFFER_SIZE]u8 = undefined;
+        const read_buf = try std.heap.page_allocator.alloc(u8, READ_BUFFER_SIZE);
+        defer std.heap.page_allocator.free(read_buf);
+        var input_buf: [4096]u8 = undefined;
+        // Redraw only after output, at most every 16 ms while it streams.
+        var dirty = true;
+        var last_draw: u64 = 0;
 
         std.debug.print("Headless terminal active. Ctrl+C goes to the shell; exit the shell (exit / Ctrl+D) to quit.\n", .{});
 
@@ -301,12 +361,14 @@ pub const EventLoop = struct {
                 .{ .fd = posix.STDIN_FILENO, .events = posix.POLL.IN, .revents = 0 },
             };
 
-            const ready = posix.poll(&poll_fds, POLL_TIMEOUT_MS) catch 0;
+            const ready = posix.poll(&poll_fds, if (dirty) 16 else HEADLESS_POLL_MS) catch 0;
 
-            if (ready == 0) {
+            if (dirty and nowNs() - last_draw >= 16 * std.time.ns_per_ms) {
                 try renderHeadless(term, vulkan_renderer);
-                continue;
+                last_draw = nowNs();
+                dirty = false;
             }
+            if (ready == 0) continue;
 
             if (poll_fds[0].revents & posix.POLL.IN == 0 and
                 poll_fds[0].revents & (posix.POLL.HUP | posix.POLL.ERR) != 0)
@@ -316,7 +378,7 @@ pub const EventLoop = struct {
             }
 
             if (poll_fds[0].revents & posix.POLL.IN != 0) {
-                const n = posix.read(pty_fd, &read_buf) catch |err| switch (err) {
+                const n = posix.read(pty_fd, read_buf) catch |err| switch (err) {
                     error.WouldBlock => 0,
                     // Linux reports EIO on the master once the shell exits.
                     error.InputOutput => {
@@ -332,7 +394,7 @@ pub const EventLoop = struct {
                 }
 
                 try term.processOutput(read_buf[0..n]);
-                try renderHeadless(term, vulkan_renderer);
+                dirty = true;
             }
 
             if (poll_fds[1].revents & posix.POLL.IN != 0) {
@@ -512,7 +574,9 @@ const Gui = struct {
     view: *ViewBuffers,
     cfg: *const config.Config,
 
-    fn present(self: Gui, focused: bool) !void {
+    /// Build the frame and draw it. Unchanged frames are not drawn unless
+    /// `force` (expose/resize). Returns whether anything was presented.
+    fn present(self: Gui, focused: bool, force: bool) !bool {
         try self.vk.render();
         const composed = try self.ui.compose(self.term, &self.view.cells, &self.view.marks);
         var v = frame_mod.View.fromTerminal(self.term);
@@ -523,15 +587,21 @@ const Gui = struct {
         v.selection_fg = self.cfg.selection_foreground;
         if (composed.scrollbar) |sb| v.scrollbar = .{ .top = sb.top, .height = sb.height };
         try self.frame.build(self.fonts, self.view.cells.items, self.term.rows, self.term.cols, composed.cursor_row, composed.cursor_col, v);
-        if (self.vk.presentFrame(self.frame, &self.fonts.atlas)) {
-            self.soft.dirty = false;
-            return;
+        if (!self.frame.changed and !force) return false;
+        switch (self.vk.presentFrame(self.frame, &self.fonts.atlas)) {
+            .presented => {
+                self.soft.dirty = false;
+                return true;
+            },
+            .skipped => return false,
+            .unavailable => {},
         }
-        self.soft.render(self.frame, &self.fonts.atlas);
+        self.soft.renderDamage(self.frame, &self.fonts.atlas);
         if (!self.vk.presentPixels(self.soft.pixels, self.soft.width, self.soft.height)) {
             self.window.presentRgba(self.soft.pixels, self.soft.width, self.soft.height);
         }
         self.soft.dirty = false;
+        return true;
     }
 
     /// Execute what the UI queued: PTY writes, clipboard, link opening.
@@ -547,6 +617,53 @@ const Gui = struct {
         };
     }
 };
+
+fn nowNs() u64 {
+    return @intCast(std.time.nanoTimestamp());
+}
+
+/// Frame pacing and throughput counters for the GUI loop.
+const Pacer = struct {
+    /// Minimum time between presents (0 = uncapped).
+    frame_ns: u64,
+    read_budget: usize,
+    last_present: u64 = 0,
+    frames: u64 = 0,
+    skipped: u64 = 0,
+    wakeups: u64 = 0,
+    bytes: u64 = 0,
+    batches: u64 = 0,
+
+    fn due(self: *const Pacer, now: u64) bool {
+        return now -% self.last_present >= self.frame_ns;
+    }
+
+    fn msUntilNext(self: *const Pacer, now: u64) i32 {
+        const elapsed = now -% self.last_present;
+        if (elapsed >= self.frame_ns) return 0;
+        const left = self.frame_ns - elapsed;
+        return @intCast((left + std.time.ns_per_ms - 1) / std.time.ns_per_ms);
+    }
+
+    fn presented(self: *Pacer, now: u64) void {
+        self.last_present = now;
+    }
+
+    fn report(self: *const Pacer) void {
+        std.debug.print("perf: {d} frames presented, {d} unchanged skipped, {d} wakeups, {d} bytes in {d} batches\n", .{ self.frames, self.skipped, self.wakeups, self.bytes, self.batches });
+    }
+};
+
+test "pacer waits for the next frame slot" {
+    var p = Pacer{ .frame_ns = 10 * std.time.ns_per_ms, .read_budget = 1 };
+    p.presented(100 * std.time.ns_per_ms);
+    try std.testing.expect(!p.due(104 * std.time.ns_per_ms));
+    try std.testing.expectEqual(@as(i32, 6), p.msUntilNext(104 * std.time.ns_per_ms));
+    try std.testing.expect(p.due(110 * std.time.ns_per_ms));
+    try std.testing.expectEqual(@as(i32, 0), p.msUntilNext(111 * std.time.ns_per_ms));
+    var u = Pacer{ .frame_ns = 0, .read_budget = 1 };
+    try std.testing.expect(u.due(0));
+}
 
 fn installBindings(cfg: *const config.Config) void {
     events.bindings = events.Bindings.defaults();
@@ -602,8 +719,7 @@ fn writeHeadlessFrame(term: *terminal.Terminal, out: anytype) !void {
 
     var row: u16 = 0;
     while (row < term.rows) : (row += 1) {
-        const start = @as(usize, row) * @as(usize, term.cols);
-        try terminal.appendRowText(term.buffer[start..][0..term.cols], writer);
+        try terminal.appendRowText(term.screenRow(row), writer);
         if (row + 1 < term.rows) try writer.writeAll("\r\n");
     }
 

@@ -2,6 +2,7 @@ const std = @import("std");
 const vk = @import("vulkan_c.zig");
 const loader_mod = @import("loader.zig");
 const gpu_present = @import("gpu_present.zig");
+pub const PresentMode = gpu_present.PresentMode;
 const text_pipeline = @import("text_pipeline.zig");
 const frame_mod = @import("frame.zig");
 const Atlas = @import("../font/atlas.zig").Atlas;
@@ -24,6 +25,9 @@ pub const VulkanRenderer = struct {
     has_device: bool,
     gpu: gpu_present.GpuPresent,
     text: text_pipeline.TextPipeline,
+    /// Last window size handed to attach/resize (for self-recreation).
+    win_w: u32 = 0,
+    win_h: u32 = 0,
 
     vkCreateInstance: ?loader_mod.CreateInstanceFn,
     vkDestroyInstance: ?loader_mod.DestroyInstanceFn,
@@ -374,17 +378,19 @@ pub const VulkanRenderer = struct {
 
     fn finishTextPipeline(self: *VulkanRenderer) bool {
         const h = self.presentHandles() orelse return self.gpu.enabled;
+        if (self.gpu.enabled) {
+            self.win_w = self.gpu.extent.width;
+            self.win_h = self.gpu.extent.height;
+        }
         if (self.gpu.enabled and self.gpu.can_draw) {
-            if (self.gpu.command_buffer) |cmd| {
-                self.text.init(h, self.gpu.format, cmd) catch |err| {
-                    std.debug.print("    → GPU text pipeline unavailable ({s}); using blit\n", .{@errorName(err)});
+            self.text.init(h, self.gpu.format, null) catch |err| {
+                std.debug.print("    → GPU text pipeline unavailable ({s}); using blit\n", .{@errorName(err)});
+            };
+            if (self.text.enabled) {
+                self.text.bindSwapchain(h, self.gpu.images, self.gpu.format, self.gpu.extent) catch |err| {
+                    std.debug.print("    → GPU text framebuffers failed ({s})\n", .{@errorName(err)});
+                    self.text.deinit(h);
                 };
-                if (self.text.enabled) {
-                    self.text.bindSwapchain(h, self.gpu.images, self.gpu.format, self.gpu.extent) catch |err| {
-                        std.debug.print("    → GPU text framebuffers failed ({s})\n", .{@errorName(err)});
-                        self.text.deinit(h);
-                    };
-                }
             }
         }
         return self.gpu.enabled;
@@ -402,18 +408,49 @@ pub const VulkanRenderer = struct {
         return self.gpu.present(h, pixels, width, height);
     }
 
-    /// Draw a built frame through the GPU text pipeline. Returns false if
-    /// the pipeline is unavailable (caller falls back to the CPU path).
-    pub fn presentFrame(self: *VulkanRenderer, fr: *const frame_mod.Frame, atlas: *Atlas) bool {
-        if (!self.text.enabled or !self.gpu.enabled) return false;
-        const h = self.presentHandles() orelse return false;
-        const cmd = self.gpu.command_buffer orelse return false;
-        self.text.syncAtlas(h, cmd, atlas) catch return false;
-        const count = self.text.packAndUpload(h, fr.quads.items) catch return false;
-        const index = self.gpu.beginPresent(h) catch return false;
-        self.text.record(cmd, index, count, fr.clear) catch return false;
-        self.gpu.submitPresent(h, index) catch return false;
-        return true;
+    /// Set the preferred present mode; applied on the next swapchain
+    /// (re)creation. Call before attaching for it to take effect at start.
+    pub fn setPresentMode(self: *VulkanRenderer, mode: gpu_present.PresentMode) void {
+        self.gpu.present_pref = mode;
+    }
+
+    pub const PresentResult = enum { presented, skipped, unavailable };
+
+    /// Draw a built frame through the GPU text pipeline: damage-only
+    /// instance uploads, glyph uploads recorded into the frame's command
+    /// buffer, one instanced draw, no CPU wait unless the GPU is
+    /// MAX_FRAMES_IN_FLIGHT frames behind. `.unavailable` means the caller
+    /// must fall back to the CPU path; `.skipped` means try again later
+    /// (swapchain being recreated).
+    pub fn presentFrame(self: *VulkanRenderer, fr: *const frame_mod.Frame, atlas: *Atlas) PresentResult {
+        if (!self.text.enabled or !self.gpu.enabled) return .unavailable;
+        const h = self.presentHandles() orelse return .unavailable;
+        if (self.gpu.needs_recreate) {
+            self.resize(self.win_w, self.win_h) catch return .skipped;
+            if (self.gpu.needs_recreate) return .skipped;
+        }
+        if (self.text.needsIdle(fr, atlas)) {
+            self.gpu.waitIdle(h);
+            self.text.prepare(h, fr, atlas) catch |err| {
+                std.debug.print("    → GPU text resources failed ({s}); using CPU path\n", .{@errorName(err)});
+                return .unavailable;
+            };
+        }
+        self.text.updateInstances(fr) catch return .unavailable;
+        const f = self.gpu.beginFrame(h) catch |err| switch (err) {
+            error.OutOfDate => return .skipped,
+            else => return .unavailable,
+        };
+        // Once begun the frame must be submitted, or its fence never
+        // signals again; recording errors still end and submit.
+        self.text.recordAtlasUpload(h, f.slot, f.cmd, atlas) catch |err| {
+            std.debug.print("    → atlas upload failed ({s})\n", .{@errorName(err)});
+        };
+        self.text.recordFrame(f.slot, f.cmd, f.image, fr.clear) catch |err| {
+            std.debug.print("    → frame record failed ({s})\n", .{@errorName(err)});
+        };
+        self.gpu.endFrame(h, f, vk.raw.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT) catch return .unavailable;
+        return .presented;
     }
 
     fn presentHandles(self: *VulkanRenderer) ?gpu_present.Handles {
@@ -462,6 +499,9 @@ pub const VulkanRenderer = struct {
         if (!self.initialized) return error.NotInitialized;
         if (!self.gpu.enabled) return;
         const h = self.presentHandles() orelse return;
+        self.win_w = width;
+        self.win_h = height;
+        self.gpu.waitIdle(h);
         self.text.unbindSwapchain(h);
         self.gpu.recreate(h, width, height) catch |err| {
             std.debug.print("    → swapchain recreate failed ({s})\n", .{@errorName(err)});

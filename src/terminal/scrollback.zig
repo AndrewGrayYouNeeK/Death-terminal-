@@ -4,9 +4,19 @@ const Cell = terminal.Cell;
 
 /// Scrollback stores lines that have scrolled off the top of the viewport.
 /// Once full it is a ring: the oldest line is recycled in O(1).
+pub const Line = struct {
+    /// Allocation (capacity); recycled ring slots keep their buffer.
+    buf: []Cell,
+    len: usize,
+
+    pub fn cells(self: Line) []Cell {
+        return self.buf[0..self.len];
+    }
+};
+
 pub const Scrollback = struct {
     allocator: std.mem.Allocator,
-    lines: std.ArrayList([]Cell),
+    lines: std.ArrayList(Line),
     max_lines: usize,
     /// Ring start (index of the oldest line) once `lines` is full.
     head: usize = 0,
@@ -17,40 +27,46 @@ pub const Scrollback = struct {
     pub fn init(allocator: std.mem.Allocator, max_lines: usize) Scrollback {
         return Scrollback{
             .allocator = allocator,
-            .lines = std.ArrayList([]Cell).init(allocator),
+            .lines = std.ArrayList(Line).init(allocator),
             .max_lines = max_lines,
         };
     }
 
     pub fn deinit(self: *Scrollback) void {
-        for (self.lines.items) |line| {
-            self.allocator.free(line);
-        }
+        for (self.lines.items) |line| self.allocator.free(line.buf);
         self.lines.deinit();
     }
 
-    /// Push a full row of cells into scrollback history.
-    pub fn pushLine(self: *Scrollback, line: []const Cell) !void {
+    /// Push a row of cells into scrollback history. Trailing default blanks
+    /// are not stored (a `yes` line costs one cell, not a full row).
+    pub fn pushLine(self: *Scrollback, line_in: []const Cell) !void {
         if (self.max_lines == 0) {
             self.total += 1;
             return;
         }
+        const line = trimmed(line_in);
         if (self.lines.items.len < self.max_lines) {
             const copy = try self.allocator.alloc(Cell, line.len);
             @memcpy(copy, line);
-            try self.lines.append(copy);
+            try self.lines.append(.{ .buf = copy, .len = line.len });
         } else {
-            // Recycle the oldest slot.
+            // Recycle the oldest slot, reusing its buffer when it is big enough.
             const slot = &self.lines.items[self.head];
-            if (slot.len != line.len) {
+            if (slot.buf.len < line.len) {
                 const copy = try self.allocator.alloc(Cell, line.len);
-                self.allocator.free(slot.*);
-                slot.* = copy;
+                self.allocator.free(slot.buf);
+                slot.buf = copy;
             }
-            @memcpy(slot.*, line);
+            @memcpy(slot.buf[0..line.len], line);
+            slot.len = line.len;
             self.head = (self.head + 1) % self.lines.items.len;
         }
         self.total += 1;
+    }
+
+    /// Take ownership of a heap row (used by reflow).
+    pub fn appendOwned(self: *Scrollback, row: []Cell) !void {
+        try self.lines.append(.{ .buf = row, .len = trimmed(row).len });
     }
 
     pub fn len(self: *const Scrollback) usize {
@@ -61,13 +77,11 @@ pub const Scrollback = struct {
     pub fn getLine(self: *const Scrollback, index: usize) ?[]const Cell {
         const n = self.lines.items.len;
         if (index >= n) return null;
-        return self.lines.items[(self.head + index) % n];
+        return self.lines.items[(self.head + index) % n].cells();
     }
 
     pub fn clear(self: *Scrollback) void {
-        for (self.lines.items) |line| {
-            self.allocator.free(line);
-        }
+        for (self.lines.items) |line| self.allocator.free(line.buf);
         self.lines.clearRetainingCapacity();
         self.head = 0;
     }
@@ -97,6 +111,18 @@ pub const Scrollback = struct {
     }
 };
 
+fn isDefaultBlank(c: Cell) bool {
+    const d = Cell.init();
+    return (c.char == ' ' or c.char == 0) and c.width == 1 and c.combining[0] == 0 and
+        c.bg_color == d.bg_color and !c.underline and !c.inverse and !c.strikethrough and c.link == 0 and !c.soft_wrap;
+}
+
+fn trimmed(line: []const Cell) []const Cell {
+    var n = line.len;
+    while (n > 0 and isDefaultBlank(line[n - 1])) n -= 1;
+    return line[0..n];
+}
+
 test "Scrollback push and trim" {
     const testing = std.testing;
     var scrollback = Scrollback.init(testing.allocator, 2);
@@ -121,7 +147,7 @@ test "Scrollback push and trim" {
     var text = std.ArrayList(u8).init(testing.allocator);
     defer text.deinit();
     try scrollback.lineText(1, text.writer());
-    try testing.expectEqualStrings("C  ", text.items);
+    try testing.expectEqualStrings("C", text.items); // trailing blanks are not stored
 
     const hits = try scrollback.search("C", testing.allocator);
     defer testing.allocator.free(hits);

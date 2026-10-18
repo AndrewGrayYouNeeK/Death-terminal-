@@ -39,6 +39,15 @@ pub const Config = struct {
     selection_background: u32 = 0x3B5BA5,
     /// 0xFFFFFFFF keeps the text colour.
     selection_foreground: u32 = 0xFFFFFFFF,
+    /// Swapchain present mode: fifo (vsync) | mailbox | immediate |
+    /// fifo_relaxed. Falls back to what the surface supports.
+    present_mode: []const u8 = "fifo",
+    /// Upper bound on redraws per second while output streams in
+    /// (0 = only limited by the present mode).
+    max_fps: u16 = 120,
+    /// PTY bytes parsed per batch before the loop services input and
+    /// draws (also capped at ~8 ms of parsing).
+    read_budget_kb: u32 = 1024,
     /// `keybind = chord=action` lines, applied in order over the defaults.
     keybinds: std.ArrayList([]u8),
 
@@ -102,6 +111,22 @@ pub const Config = struct {
             } else if (std.mem.eql(u8, value, "read-write") or std.mem.eql(u8, value, "read_write")) {
                 self.osc52 = "read-write";
             } else return error.BadOsc52Policy;
+        } else if (std.mem.eql(u8, key, "present_mode")) {
+            const modes = [_][]const u8{ "fifo", "fifo_relaxed", "mailbox", "immediate" };
+            if (std.ascii.eqlIgnoreCase(value, "vsync")) {
+                self.present_mode = "fifo";
+            } else for (modes) |m| {
+                if (std.ascii.eqlIgnoreCase(value, m)) {
+                    self.present_mode = m;
+                    break;
+                }
+            } else return error.BadPresentMode;
+        } else if (std.mem.eql(u8, key, "vsync")) {
+            self.present_mode = if (parseBool(value)) "fifo" else "mailbox";
+        } else if (std.mem.eql(u8, key, "max_fps")) {
+            self.max_fps = std.math.clamp(try std.fmt.parseInt(u16, value, 10), 0, 1000);
+        } else if (std.mem.eql(u8, key, "read_budget_kb")) {
+            self.read_budget_kb = std.math.clamp(try std.fmt.parseInt(u32, value, 10), 16, 65536);
         } else if (std.mem.eql(u8, key, "scrollbar")) {
             self.scrollbar = parseBool(value);
         } else if (std.mem.eql(u8, key, "scroll_lines")) {
@@ -359,4 +384,30 @@ test "Config selection, clipboard and keybind keys" {
     try testing.expectEqual(@as(u32, 0x112233), config.selection_background);
     try testing.expectEqual(@as(usize, 2), config.keybinds.items.len);
     try testing.expectEqualStrings("alt+c=copy", config.keybinds.items[1]);
+}
+
+test "Config performance keys" {
+    const testing = std.testing;
+    var config = Config.init(testing.allocator);
+    defer config.deinit();
+    try testing.expectEqualStrings("fifo", config.present_mode);
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "p.txt", .data = 
+    \\present_mode = Mailbox
+    \\max_fps = 75
+    \\read_budget_kb = 4
+    \\
+    });
+    const path = try tmp.dir.realpathAlloc(testing.allocator, "p.txt");
+    defer testing.allocator.free(path);
+    try config.loadFromFile(path);
+    try testing.expectEqualStrings("mailbox", config.present_mode);
+    try testing.expectEqual(@as(u16, 75), config.max_fps);
+    try testing.expectEqual(@as(u32, 16), config.read_budget_kb);
+    try tmp.dir.writeFile(.{ .sub_path = "v.txt", .data = "vsync = false\n" });
+    const vpath = try tmp.dir.realpathAlloc(testing.allocator, "v.txt");
+    defer testing.allocator.free(vpath);
+    try config.loadFromFile(vpath);
+    try testing.expectEqualStrings("mailbox", config.present_mode);
 }

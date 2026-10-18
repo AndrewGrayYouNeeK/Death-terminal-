@@ -192,10 +192,18 @@ pub const Terminal = struct {
     allocator: std.mem.Allocator,
     rows: u16,
     cols: u16,
-    /// Active screen (points at `primary` or `alt`).
+    /// Active screen (points at `primary` or `alt`). Rows are stored in
+    /// physical order; `map` gives the physical row of each logical row so
+    /// scrolling rotates indices instead of moving cells.
     buffer: []Cell,
     primary: []Cell,
     alt: []Cell,
+    map: []u16,
+    primary_map: []u16,
+    alt_map: []u16,
+    /// Bumped whenever the grid is reflowed/resized; absolute line numbers
+    /// from before are invalid afterwards.
+    layout_gen: u32 = 0,
     alt_active: bool = false,
     cursor_row: u16 = 0,
     cursor_col: u16 = 0,
@@ -247,6 +255,10 @@ pub const Terminal = struct {
         const tabs = try allocator.alloc(bool, cols);
         errdefer allocator.free(tabs);
         resetTabs(tabs);
+        const pmap = try identityMap(allocator, rows);
+        errdefer allocator.free(pmap);
+        const amap = try identityMap(allocator, rows);
+        errdefer allocator.free(amap);
 
         const title = try allocator.dupe(u8, "DeathTerminal");
         errdefer allocator.free(title);
@@ -259,6 +271,9 @@ pub const Terminal = struct {
             .buffer = primary,
             .primary = primary,
             .alt = alt,
+            .map = pmap,
+            .primary_map = pmap,
+            .alt_map = amap,
             .scroll_bottom = rows - 1,
             .tabs = tabs,
             .parser = ansi_parser.Parser.init(allocator),
@@ -293,6 +308,8 @@ pub const Terminal = struct {
         self.scrollback.deinit();
         self.allocator.free(self.primary);
         self.allocator.free(self.alt);
+        self.allocator.free(self.primary_map);
+        self.allocator.free(self.alt_map);
         self.allocator.free(self.tabs);
         self.allocator.free(self.title);
         self.allocator.free(self.cwd_uri);
@@ -342,7 +359,13 @@ pub const Terminal = struct {
     // ------------------------------------------------------------ grid access
 
     fn cellIndex(self: *const Terminal, row: u16, col: u16) usize {
-        return @as(usize, row) * @as(usize, self.cols) + col;
+        return @as(usize, self.map[row]) * @as(usize, self.cols) + col;
+    }
+
+    /// Cells of screen row `row` (0 = top) of the active screen.
+    pub fn screenRow(self: *const Terminal, row: u16) []Cell {
+        const start = self.cellIndex(row, 0);
+        return self.buffer[start .. start + self.cols];
     }
 
     pub fn getCell(self: *Terminal, row: u16, col: u16) ?*Cell {
@@ -356,8 +379,7 @@ pub const Terminal = struct {
     }
 
     fn rowSlice(self: *Terminal, row: u16) []Cell {
-        const start = self.cellIndex(row, 0);
-        return self.buffer[start .. start + self.cols];
+        return self.screenRow(row);
     }
 
     /// Cell written by erase operations: blank with the current background
@@ -400,9 +422,28 @@ pub const Terminal = struct {
     /// are written back to the PTY when one is attached, otherwise they stay
     /// in `replies` for the caller.
     pub fn processOutput(self: *Terminal, data: []const u8) !void {
-        for (data) |byte| {
-            if (try self.parser.advance(byte)) |action| try self.handleAction(action);
+        var i: usize = 0;
+        while (i < data.len) {
+            // Fast path: runs of printable ASCII in the ground state skip the
+            // per-byte state machine.
+            if (self.parser.state == .Ground and self.parser.utf8_need == 0) {
+                const b = data[i];
+                if (isPrintableAscii(b)) {
+                    var j = i + 1;
+                    while (j < data.len and isPrintableAscii(data[j])) j += 1;
+                    try self.printAscii(data[i..j]);
+                    i = j;
+                    continue;
+                }
+                if (b == '\r' or b == '\n') {
+                    try self.execute(b);
+                    i += 1;
+                    continue;
+                }
+            }
+            if (try self.parser.advance(data[i])) |action| try self.handleAction(action);
             if (self.parser.takePending()) |action| try self.handleAction(action);
+            i += 1;
         }
         if (self.pty != null and self.replies.items.len > 0) {
             self.write(self.replies.items) catch {};
@@ -449,6 +490,49 @@ pub const Terminal = struct {
             0x252C, 0x2502, 0x2264, 0x2265, 0x03C0, 0x2260, 0x00A3, 0x00B7, // w x y z { | } ~
         };
         return table[cp - 0x5F];
+    }
+
+    fn isPrintableAscii(b: u8) bool {
+        return b >= 0x20 and b < 0x7F;
+    }
+
+    /// `putChar` for a run of printable ASCII (all width 1), writing whole
+    /// row segments at a time.
+    fn printAscii(self: *Terminal, run: []const u8) !void {
+        if (run.len == 0) return;
+        if (self.modes.insert or self.charsets[self.gl] == .dec_special) {
+            for (run) |b| try self.putChar(b);
+            return;
+        }
+        var tmpl = self.penCell(' ');
+        tmpl.width = 1;
+        var i: usize = 0;
+        while (i < run.len) {
+            if (self.wrap_pending and self.modes.autowrap) {
+                self.buffer[self.cellIndex(self.cursor_row, self.cols - 1)].soft_wrap = true;
+                self.cursor_col = 0;
+                try self.index();
+            }
+            self.wrap_pending = false;
+            const col = self.cursor_col;
+            const n: u16 = @intCast(@min(@as(usize, self.cols - col), run.len - i));
+            // Only the ends of the segment can cut a wide pair in half.
+            self.breakWideAt(self.cursor_row, col);
+            self.breakWideAt(self.cursor_row, col + n - 1);
+            const dst = self.rowSlice(self.cursor_row)[col..][0..n];
+            for (dst, run[i..][0..n]) |*c, b| {
+                c.* = tmpl;
+                c.char = b;
+            }
+            i += n;
+            if (col + n >= self.cols) {
+                self.cursor_col = self.cols - 1;
+                self.wrap_pending = self.modes.autowrap;
+            } else {
+                self.cursor_col = col + n;
+            }
+        }
+        self.last_char = run[run.len - 1];
     }
 
     pub fn putChar(self: *Terminal, ch: u21) !void {
@@ -680,6 +764,100 @@ pub const Terminal = struct {
 
     // ------------------------------------------------------------ tabs
 
+    fn isBlankCell(c: Cell) bool {
+        return (c.char == ' ' or c.char == 0) and c.width == 1 and c.combining[0] == 0 and
+            c.bg_color == color.default_bg and !c.underline and !c.inverse and !c.strikethrough and c.link == 0;
+    }
+
+    fn rowIsBlank(row: []const Cell) bool {
+        for (row) |c| if (!isBlankCell(c)) return false;
+        return true;
+    }
+
+    /// Append `line` wrapped at `cols` to `out` (at least one row). Returns the
+    /// position of logical offset `cursor` (or of the line end) in the output.
+    fn rewrapLine(alloc: std.mem.Allocator, out: *std.ArrayList([]Cell), line_in: []const Cell, cols: u16, cursor: ?usize, mark: ?usize) !struct { row: usize, col: u16, mark_row: usize } {
+        // Trailing blanks are not content; a cursor past the text is placed
+        // after it (clamped to the last column).
+        var len = line_in.len;
+        while (len > 0 and isBlankCell(line_in[len - 1])) len -= 1;
+        const line = line_in[0..len];
+
+        var pos_row: usize = 0;
+        var pos_col: u16 = 0;
+        var found = false;
+        var mark_row: usize = 0;
+        var row_i: usize = 0;
+        var i: usize = 0;
+        while (true) {
+            const row = try alloc.alloc(Cell, cols);
+            errdefer alloc.free(row);
+            @memset(row, Cell.init());
+            var col: u16 = 0;
+            while (i < line.len and col < cols) {
+                const c = line[i];
+                if (c.width == 2 and col + 1 >= cols) {
+                    if (cols < 2) {
+                        // Cannot hold a wide char at all.
+                        row[col] = Cell.init();
+                        row[col].char = 0xFFFD;
+                        i += 2;
+                        col += 1;
+                    }
+                    break;
+                }
+                if (mark) |m| {
+                    if (i <= m) mark_row = row_i;
+                }
+                if (cursor != null and !found and i == cursor.?) {
+                    pos_row = row_i;
+                    pos_col = col;
+                    found = true;
+                }
+                row[col] = c;
+                row[col].soft_wrap = false;
+                col += 1;
+                i += 1;
+                if (c.width == 2 and i < line.len and line[i].width == 0) {
+                    row[col] = line[i];
+                    row[col].soft_wrap = false;
+                    col += 1;
+                    i += 1;
+                }
+            }
+            const more = i < line.len;
+            if (more) row[cols - 1].soft_wrap = true;
+            try out.append(row);
+            if (!more) {
+                if (!found) {
+                    // Cursor at/after the end of the text.
+                    const extra = if (cursor) |c| c -| i else 0;
+                    var cc: usize = @as(usize, col) + extra;
+                    var rr = row_i;
+                    while (cc >= cols) {
+                        if (cc == cols) {
+                            cc = cols - 1;
+                            break;
+                        }
+                        cc -= cols;
+                        rr += 1;
+                    }
+                    pos_row = @min(rr, row_i);
+                    pos_col = @intCast(if (rr > row_i) cols - 1 else cc);
+                }
+                break;
+            }
+            row_i += 1;
+        }
+        return .{ .row = pos_row, .col = pos_col, .mark_row = mark_row };
+    }
+
+    fn identityMap(allocator: std.mem.Allocator, rows: u16) ![]u16 {
+        const m = try allocator.alloc(u16, rows);
+        for (m, 0..) |*v, i| v.* = @intCast(i);
+        return m;
+    }
+
     fn resetTabs(tabs: []bool) void {
         for (tabs, 0..) |*t, i| t.* = i % 8 == 0 and i != 0;
     }
@@ -716,12 +894,11 @@ pub const Terminal = struct {
             var r: u16 = 0;
             while (r < n) : (r += 1) try self.scrollback.pushLine(self.rowSlice(top + r));
         }
-        const cols: usize = self.cols;
-        const dst = self.cellIndex(top, 0);
-        const src = self.cellIndex(top + n, 0);
-        const end = self.cellIndex(bottom, 0) + cols;
-        std.mem.copyForwards(Cell, self.buffer[dst .. end - @as(usize, n) * cols], self.buffer[src..end]);
-        @memset(self.buffer[end - @as(usize, n) * cols .. end], self.eraseCell());
+        // Rotate row indices: O(rows), independent of the width.
+        std.mem.rotate(u16, self.map[top .. @as(usize, bottom) + 1], n);
+        const blank = self.eraseCell();
+        var r: u16 = bottom + 1 - n;
+        while (r <= bottom) : (r += 1) @memset(self.rowSlice(r), blank);
     }
 
     /// Shift rows [top, bottom] down by n, blanking the top n rows.
@@ -730,11 +907,10 @@ pub const Terminal = struct {
         const height: u32 = @as(u32, bottom) - top + 1;
         const n: u16 = @intCast(@min(n_in, height));
         if (n == 0) return;
-        const cols: usize = self.cols;
-        const start = self.cellIndex(top, 0);
-        const end = self.cellIndex(bottom, 0) + cols;
-        std.mem.copyBackwards(Cell, self.buffer[start + @as(usize, n) * cols .. end], self.buffer[start .. end - @as(usize, n) * cols]);
-        @memset(self.buffer[start .. start + @as(usize, n) * cols], self.eraseCell());
+        std.mem.rotate(u16, self.map[top .. @as(usize, bottom) + 1], height - n);
+        const blank = self.eraseCell();
+        var r: u16 = top;
+        while (r < top + n) : (r += 1) @memset(self.rowSlice(r), blank);
     }
 
     /// SU / scroll the region up. Lines leaving a full-height primary-screen
@@ -821,11 +997,19 @@ pub const Terminal = struct {
     }
 
     pub fn eraseDisplay(self: *Terminal, mode: u32) !void {
-        const here = self.cellIndex(self.cursor_row, self.cursor_col);
+        const blank = self.eraseCell();
         switch (mode) {
-            0 => @memset(self.buffer[here..], self.eraseCell()),
-            1 => @memset(self.buffer[0 .. here + 1], self.eraseCell()),
-            2 => @memset(self.buffer, self.eraseCell()),
+            0 => {
+                @memset(self.rowSlice(self.cursor_row)[self.cursor_col..], blank);
+                var r = self.cursor_row + 1;
+                while (r < self.rows) : (r += 1) @memset(self.rowSlice(r), blank);
+            },
+            1 => {
+                var r: u16 = 0;
+                while (r < self.cursor_row) : (r += 1) @memset(self.rowSlice(r), blank);
+                @memset(self.rowSlice(self.cursor_row)[0 .. @as(usize, self.cursor_col) + 1], blank);
+            },
+            2 => @memset(self.buffer, blank),
             3 => self.scrollback.clear(),
             else => return,
         }
@@ -851,6 +1035,7 @@ pub const Terminal = struct {
     fn enterAlt(self: *Terminal, clear_it: bool) void {
         if (!self.alt_active) {
             self.buffer = self.alt;
+            self.map = self.alt_map;
             self.alt_active = true;
         }
         if (clear_it) @memset(self.alt, self.eraseCell());
@@ -860,6 +1045,7 @@ pub const Terminal = struct {
         if (!self.alt_active) return;
         if (clear_it) @memset(self.alt, self.eraseCell());
         self.buffer = self.primary;
+        self.map = self.primary_map;
         self.alt_active = false;
     }
 
@@ -901,54 +1087,172 @@ pub const Terminal = struct {
 
         if (self.pty) |pty| try pty.setWindowSize(new_rows, new_cols);
 
-        const new_primary = try self.allocator.alloc(Cell, @as(usize, new_rows) * new_cols);
-        errdefer self.allocator.free(new_primary);
         const new_alt = try self.allocator.alloc(Cell, @as(usize, new_rows) * new_cols);
         errdefer self.allocator.free(new_alt);
+        const new_amap = try identityMap(self.allocator, new_rows);
+        errdefer self.allocator.free(new_amap);
         const new_tabs = try self.allocator.alloc(bool, new_cols);
+        errdefer self.allocator.free(new_tabs);
         resetTabs(new_tabs);
 
-        // Keep the cursor on screen: when shrinking past it, drop rows off
-        // the top (into scrollback for the primary screen).
-        const shift: u16 = if (self.cursor_row >= new_rows) self.cursor_row - new_rows + 1 else 0;
-        if (!self.alt_active) {
-            var r: u16 = 0;
-            while (r < shift) : (r += 1) try self.scrollback.pushLine(self.primary[@as(usize, r) * self.cols ..][0..self.cols]);
+        // Primary screen + scrollback: re-wrap logical lines at the new width.
+        const pcur: SavedCursor = if (self.alt_active) self.saved[0] else .{ .row = self.cursor_row, .col = self.cursor_col };
+        const re = try self.reflowPrimary(new_rows, new_cols, pcur.row, pcur.col);
+        errdefer {
+            self.allocator.free(re.cells);
+            self.allocator.free(re.map);
         }
-        copyGrid(new_primary, new_rows, new_cols, self.primary, self.rows, self.cols, if (self.alt_active) 0 else shift);
-        copyGrid(new_alt, new_rows, new_cols, self.alt, self.rows, self.cols, if (self.alt_active) shift else 0);
+
+        // Alternate screen: full-screen apps redraw on SIGWINCH, so just
+        // keep the cursor on screen (dropping rows off the top if needed).
+        const acur_row = if (self.alt_active) self.cursor_row else self.saved[1].row;
+        const shift: u16 = if (acur_row >= new_rows) acur_row - new_rows + 1 else 0;
+        copyGridMapped(new_alt, new_rows, new_cols, self.alt, self.alt_map, self.rows, self.cols, shift);
 
         self.allocator.free(self.primary);
         self.allocator.free(self.alt);
+        self.allocator.free(self.primary_map);
+        self.allocator.free(self.alt_map);
         self.allocator.free(self.tabs);
-        self.primary = new_primary;
+        self.primary = re.cells;
+        self.primary_map = re.map;
         self.alt = new_alt;
+        self.alt_map = new_amap;
         self.tabs = new_tabs;
-        self.buffer = if (self.alt_active) new_alt else new_primary;
+        self.buffer = if (self.alt_active) new_alt else re.cells;
+        self.map = if (self.alt_active) new_amap else re.map;
         self.rows = new_rows;
         self.cols = new_cols;
-        self.cursor_row = @min(self.cursor_row - shift, new_rows - 1);
-        self.cursor_col = @min(self.cursor_col, new_cols - 1);
+        if (self.alt_active) {
+            self.cursor_row = @min(self.cursor_row - shift, new_rows - 1);
+            self.cursor_col = @min(self.cursor_col, new_cols - 1);
+            self.saved[0].row = re.cursor_row;
+            self.saved[0].col = re.cursor_col;
+        } else {
+            self.cursor_row = re.cursor_row;
+            self.cursor_col = re.cursor_col;
+            self.saved[1].row = @min(self.saved[1].row, new_rows - 1);
+            self.saved[1].col = @min(self.saved[1].col, new_cols - 1);
+        }
         self.wrap_pending = false;
         self.scroll_top = 0;
         self.scroll_bottom = new_rows - 1;
-        for (&self.saved) |*s| {
-            s.row = @min(s.row, new_rows - 1);
-            s.col = @min(s.col, new_cols - 1);
-        }
+        self.layout_gen +%= 1;
+        // Wide pairs cut by the alt-screen crop.
+        const keep_buf = self.buffer;
+        const keep_map = self.map;
+        self.buffer = new_alt;
+        self.map = new_amap;
         var r: u16 = 0;
         while (r < new_rows) : (r += 1) self.fixWideRow(r);
-        if (self.alt_active) {
-            self.buffer = new_primary;
-            r = 0;
-            while (r < new_rows) : (r += 1) self.fixWideRow(r);
-            self.buffer = new_alt;
-        } else {
-            self.buffer = new_alt;
-            r = 0;
-            while (r < new_rows) : (r += 1) self.fixWideRow(r);
-            self.buffer = new_primary;
+        self.buffer = keep_buf;
+        self.map = keep_map;
+    }
+
+    const Reflowed = struct { cells: []Cell, map: []u16, cursor_row: u16, cursor_col: u16 };
+
+    /// Rebuild scrollback + primary grid with every soft-wrapped logical
+    /// line re-wrapped at `new_cols`. The cursor keeps its place in the
+    /// text and, where possible, its row on screen.
+    fn reflowPrimary(self: *Terminal, new_rows: u16, new_cols: u16, cur_row: u16, cur_col: u16) !Reflowed {
+        const alloc = self.allocator;
+        var out_rows = std.ArrayList([]Cell).init(alloc);
+        defer {
+            for (out_rows.items) |row| alloc.free(row);
+            out_rows.deinit();
         }
+        var logical = std.ArrayList(Cell).init(alloc);
+        defer logical.deinit();
+
+        // Old screen rows that matter: up to the cursor or the last
+        // non-blank row, whichever is lower.
+        var used: u16 = cur_row + 1;
+        {
+            var r: u16 = self.rows;
+            while (r > used) : (r -= 1) {
+                if (!rowIsBlank(self.primaryRow(r - 1))) {
+                    used = r;
+                    break;
+                }
+            }
+        }
+
+        const hist_len = self.scrollback.len();
+        const total_phys = hist_len + used;
+        var cursor_abs: ?usize = null; // output row of the cursor
+        var cursor_col_out: u16 = 0;
+        var pending_cursor: ?usize = null;
+        var pending_top: ?usize = null;
+        var anchor: usize = 0; // output row holding the old screen's top-left
+        var phys: usize = 0;
+        while (phys < total_phys) : (phys += 1) {
+            const row: []const Cell = if (phys < hist_len) self.scrollback.getLine(phys).? else self.primaryRow(@intCast(phys - hist_len));
+            const wrapped = row.len > 0 and row[row.len - 1].soft_wrap;
+            const is_cursor_row = phys == hist_len + cur_row;
+            var cursor_off: ?usize = null;
+            if (is_cursor_row) cursor_off = logical.items.len + @min(cur_col, row.len);
+            if (phys == hist_len) pending_top = logical.items.len;
+            var take = row.len;
+            if (wrapped and phys + 1 < total_phys) {
+                // A wide char that didn't fit left a blank pad in the last column.
+                const next: []const Cell = if (phys + 1 < hist_len) self.scrollback.getLine(phys + 1).? else self.primaryRow(@intCast(phys + 1 - hist_len));
+                if (next.len > 0 and next[0].width == 2 and isBlankCell(row[row.len - 1])) take -= 1;
+            }
+            try logical.appendSlice(row[0..take]);
+            if (logical.items.len > 0) logical.items[logical.items.len - 1].soft_wrap = false;
+            // Remember the cursor as an offset into the logical line.
+            if (cursor_off) |off| pending_cursor = off;
+            if (wrapped and phys + 1 < total_phys) continue;
+            const line_start_row = out_rows.items.len;
+            const pos = try rewrapLine(alloc, &out_rows, logical.items, new_cols, pending_cursor, pending_top);
+            if (pending_cursor != null) {
+                cursor_abs = line_start_row + pos.row;
+                cursor_col_out = pos.col;
+                pending_cursor = null;
+            }
+            if (pending_top != null) {
+                anchor = line_start_row + pos.mark_row;
+                pending_top = null;
+            }
+            logical.clearRetainingCapacity();
+        }
+
+        // Choose which output rows form the screen: keep the old top line
+        // at the top, scrolling only as far as needed to keep the cursor
+        // on screen (so history is never pulled into view).
+        const n_out = out_rows.items.len;
+        const c_abs = cursor_abs orelse n_out;
+        const top: usize = @max(@min(anchor, c_abs), c_abs -| (new_rows - 1));
+
+        const cells = try alloc.alloc(Cell, @as(usize, new_rows) * new_cols);
+        errdefer alloc.free(cells);
+        @memset(cells, Cell.init());
+        const map = try identityMap(alloc, new_rows);
+        errdefer alloc.free(map);
+        var r: usize = 0;
+        while (r < new_rows and top + r < n_out) : (r += 1) {
+            @memcpy(cells[r * new_cols ..][0..new_cols], out_rows.items[top + r]);
+        }
+
+        // History = rows above `top` (newest kept when over the limit).
+        const old_total = self.scrollback.total;
+        const old_len = self.scrollback.len();
+        self.scrollback.clear();
+        const first = if (top > self.scrollback.max_lines) top - self.scrollback.max_lines else 0;
+        try self.scrollback.lines.ensureTotalCapacity(top - first);
+        for (out_rows.items[first..top]) |*row| {
+            try self.scrollback.appendOwned(row.*);
+            row.* = &.{};
+        }
+        self.scrollback.total = old_total - old_len + self.scrollback.len();
+
+        const crow: u16 = if (c_abs >= top) @intCast(@min(c_abs - top, new_rows - 1)) else 0;
+        return .{ .cells = cells, .map = map, .cursor_row = crow, .cursor_col = @min(cursor_col_out, new_cols - 1) };
+    }
+
+    fn primaryRow(self: *const Terminal, row: u16) []Cell {
+        const start = @as(usize, self.primary_map[row]) * self.cols;
+        return self.primary[start .. start + self.cols];
     }
 
     fn copyGrid(dst: []Cell, dst_rows: u16, dst_cols: u16, src: []const Cell, src_rows: u16, src_cols: u16, src_row_offset: u16) void {
@@ -959,6 +1263,18 @@ pub const Terminal = struct {
             const s = @as(usize, r + src_row_offset) * src_cols;
             const d = @as(usize, r) * dst_cols;
             @memcpy(dst[d .. d + cols], src[s .. s + cols]);
+        }
+    }
+
+    fn copyGridMapped(dst: []Cell, dst_rows: u16, dst_cols: u16, src: []const Cell, src_map: []const u16, src_rows: u16, src_cols: u16, src_row_offset: u16) void {
+        @memset(dst, Cell.init());
+        const cols = @min(dst_cols, src_cols);
+        var r: u16 = 0;
+        while (r < dst_rows and r + src_row_offset < src_rows) : (r += 1) {
+            const s = @as(usize, src_map[r + src_row_offset]) * src_cols;
+            const d = @as(usize, r) * dst_cols;
+            @memcpy(dst[d .. d + cols], src[s .. s + cols]);
+            if (cols < src_cols) dst[d + cols - 1].soft_wrap = false;
         }
     }
 
@@ -1431,8 +1747,7 @@ pub const Terminal = struct {
         if (line >= top) {
             const r = line - top;
             if (r >= self.rows) return null;
-            const start = @as(usize, @intCast(r)) * self.cols;
-            return self.buffer[start..][0..self.cols];
+            return self.screenRow(@intCast(r));
         }
         if (self.alt_active) return null;
         const hist = self.historyTop();

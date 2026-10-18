@@ -107,6 +107,7 @@ See [QUICKSTART.md](QUICKSTART.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for deta
 - Selection (word/line/block, wide-char aware), CLIPBOARD + PRIMARY copy/paste with bracketed paste and a multi-line paste prompt, OSC 52, scrollback viewport with scrollbar, search overlay (regex optional), Ctrl+click URLs and OSC 8 links (see [docs/SELECTION.md](docs/SELECTION.md))
 - Event loop with headless and native GUI modes, signal handling, clean exit when the shell exits
 - Vulkan loader, instance/device, swapchain present, SPIR-V glyph pipeline, software fallback
+- Frame pacing with 2 frames in flight, vsync/mailbox/immediate present modes, zero idle CPU, damage-tracked rows and instanced cell draws, coalesced PTY reads so `cat bigfile`/`yes` don't stall input; `zig build bench` (see [docs/PERFORMANCE.md](docs/PERFORMANCE.md))
 - Real fonts: FreeType/HarfBuzz/fontconfig, bold/italic faces, CJK + colour emoji fallback, procedural box drawing, underline styles/colours, runtime zoom, optional retro 8×8 font (see [docs/FONTS.md](docs/FONTS.md))
 - X11 / Wayland / Win32 windows, resize, HiDPI scaling
 - CI (build + unit tests)

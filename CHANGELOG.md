@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Frame pacing: 2 frames in flight with per-slot fences/semaphores, no per-frame `vkQueueWaitIdle`; `present_mode = fifo|mailbox|immediate|fifo_relaxed` (or `vsync = true|false`) with fallback to what the surface supports; `max_fps` cap while output streams; the GUI loop sleeps in `poll(-1)` when nothing changes (0 CPU ticks over 10 s idle)
+- Damage tracking: per-row quad caches, only rows whose cells/marks/cursor changed are re-shaped; unchanged frames are not drawn; GPU instance uploads cover only damaged ranges; the software renderer redraws only dirty row bands
+- Instanced cell drawing: 32-byte instances (was 64) in pixel units with push constants, one draw per frame, persistently mapped per-frame instance buffers; glyph-atlas uploads are recorded into the frame's command buffer
+- PTY read coalescing: 64 KiB reads, parse up to `read_budget_kb` (default 1024) or ~8 ms per batch, then service input and draw
+- `zig build bench` (parser MiB/s, frame build/damage/raster timings, streaming, reflow) and `docs/PERFORMANCE.md`
+- Reflow on resize: soft-wrapped lines (screen and scrollback) are re-wrapped to the new width, wide characters kept intact; the alternate screen is cropped
+- Search matches span soft-wrapped rows and refresh incrementally as output arrives
 - Mouse selection: drag, double-click word, triple-click line, Shift+click extend, Ctrl+Alt/Alt+drag block; wide-char aware, joins soft-wrapped rows, anchored to absolute lines so it survives scrolling; Shift overrides application mouse reporting
 - Clipboard: CLIPBOARD and PRIMARY on X11 (incl. INCR receive) and Wayland (data-device + primary-selection-unstable-v1), CF_UNICODETEXT on Win32; `copy_on_select`; paste via Ctrl+Shift+V, Shift+Insert, middle-click with bracketed paste; multi-line paste prompt (`paste_confirm`)
 - OSC 52 set and (opt-in, `osc52 = read-write`) query
@@ -36,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `src/terminal/vt_test.zig` emulation tests, `tools/headless_drive.py`, `docs/VT_SUPPORT.md`
 
 ### Fixed
+- Scrolling no longer copies the whole screen per line (row map), scrollback stores trimmed lines: `cat` of a 23 MB file in the GUI takes 1.8 s instead of 18.4 s
+- The selection is cleared when output rewrites the selected text
+- The search bar no longer hides the prompt on the last row
 - Headless mode puts the controlling tty in raw mode, so Ctrl+C reaches the shell instead of quitting DeathTerminal; the tty is restored on exit
 - Ctrl+C in the GUI is sent to the shell (0x03) instead of closing the window
 - The shell starts with default signal dispositions and an empty mask, so Ctrl+C works even when DeathTerminal was launched with SIGINT ignored
