@@ -1,12 +1,52 @@
 const std = @import("std");
-const Cell = @import("../terminal/terminal.zig").Cell;
+const terminal = @import("../terminal/terminal.zig");
+const Cell = terminal.Cell;
 
 const dpi = @import("../platform/dpi.zig");
+
+/// Per-frame cursor and screen state shared by the CPU and GPU renderers.
+pub const View = struct {
+    cursor_visible: bool = true,
+    cursor_shape: terminal.CursorShape = .block,
+    /// DECSCNM: swap foreground and background for the whole screen.
+    reverse_video: bool = false,
+
+    pub fn fromTerminal(term: *const terminal.Terminal) View {
+        return .{
+            .cursor_visible = term.cursor_visible,
+            .cursor_shape = term.cursor_shape,
+            .reverse_video = term.modes.reverse_video,
+        };
+    }
+};
+
+/// Colors for a cell after attributes, reverse video, and a block cursor.
+pub fn cellColors(cell: Cell, view: View, block_cursor: bool) struct { fg: u32, bg: u32 } {
+    const c = cell.resolvedColors();
+    var fg = c.fg;
+    var bg = c.bg;
+    if (view.reverse_video != block_cursor) {
+        const tmp = fg;
+        fg = bg;
+        bg = tmp;
+    }
+    return .{ .fg = fg, .bg = bg };
+}
+
+/// Thin overlay rectangles (underline, strikethrough, bar/underline
+/// cursor) in cell-relative fractions.
+pub const Overlay = struct { x: f32, y: f32, w: f32, h: f32 };
+pub const underline_rect = Overlay{ .x = 0, .y = 14.0 / 16.0, .w = 1, .h = 1.0 / 16.0 };
+pub const strike_rect = Overlay{ .x = 0, .y = 7.0 / 16.0, .w = 1, .h = 1.0 / 16.0 };
+pub const cursor_bar_rect = Overlay{ .x = 0, .y = 0, .w = 1.0 / 8.0, .h = 1 };
+pub const cursor_underline_rect = Overlay{ .x = 0, .y = 14.0 / 16.0, .w = 1, .h = 2.0 / 16.0 };
 
 pub const CELL_W: u32 = 8;
 pub const CELL_H: u32 = 16;
 
-pub fn cellPx(scale: f32) struct { w: u32, h: u32 } {
+pub const CellPx = struct { w: u32, h: u32 };
+
+pub fn cellPx(scale: f32) CellPx {
     const s = dpi.normalize(scale);
     return .{
         .w = @max(1, @as(u32, @intFromFloat(@round(@as(f32, CELL_W) * s)))),
@@ -220,7 +260,7 @@ pub const SoftwareRenderer = struct {
         cols: u16,
         cursor_row: u16,
         cursor_col: u16,
-        cursor_visible: bool,
+        view: View,
     ) void {
         @memset(self.pixels, 0xFF000000);
         var row: u16 = 0;
@@ -229,26 +269,23 @@ pub const SoftwareRenderer = struct {
             while (col < cols) : (col += 1) {
                 const idx = @as(usize, row) * @as(usize, cols) + col;
                 if (idx >= cells.len) break;
-                blit(self, col, row, cells[idx], cursor_visible and row == cursor_row and col == cursor_col);
+                const at_cursor = view.cursor_visible and row == cursor_row and col == cursor_col;
+                blit(self, col, row, cells[idx], view, at_cursor);
             }
         }
         self.dirty = true;
     }
 };
 
-fn blit(self: *SoftwareRenderer, col: u16, row: u16, cell: Cell, invert: bool) void {
+fn blit(self: *SoftwareRenderer, col: u16, row: u16, cell: Cell, view: View, at_cursor: bool) void {
     const cw = self.cell_w;
     const ch = self.cell_h;
     const ox = @as(u32, col) * cw;
     const oy = @as(u32, row) * ch;
-    var fg = (cell.fg_color & 0x00FFFFFF) | 0xFF000000;
-    var bg = (cell.bg_color & 0x00FFFFFF) | 0xFF000000;
-    if (invert) {
-        const tmp = fg;
-        fg = bg;
-        bg = tmp;
-    }
-    const bits = glyphBits(cell.char);
+    const colors = cellColors(cell, view, at_cursor and view.cursor_shape == .block);
+    const fg = (colors.fg & 0x00FFFFFF) | 0xFF000000;
+    const bg = (colors.bg & 0x00FFFFFF) | 0xFF000000;
+    const bits = glyphBits(if (cell.hidden) ' ' else cell.char);
     var gy: u32 = 0;
     while (gy < ch) : (gy += 1) {
         const src_y = gy * GLYPH_PX / ch;
@@ -262,6 +299,32 @@ fn blit(self: *SoftwareRenderer, col: u16, row: u16, cell: Cell, invert: bool) v
             if (px >= self.width or py >= self.height) continue;
             self.pixels[py * self.width + px] = if (on) fg else bg;
         }
+    }
+    if (cell.underline and !cell.hidden) fillOverlay(self, ox, oy, underline_rect, fg);
+    if (cell.strikethrough and !cell.hidden) fillOverlay(self, ox, oy, strike_rect, fg);
+    if (at_cursor) {
+        const cursor_color = (cellColors(cell, view, false).fg & 0x00FFFFFF) | 0xFF000000;
+        switch (view.cursor_shape) {
+            .block => {},
+            .bar => fillOverlay(self, ox, oy, cursor_bar_rect, cursor_color),
+            .underline => fillOverlay(self, ox, oy, cursor_underline_rect, cursor_color),
+        }
+    }
+}
+
+fn overlayPx(frac: f32, total: u32) u32 {
+    return @intFromFloat(@round(frac * @as(f32, @floatFromInt(total))));
+}
+
+pub fn fillOverlay(self: *SoftwareRenderer, ox: u32, oy: u32, r: Overlay, argb: u32) void {
+    const x0 = ox + overlayPx(r.x, self.cell_w);
+    const y0 = oy + overlayPx(r.y, self.cell_h);
+    const w = @max(1, overlayPx(r.w, self.cell_w));
+    const h = @max(1, overlayPx(r.h, self.cell_h));
+    var y = y0;
+    while (y < y0 + h and y < self.height) : (y += 1) {
+        var x = x0;
+        while (x < x0 + w and x < self.width) : (x += 1) self.pixels[y * self.width + x] = argb;
     }
 }
 
@@ -312,7 +375,7 @@ test "software renderer draws ASCII glyph" {
     cells[0].char = 'A';
     cells[0].fg_color = 0xFFFFFF;
     cells[0].bg_color = 0x000000;
-    r.renderGrid(&cells, 1, 2, 0, 1, true);
+    r.renderGrid(&cells, 1, 2, 0, 1, .{});
 
     var lit: usize = 0;
     for (r.pixels[0 .. CELL_W * CELL_H]) |px| {
@@ -334,7 +397,7 @@ test "non-ASCII maps to the replacement glyph; wide spacer is blank" {
     cells[0].char = 0x65E5;
     cells[0].width = 2;
     cells[1].width = 0; // spacer keeps char ' '
-    r.renderGrid(&cells, 1, 2, 0, 0, false);
+    r.renderGrid(&cells, 1, 2, 0, 0, .{ .cursor_visible = false });
 
     var lead_lit: usize = 0;
     var spacer_lit: usize = 0;
@@ -349,4 +412,28 @@ test "non-ASCII maps to the replacement glyph; wide spacer is blank" {
     }
     try t.expect(lead_lit > 0);
     try t.expectEqual(@as(usize, 0), spacer_lit);
+}
+
+test "software renderer draws underline, strikethrough and bar cursor" {
+    const t = std.testing;
+    var r = try SoftwareRenderer.init(t.allocator, 2, 1, 1.0);
+    defer r.deinit();
+    var cells = [_]Cell{ Cell.init(), Cell.init() };
+    cells[0].underline = true;
+    cells[0].strikethrough = true;
+    r.renderGrid(&cells, 1, 2, 0, 1, .{ .cursor_shape = .bar });
+    const white: u32 = 0xFFFFFFFF;
+    try t.expectEqual(white, r.pixels[14 * r.width + 3]); // underline row
+    try t.expectEqual(white, r.pixels[7 * r.width + 3]); // strike row
+    try t.expectEqual(white, r.pixels[5 * r.width + 8]); // bar cursor at col 1, x=8
+    try t.expectEqual(@as(u32, 0xFF000000), r.pixels[5 * r.width + 12]); // rest of cell 1 is not inverted
+}
+
+test "inverse and reverse video swap colors" {
+    const t = std.testing;
+    var cell = Cell.init();
+    try t.expectEqual(@as(u32, 0x000000), cellColors(cell, .{ .reverse_video = true }, false).fg);
+    cell.inverse = true;
+    try t.expectEqual(@as(u32, 0x000000), cellColors(cell, .{}, false).fg);
+    try t.expectEqual(@as(u32, 0xFFFFFF), cellColors(cell, .{}, true).fg);
 }

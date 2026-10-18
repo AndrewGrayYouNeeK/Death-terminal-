@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- xterm-compatible VT emulation for full-screen apps: DECSTBM scroll regions with SU/SD/IND/RI/NEL, IL/DL/ICH/DCH/ECH/REP, insert mode, tab stops (HTS/TBC/CHT/CBT), origin mode, DECAWM, DECSC/DECRC and `CSI s`/`u`, alternate screens (?47/?1047/?1049), DEC special graphics (`ESC ( 0`, SO/SI), DECALN, RIS/DECSTR
+- 256-colour and true-colour SGR (semicolon and colon forms), faint, inverse, strikethrough, hidden; erase uses the current background
+- Replies: DA1, DA2, DSR/CPR (incl. DECXCPR), DECRQM, XTVERSION, OSC 10/11 colour queries
+- OSC 0/2 titles (window title follows the shell on X11/Wayland/Win32), OSC 7 cwd, OSC 8 hyperlinks (length/count bounded, control bytes rejected)
+- DECSCUSR cursor shapes (block/underline/bar) in both renderers; underline and strikethrough drawn
+- Key encoding per xterm: DECCKM, keypad application mode, SS3 F1–F4, modifier parameters, Alt as ESC prefix
+- GUI mouse reporting (?1000/?1002/?1003, legacy and SGR ?1006 encodings), focus reports (?1004), wheel → arrow keys in the alternate screen when mouse reporting is off
+- Bracketed paste encoder (?2004) with embedded end-marker stripping
+- Shell environment sets `TERM=xterm-256color`, `COLORTERM=truecolor`, `TERM_PROGRAM=DeathTerminal`
+- `src/terminal/vt_test.zig` emulation tests, `tools/headless_drive.py`, `docs/VT_SUPPORT.md`
+
+### Fixed
+- Ctrl+C in the GUI is sent to the shell (0x03) instead of closing the window
+- The shell starts with default signal dispositions and an empty mask, so Ctrl+C works even when DeathTerminal was launched with SIGINT ignored
+- `ESC[m` resets attributes; `ESC ( B` no longer prints `B`; DCS/APC/PM/SOS strings are swallowed; ST-terminated OSC works; empty/zero CSI params default correctly; huge params saturate; `38;5;n` uses the full 256 palette; private-marker CSI (e.g. XTMODKEYS `CSI > 4 ; 1 m`) is no longer treated as SGR; ED 2 no longer homes the cursor (xterm behaviour)
+
+### Added
 - UTF-8 decoding in the parser (split-chunk safe; malformed, overlong, and surrogate sequences become U+FFFD)
 - Grid cells store codepoints with a column width: wide chars (East Asian wide/fullwidth, emoji) take 2 cells, combining marks attach to the previous cell
 - `src/terminal/unicode.zig` width lookup over tables generated from Unicode 15.1 (`tools/gen_unicode_width.py`)

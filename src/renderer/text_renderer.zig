@@ -47,7 +47,9 @@ pub fn glyphUv(cp: u21) struct { origin: [2]f32, size: [2]f32 } {
     };
 }
 
-/// Generate one instance per visible cell. Returns the count written.
+/// Generate one instance per cell plus overlay quads (underline,
+/// strikethrough, bar/underline cursor). Overlays use fg == bg so they draw
+/// solid regardless of the glyph sampled. Returns the count written.
 pub fn packInstances(
     out: []Instance,
     cells: []const Cell,
@@ -55,7 +57,7 @@ pub fn packInstances(
     cols: u16,
     cursor_row: u16,
     cursor_col: u16,
-    cursor_visible: bool,
+    view: software.View,
     fb_w: f32,
     fb_h: f32,
     cell_w: f32,
@@ -63,6 +65,7 @@ pub fn packInstances(
 ) u32 {
     if (fb_w <= 0 or fb_h <= 0 or rows == 0 or cols == 0) return 0;
     const size = [2]f32{ 2.0 * cell_w / fb_w, 2.0 * cell_h / fb_h };
+    const blank_uv = glyphUv(' ');
 
     var count: u32 = 0;
     var row: u16 = 0;
@@ -72,30 +75,51 @@ pub fn packInstances(
             if (count >= out.len) return count;
             const idx = @as(usize, row) * @as(usize, cols) + col;
             const cell = if (idx < cells.len) cells[idx] else Cell.init();
-            const invert = cursor_visible and row == cursor_row and col == cursor_col;
-            var fg = colorToVec(cell.fg_color);
-            var bg = colorToVec(cell.bg_color);
-            if (invert) {
-                const tmp = fg;
-                fg = bg;
-                bg = tmp;
-            }
-            const uv = glyphUv(cell.char);
+            const at_cursor = view.cursor_visible and row == cursor_row and col == cursor_col;
+            const colors = software.cellColors(cell, view, at_cursor and view.cursor_shape == .block);
+            const fg = colorToVec(colors.fg);
+            const uv = glyphUv(if (cell.hidden) ' ' else cell.char);
+            const origin = [2]f32{
+                -1.0 + 2.0 * (@as(f32, @floatFromInt(col)) * cell_w) / fb_w,
+                -1.0 + 2.0 * (@as(f32, @floatFromInt(row)) * cell_h) / fb_h,
+            };
             out[count] = .{
-                .origin = .{
-                    -1.0 + 2.0 * (@as(f32, @floatFromInt(col)) * cell_w) / fb_w,
-                    -1.0 + 2.0 * (@as(f32, @floatFromInt(row)) * cell_h) / fb_h,
-                },
+                .origin = origin,
                 .size = size,
                 .uv_origin = uv.origin,
                 .uv_size = uv.size,
                 .fg = fg,
-                .bg = bg,
+                .bg = colorToVec(colors.bg),
             };
             count += 1;
+
+            const visible = !cell.hidden;
+            if (visible and cell.underline) count = overlay(out, count, origin, size, software.underline_rect, fg, blank_uv);
+            if (visible and cell.strikethrough) count = overlay(out, count, origin, size, software.strike_rect, fg, blank_uv);
+            if (at_cursor) {
+                const cfg = colorToVec(software.cellColors(cell, view, false).fg);
+                switch (view.cursor_shape) {
+                    .block => {},
+                    .bar => count = overlay(out, count, origin, size, software.cursor_bar_rect, cfg, blank_uv),
+                    .underline => count = overlay(out, count, origin, size, software.cursor_underline_rect, cfg, blank_uv),
+                }
+            }
         }
     }
     return count;
+}
+
+fn overlay(out: []Instance, count: u32, origin: [2]f32, size: [2]f32, r: software.Overlay, c: [4]f32, uv: anytype) u32 {
+    if (count >= out.len) return count;
+    out[count] = .{
+        .origin = .{ origin[0] + r.x * size[0], origin[1] + r.y * size[1] },
+        .size = .{ r.w * size[0], r.h * size[1] },
+        .uv_origin = uv.origin,
+        .uv_size = uv.size,
+        .fg = c,
+        .bg = c,
+    };
+    return count + 1;
 }
 
 test "packInstances writes one instance per cell" {
@@ -103,7 +127,7 @@ test "packInstances writes one instance per cell" {
     cells[0].char = 'A';
     cells[0].fg_color = 0xFFFFFF;
     var out: [4]Instance = undefined;
-    const n = packInstances(&out, &cells, 1, 2, 0, 1, true, 16, 16, 8, 16);
+    const n = packInstances(&out, &cells, 1, 2, 0, 1, .{}, 16, 16, 8, 16);
     try std.testing.expectEqual(@as(u32, 2), n);
     try std.testing.expect(out[0].fg[0] > 0.9);
     try std.testing.expect(out[1].bg[0] > 0.9); // cursor inverts cell 1
@@ -112,4 +136,14 @@ test "packInstances writes one instance per cell" {
 test "Instance stride is 64 bytes" {
     try std.testing.expectEqual(@as(usize, 64), @sizeOf(Instance));
     try std.testing.expectEqual(@as(usize, 8), @sizeOf(Vertex));
+}
+
+test "packInstances adds overlays for underline and bar cursor" {
+    var cells = [_]Cell{ Cell.init(), Cell.init() };
+    cells[0].underline = true;
+    var out: [8]Instance = undefined;
+    const n = packInstances(&out, &cells, 1, 2, 0, 1, .{ .cursor_shape = .bar }, 16, 16, 8, 16);
+    try std.testing.expectEqual(@as(u32, 4), n); // 2 cells + underline + bar
+    try std.testing.expectEqual(out[1].fg[0], out[1].bg[0]); // overlay is solid
+    try std.testing.expect(out[3].size[0] < out[2].size[0]); // bar is narrow
 }

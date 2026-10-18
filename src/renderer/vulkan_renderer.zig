@@ -408,7 +408,7 @@ pub const VulkanRenderer = struct {
         cols: u16,
         cursor_row: u16,
         cursor_col: u16,
-        cursor_visible: bool,
+        view: software.View,
         scale: f32,
     ) bool {
         if (!self.text.enabled or !self.gpu.enabled) return false;
@@ -421,7 +421,7 @@ pub const VulkanRenderer = struct {
             cols,
             cursor_row,
             cursor_col,
-            cursor_visible,
+            view,
             @floatFromInt(cell.w),
             @floatFromInt(cell.h),
         ) catch return false;

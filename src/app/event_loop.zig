@@ -11,6 +11,7 @@ const lua_engine = @import("../scripting/lua_engine.zig");
 const config = @import("../config/config.zig");
 const window_mod = @import("../platform/window.zig");
 const dpi = @import("../platform/dpi.zig");
+const input = @import("../terminal/input.zig");
 
 const POLL_TIMEOUT_MS: i32 = 16;
 const READ_BUFFER_SIZE: usize = 4096;
@@ -89,7 +90,8 @@ pub const EventLoop = struct {
         try installSignalHandlers();
 
         var read_buf: [READ_BUFFER_SIZE]u8 = undefined;
-        std.debug.print("GUI terminal active ({s}, scale={d:.2}). Close the window or Ctrl+C to exit.\n", .{
+        var mouse = MouseState{};
+        std.debug.print("GUI terminal active ({s}, scale={d:.2}). Close the window or exit the shell to quit.\n", .{
             @tagName(window.backend),
             window.scale,
         });
@@ -124,14 +126,19 @@ pub const EventLoop = struct {
                     },
                     .redraw => need_present = true,
                     .input => |bytes| {
-                        if (bytes.len == 1 and bytes[0] == 0x03) {
-                            shutdown_requested.store(true, .seq_cst);
-                            break;
-                        }
+                        // Ctrl+C arrives as 0x03 and goes to the shell like any key.
                         _ = try term.write(bytes);
                         if (autocomplete.enabled) {
                             _ = autocomplete.getSuggestions("", bytes) catch {};
                         }
+                    },
+                    .key => |k| {
+                        const seq = input.encodeKey(k.key, k.mods, term.modes);
+                        _ = try term.write(seq.constSlice());
+                    },
+                    .mouse => |m| try handleMouse(term, &mouse, m, software.cellPx(window.scale)),
+                    .focus => |focused| {
+                        if (input.encodeFocus(focused, term.modes)) |seq| _ = try term.write(seq);
                     },
                 }
             }
@@ -159,6 +166,11 @@ pub const EventLoop = struct {
                 }
                 try term.processOutput(read_buf[0..n]);
                 need_present = true;
+            }
+
+            if (term.title_changed) {
+                term.title_changed = false;
+                window.setTitle(term.title);
             }
 
             if (need_present) {
@@ -308,6 +320,64 @@ fn attachPresent(vulkan_renderer: *renderer.VulkanRenderer, window: *window_mod.
     }
 }
 
+const MouseState = struct {
+    held: input.MouseButton = .none,
+    last_col: u16 = std.math.maxInt(u16),
+    last_row: u16 = std.math.maxInt(u16),
+};
+
+/// Number of arrow-key presses sent per wheel notch in the alternate screen
+/// when the application did not enable mouse reporting (xterm's
+/// "alternateScroll" behaviour, so `less`/`man` scroll with the wheel).
+const ALT_SCROLL_LINES: usize = 3;
+
+fn handleMouse(term: *terminal.Terminal, st: *MouseState, m: window_mod.MouseInput, cell: software.CellPx) !void {
+    const col: u16 = @intCast(std.math.clamp(@divFloor(m.x, @as(i32, @intCast(cell.w))), 0, @as(i32, term.cols) - 1));
+    const row: u16 = @intCast(std.math.clamp(@divFloor(m.y, @as(i32, @intCast(cell.h))), 0, @as(i32, term.rows) - 1));
+    const wheel = switch (m.button) {
+        .wheel_up, .wheel_down, .wheel_left, .wheel_right => true,
+        else => false,
+    };
+
+    switch (m.action) {
+        .press => if (!wheel) {
+            st.held = m.button;
+        },
+        .release => st.held = .none,
+        .motion => {
+            if (col == st.last_col and row == st.last_row) return;
+        },
+    }
+    st.last_col = col;
+    st.last_row = row;
+
+    if (term.modes.mouse == .off) {
+        if (wheel and term.alt_active and m.action == .press) {
+            const key: ?input.Key = switch (m.button) {
+                .wheel_up => .up,
+                .wheel_down => .down,
+                else => null,
+            };
+            if (key) |k| {
+                const seq = input.encodeKey(k, .{}, term.modes);
+                for (0..ALT_SCROLL_LINES) |_| _ = try term.write(seq.constSlice());
+            }
+        }
+        return;
+    }
+
+    const ev = input.MouseEvent{
+        .action = m.action,
+        .button = if (m.action == .motion) st.held else m.button,
+        .col = col,
+        .row = row,
+        .mods = m.mods,
+    };
+    if (input.encodeMouse(ev, term.modes, st.held != .none)) |seq| {
+        _ = try term.write(seq.constSlice());
+    }
+}
+
 fn presentGui(
     term: *terminal.Terminal,
     vulkan_renderer: *renderer.VulkanRenderer,
@@ -321,13 +391,13 @@ fn presentGui(
         term.cols,
         term.cursor_row,
         term.cursor_col,
-        term.cursor_visible,
+        software.View.fromTerminal(term),
         window.scale,
     )) {
         soft.dirty = false;
         return;
     }
-    soft.renderGrid(term.buffer, term.rows, term.cols, term.cursor_row, term.cursor_col, term.cursor_visible);
+    soft.renderGrid(term.buffer, term.rows, term.cols, term.cursor_row, term.cursor_col, software.View.fromTerminal(term));
     if (!vulkan_renderer.presentPixels(soft.pixels, soft.width, soft.height)) {
         window.presentRgba(soft.pixels, soft.width, soft.height);
     }
