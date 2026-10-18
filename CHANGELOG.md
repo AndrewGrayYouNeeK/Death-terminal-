@@ -7,10 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- The AI client is HTTP/JSON (OpenAI-compatible) instead of the originally planned gRPC service; the gRPC stub (`src/ai/autocomplete.zig`) is gone
+- `select_all` moved from Ctrl+Shift+A to Ctrl+Shift+Alt+A (Ctrl+Shift+A is now `ai_explain`)
+
 ### Deprecated
 - `config.txt` (`key = value`): still read when no config.lua exists, with a warning
 
 ### Added
+- AI command suggestions over an OpenAI-compatible chat/completions endpoint (HTTP/JSON with SSE streaming; default local Ollama `qwen2.5-coder:0.5b` at `http://localhost:11434/v1`), replacing the stub. Dim ghost text after the cursor; Tab (`ai.accept_key`) accepts, Esc dismisses, Alt+] / Alt+[ cycle alternatives; never inserted without accept
+- "Explain / fix last error" (Ctrl+Shift+A, `ai_explain`): streaming overlay with the cause and a corrected command
+- Background AI worker thread with cancel-on-keystroke and debounce; an unreachable endpoint shows an "AI offline" badge and backs off (5–60 s) instead of erroring
+- Context: typed input, cwd (OSC 7), last commands with exit codes, recent output, shell, OS; secrets (provider tokens, AWS/GitHub/OpenAI keys, JWTs, PEM keys, passwords, auth headers, `KEY=value` assignments, URL credentials, random-looking strings) are redacted before sending
+- `ai.*` options: `endpoint`, `model`, `api_key_env` (env var name; keys are rejected), `timeout_ms`, `debounce_ms`, `max_tokens`, `explain_max_tokens`, `history`, `output_lines`, `accept_key`
+- OSC 133 shell integration for bash/zsh/fish (`shell-integration/`), injected automatically (`shell.integration`), `--print-shell-integration <shell>`; the terminal tracks prompt input, commands, exit codes and output
+- docs/AI.md
 - Lua 5.4 configuration: `~/.config/death-terminal/config.lua` (XDG paths, `--config`), Lua 5.4.7 vendored and built by `zig build` (no system dependency)
 - Typed config API covering every option (window, font, theme/colours/palette, cursor, render, scrollback, selection, clipboard/OSC 52, links, keys, shell program/args/env/cwd, AI and SSH placeholders), with `dt.theme()`, `dt.bind()`, `dt.themes`, `dt.os`
 - Validation errors with `file:line` and "did you mean" hints, shown in a notice bar in the window (Esc dismisses) and on stderr; a broken config falls back to the defaults at startup and keeps the previous settings on reload
@@ -122,7 +133,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Graphics pipeline infrastructure
     - Glyph atlas system for text rendering
     - Text rendering pipeline with vertex generation
-  - AI autocomplete via gRPC stub
+  - AI autocomplete via gRPC stub (replaced by the HTTP/JSON client in Unreleased)
   - SSH tunneling module stub
   - Lua scripting engine stub
 - Terminal Core (Phase 1):

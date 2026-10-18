@@ -5,7 +5,7 @@ const posix = std.posix;
 const terminal = @import("../terminal/terminal.zig");
 const renderer = @import("../renderer/vulkan_renderer.zig");
 const software = @import("../renderer/software.zig");
-const ai = @import("../ai/autocomplete.zig");
+const ai_controller = @import("ai_controller.zig");
 const ssh = @import("../ssh/tunnel.zig");
 const lua_engine = @import("../scripting/lua_engine.zig");
 const config = @import("../config/config.zig");
@@ -58,24 +58,17 @@ pub const EventLoop = struct {
         vulkan_renderer: *renderer.VulkanRenderer,
         term: *terminal.Terminal,
         lua: *lua_engine.LuaEngine,
-        autocomplete: *ai.Autocomplete,
         ssh_manager: *ssh.TunnelManager,
     ) !void {
         _ = lua;
         _ = ssh_manager;
 
-        if (!self.cfg.ai_enabled) {
-            autocomplete.disable();
-        } else {
-            autocomplete.setEndpoint(self.cfg.ai_endpoint);
-        }
-
         if (self.cfg.headless) {
-            try self.runHeadless(vulkan_renderer, term, autocomplete);
+            try self.runHeadless(vulkan_renderer, term);
         } else {
-            self.runGui(vulkan_renderer, term, autocomplete) catch |err| {
+            self.runGui(vulkan_renderer, term) catch |err| {
                 std.debug.print("GUI failed ({s}); falling back to headless.\n", .{@errorName(err)});
-                try self.runHeadless(vulkan_renderer, term, autocomplete);
+                try self.runHeadless(vulkan_renderer, term);
             };
         }
     }
@@ -84,7 +77,6 @@ pub const EventLoop = struct {
         self: *EventLoop,
         vulkan_renderer: *renderer.VulkanRenderer,
         term: *terminal.Terminal,
-        autocomplete: *ai.Autocomplete,
     ) !void {
         var scale: f32 = if (self.cfg.scale >= 1.0)
             dpi.normalize(self.cfg.scale)
@@ -145,6 +137,9 @@ pub const EventLoop = struct {
         };
         var view = ViewBuffers.init(self.allocator);
         defer view.deinit();
+        var ai = ai_controller.Controller.init(self.allocator, ai_controller.Settings.fromConfig(self.cfg));
+        defer ai.deinit();
+        if (ai.engine != null) std.debug.print("  → AI: {s} via {s}\n", .{ self.cfg.ai_model, self.cfg.ai_endpoint });
         const gui = Gui{
             .term = term,
             .vk = vulkan_renderer,
@@ -157,7 +152,7 @@ pub const EventLoop = struct {
             .cfg = self.cfg,
             .palette = &palette,
             .pace = &pace,
-            .autocomplete = autocomplete,
+            .ai = &ai,
         };
         std.debug.print("GUI terminal active ({s}, scale={d:.2}). Close the window or exit the shell to quit.\n", .{
             @tagName(window.backend),
@@ -180,6 +175,7 @@ pub const EventLoop = struct {
                 // A negative fd is ignored by poll.
                 .{ .fd = window.connectionFd() orelse -1, .events = posix.POLL.IN, .revents = 0 },
                 .{ .fd = if (watcher) |w| w.fd else -1, .events = posix.POLL.IN, .revents = 0 },
+                .{ .fd = ai.wakeFd(), .events = posix.POLL.IN, .revents = 0 },
             };
             // Sleep until input, output or the next frame slot; with nothing
             // to do the timeout is infinite (no wakeups when idle).
@@ -192,8 +188,14 @@ pub const EventLoop = struct {
             const now_ms = std.time.milliTimestamp();
             if (reload_at) |t| timeout = minTimeout(timeout, t - now_ms);
             if (ui.noticeTimeout(now_ms)) |t| timeout = minTimeout(timeout, t);
+            if (ai.timeout(now_ms)) |t| timeout = minTimeout(timeout, t);
             _ = posix.poll(&poll_fds, timeout) catch 0;
             pace.wakeups += 1;
+
+            if (poll_fds[3].revents & posix.POLL.IN != 0) {
+                if (try ai.onWake(&ui, term, std.time.milliTimestamp())) need_present = true;
+            }
+            ai.tick(term, std.time.milliTimestamp());
 
             if (poll_fds[2].revents & posix.POLL.IN != 0) {
                 if (watcher) |*w| {
@@ -235,23 +237,41 @@ pub const EventLoop = struct {
                             reload_at = null;
                             try gui.reloadConfig(self);
                             force_present = true;
+                        } else if (a.action == .ai_explain) {
+                            try ai.explain(&ui, term, std.time.milliTimestamp());
                         } else if (step) |z| {
                             if (try fonts.zoom(z)) {
                                 try regrid(term, &fonts, &soft, window.width, window.height);
                                 std.debug.print("  → zoom: {d:.1}pt, cell {d}x{d}, grid {d}x{d}\n", .{ fonts.size_pt, fonts.metrics.cell_w, fonts.metrics.cell_h, term.cols, term.rows });
                             }
-                        } else if (!try ui.handleAction(term, a.action)) {
+                        } else if (try ui.handleAction(term, a.action)) {
+                            if (a.action == .ai_accept) ai.onAccepted();
+                        } else {
                             // Not applicable here (e.g. Shift+PgUp in the
-                            // alternate screen): the app gets the key.
+                            // alternate screen, Tab with no suggestion):
+                            // the key goes on as if unbound.
                             if (events.keysymToKey(a.sym)) |key| {
-                                const seq = input.encodeKey(key, a.mods, term.modes);
-                                _ = try term.write(seq.constSlice());
+                                if (!try ui.handleKey(term, key, a.mods)) {
+                                    if (ui.userTyped()) need_present = true;
+                                    const seq = input.encodeKey(key, a.mods, term.modes);
+                                    _ = try term.write(seq.constSlice());
+                                    ai.onKeystroke(&ui, std.time.milliTimestamp());
+                                }
+                            } else if (a.sym >= 0x20 and a.sym < 0x7f) {
+                                // A printable key (e.g. Alt+]): Alt sends ESC first.
+                                var b: [2]u8 = .{ 0x1b, @intCast(a.sym) };
+                                const bytes: []const u8 = if (a.mods.alt) b[0..2] else b[1..2];
+                                if (!try ui.handleText(term, bytes)) {
+                                    _ = try term.write(bytes);
+                                    ai.onKeystroke(&ui, std.time.milliTimestamp());
+                                }
                             }
                         }
                         need_present = true;
                     },
                     .paste => |p| {
                         try ui.onPaste(term, p.data, p.target, p.purpose);
+                        ai.onKeystroke(&ui, std.time.milliTimestamp());
                         need_present = true;
                     },
                     .redraw => {
@@ -265,9 +285,8 @@ pub const EventLoop = struct {
                             // Ctrl+C arrives as 0x03 and goes to the shell like any key.
                             if (ui.userTyped()) need_present = true;
                             _ = try term.write(bytes);
-                            if (autocomplete.enabled) {
-                                _ = autocomplete.getSuggestions("", bytes) catch {};
-                            }
+                            ai.onTyped(&ui, term, bytes, std.time.milliTimestamp());
+                            need_present = true;
                         }
                     },
                     .key => |k| {
@@ -277,6 +296,8 @@ pub const EventLoop = struct {
                             if (ui.userTyped()) need_present = true;
                             const seq = input.encodeKey(k.key, k.mods, term.modes);
                             _ = try term.write(seq.constSlice());
+                            ai.onKeystroke(&ui, std.time.milliTimestamp());
+                            need_present = true;
                         }
                     },
                     .mouse => |m| {
@@ -369,7 +390,6 @@ pub const EventLoop = struct {
         self: *EventLoop,
         vulkan_renderer: *renderer.VulkanRenderer,
         term: *terminal.Terminal,
-        autocomplete: *ai.Autocomplete,
     ) !void {
         _ = self;
 
@@ -444,10 +464,6 @@ pub const EventLoop = struct {
                 if (n == 0) break;
 
                 _ = try term.write(input_buf[0..n]);
-
-                if (autocomplete.enabled and n > 0) {
-                    _ = autocomplete.getSuggestions("", input_buf[0..n]) catch {};
-                }
             }
         }
 
@@ -614,7 +630,7 @@ const Gui = struct {
     /// Effective colours (theme + overrides) of `cfg`.
     palette: *color.Palette,
     pace: *Pacer,
-    autocomplete: *ai.Autocomplete,
+    ai: *ai_controller.Controller,
 
     /// Build the frame and draw it. Unchanged frames are not drawn unless
     /// `force` (expose/resize). Returns whether anything was presented.
@@ -678,7 +694,7 @@ const Gui = struct {
         // Slices into the old config's arena were re-pointed by applyConfig.
         self.ui.opts = uiOptions(self.cfg);
         self.fonts.opts.family = self.cfg.font_family;
-        self.autocomplete.setEndpoint(self.cfg.ai_endpoint);
+        self.ai.applySettings(self.ui, ai_controller.Settings.fromConfig(self.cfg));
 
         std.debug.print("config: reloaded {s}\n", .{shown_path});
         var lines = std.ArrayList([]const u8).init(allocator);
@@ -848,6 +864,7 @@ fn restartOnlyChanges(a: *const config.Config, b: *const config.Config, out: *st
         .{ "shell.args", !eqlList(a.shell_args.items, b.shell_args.items) },
         .{ "shell.env", !eqlList(a.shell_env.items, b.shell_env.items) },
         .{ "shell.cwd", !std.mem.eql(u8, a.shell_cwd, b.shell_cwd) },
+        .{ "shell.integration", a.shell_integration != b.shell_integration },
     };
     for (names) |n| if (n[1]) {
         if (!first) try w.writeAll(", ");
@@ -889,6 +906,14 @@ fn showDiagnostics(ui: *ui_mod.Ui, diags: *const config.Diagnostics, path: []con
 
 fn installBindings(cfg: *const config.Config) void {
     events.bindings = if (cfg.default_keybindings) events.Bindings.defaults() else .{};
+    // config.ai.accept_key moves "accept suggestion" off Tab.
+    if (cfg.default_keybindings and !std.ascii.eqlIgnoreCase(cfg.ai_accept_key, "tab")) {
+        events.bindings.apply("tab=none") catch {};
+        var buf: [96]u8 = undefined;
+        if (std.fmt.bufPrint(&buf, "{s}=ai_accept", .{cfg.ai_accept_key})) |spec| {
+            events.bindings.apply(spec) catch |err| std.debug.print("config: ai.accept_key {s}: {s}\n", .{ cfg.ai_accept_key, @errorName(err) });
+        } else |_| {}
+    }
     for (cfg.keybinds.items) |spec| {
         events.bindings.apply(spec) catch |err| std.debug.print("config: keybind {s}: {s}\n", .{ spec, @errorName(err) });
     }

@@ -192,10 +192,10 @@ test "lua config: config.example.lua is valid and matches the defaults" {
     try t.expectEqual(@as(usize, 0), d.items.items.len);
     var def = config.Config.init(t.allocator);
     defer def.deinit();
-    inline for (.{ "rows", "cols", "scale", "backend", "headless", "font_size", "line_height", "font_retro", "font_ligatures", "cursor_shape", "max_fps", "read_budget_kb", "scrollback_lines", "scrollbar", "scroll_lines", "copy_on_select", "paste_confirm", "default_keybindings", "ai_enabled", "ssh_enabled", "ssh_keepalive_s" }) |name| {
+    inline for (.{ "rows", "cols", "scale", "backend", "headless", "font_size", "line_height", "font_retro", "font_ligatures", "cursor_shape", "max_fps", "read_budget_kb", "scrollback_lines", "scrollbar", "scroll_lines", "copy_on_select", "paste_confirm", "default_keybindings", "ai_enabled", "ai_timeout_ms", "ai_debounce_ms", "ai_max_tokens", "ai_explain_max_tokens", "ai_history", "ai_output_lines", "shell_integration", "ssh_enabled", "ssh_keepalive_s" }) |name| {
         try t.expectEqual(@field(def, name), @field(cfg, name));
     }
-    inline for (.{ "font_family", "theme", "present_mode", "osc52", "word_chars", "url_open_command", "shell_program", "shell_cwd", "ai_endpoint", "ai_model", "ai_api_key_env", "ssh_config_file" }) |name| {
+    inline for (.{ "font_family", "theme", "present_mode", "osc52", "word_chars", "url_open_command", "shell_program", "shell_cwd", "ai_endpoint", "ai_model", "ai_api_key_env", "ai_accept_key", "ssh_config_file" }) |name| {
         try t.expectEqualStrings(@field(def, name), @field(cfg, name));
     }
     try t.expectEqual(def.palette().hash(), cfg.palette().hash());
@@ -223,4 +223,34 @@ test "lua config: load() falls back to defaults on errors" {
     defer ok.deinit();
     try t.expectEqual(@as(usize, 0), d.items.items.len);
     try t.expectEqual(@as(f32, 14), ok.font_size);
+}
+
+test "lua config: ai options are validated" {
+    var d = config.Diagnostics.init(t.allocator);
+    defer d.deinit();
+    // The fake key is split so secret scanners don't flag the source.
+    var cfg = loadStr("config.ai.endpoint = \"ftp://example.com/v1\"\n" ++
+        "config.ai.api_key_env = \"sk" ++ "-proj-abcdefghijklmnopqrstuvwxyz0123456789\"\n" ++
+        \\config.ai.accept_key = "ctrl+nonsense"
+        \\config.ai.timeout_ms = 10
+        \\config.ai.model = "llama3.2:1b"
+        \\config.ai.debounce_ms = 150
+    , &d);
+    defer cfg.deinit();
+    try t.expectEqual(@as(usize, 4), d.errorCount());
+    try t.expect(d.contains("http://"));
+    try t.expect(d.contains("looks like an API key"));
+    try t.expect(d.contains("key chord"));
+    // Rejected values keep the defaults; valid ones apply.
+    try t.expectEqualStrings("http://localhost:11434/v1", cfg.ai_endpoint);
+    try t.expectEqualStrings("", cfg.ai_api_key_env);
+    try t.expectEqualStrings("llama3.2:1b", cfg.ai_model);
+    try t.expectEqual(@as(u32, 150), cfg.ai_debounce_ms);
+    // The key itself must never land in the config.
+    var d2 = config.Diagnostics.init(t.allocator);
+    defer d2.deinit();
+    var ok = loadStr("config.ai.api_key_env = \"OPENAI_API_KEY\"", &d2);
+    defer ok.deinit();
+    try t.expectEqual(@as(usize, 0), d2.errorCount());
+    try t.expectEqualStrings("OPENAI_API_KEY", ok.ai_api_key_env);
 }

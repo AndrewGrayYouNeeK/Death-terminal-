@@ -32,11 +32,13 @@ Context-aware, not just history-based.
 
 ## 🔥 Core Features
 
-### 🤖 AI-Native Autocomplete *(planned)*
-- Context-aware command suggestions (not just history)
-- OpenAI-compatible HTTP/JSON endpoint — local Ollama by default, any compatible server configurable
-- Inline ghost-text suggestions, accepted with Tab
-- Works with shell state, not just text
+### 🤖 AI-Native Autocomplete
+- Context-aware command suggestions: typed input, working directory, recent commands with exit codes, recent output, shell and OS
+- OpenAI-compatible HTTP/JSON endpoint with SSE streaming — local Ollama (`qwen2.5-coder:0.5b`) by default, any compatible server configurable; the API key comes from an env var you name
+- Dim ghost text after the cursor: Tab accepts, Esc dismisses, Alt+] / Alt+[ cycle alternatives; nothing is inserted unless you accept
+- Ctrl+Shift+A explains the last failed command and suggests a fix
+- Secrets (tokens, keys, passwords, env assignments) are redacted before anything is sent; offline endpoints just show a small "AI offline" badge
+- bash/zsh/fish OSC 133 shell integration, injected automatically (see [docs/AI.md](docs/AI.md))
 
 ### ⚡ GPU Rendering (Vulkan)
 - Vulkan swapchain + SPIR-V glyph pipeline, with a software fallback
@@ -114,7 +116,7 @@ See [QUICKSTART.md](QUICKSTART.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for deta
 - CI (build + unit tests)
 
 **Not done yet** (tracked in [ISSUES.md](ISSUES.md))
-- AI suggestions, SSH, Lua plugins/hooks, tabs/splits, packaging, macOS
+- SSH, Lua plugins/hooks, tabs/splits, packaging, macOS
 
 ## 🧩 Architecture (Simplified)
 
@@ -139,12 +141,13 @@ Unlike traditional autocomplete, suggestions understand:
 - partial input
 
 Works with local models (offline, e.g. Ollama) or remote OpenAI-compatible inference servers.
+The client is plain HTTP/JSON (it replaces the gRPC service planned originally); see [docs/AI.md](docs/AI.md).
 
 ## 🔐 Security
 
 - No credential logging
 - SSH handled via libssh2
-- AI context is sanitized before sending
+- AI context is redacted before sending (provider tokens, AWS/GitHub/OpenAI keys, passwords, `KEY=value` assignments, private keys); API keys are read from an environment variable, never stored in the config
 
 ## 🛣 Roadmap
 

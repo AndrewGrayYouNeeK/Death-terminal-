@@ -62,6 +62,14 @@ pub const Action = enum {
     clear_selection,
     /// Re-read config.lua now (it also reloads on save).
     reload_config,
+    /// AI ghost text: accept / dismiss / next / previous alternative.
+    /// When no suggestion is showing the key goes to the shell as usual.
+    ai_accept,
+    ai_dismiss,
+    ai_next,
+    ai_prev,
+    /// Ask the AI to explain (and fix) the last failed command.
+    ai_explain,
 
     pub fn parse(name: []const u8) ?Action {
         inline for (@typeInfo(Action).Enum.fields) |f| {
@@ -213,7 +221,7 @@ pub const Bindings = struct {
         "shift+end=scroll_bottom",
         "ctrl+shift+up=scroll_line_up",
         "ctrl+shift+down=scroll_line_down",
-        "ctrl+shift+a=select_all",
+        "ctrl+shift+alt+a=select_all",
         "ctrl+equal=zoom_in",
         "ctrl+plus=zoom_in",
         "ctrl+shift+plus=zoom_in",
@@ -226,6 +234,11 @@ pub const Bindings = struct {
         "ctrl+0=zoom_reset",
         "ctrl+kp_0=zoom_reset",
         "ctrl+shift+r=reload_config",
+        "tab=ai_accept",
+        "escape=ai_dismiss",
+        "alt+bracketright=ai_next",
+        "alt+bracketleft=ai_prev",
+        "ctrl+shift+a=ai_explain",
     };
 
     pub fn defaults() Bindings {

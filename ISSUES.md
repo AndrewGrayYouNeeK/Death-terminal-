@@ -19,7 +19,7 @@
 - [x] Module stubs created for all core subsystems:
   - [x] Vulkan renderer (src/renderer/vulkan_renderer.zig)
   - [x] Terminal core (src/terminal/terminal.zig)
-  - [x] AI autocomplete (src/ai/autocomplete.zig)
+  - [x] AI autocomplete (stub, replaced by src/ai/ in milestone 8)
   - [x] SSH tunneling (src/ssh/tunnel.zig)
   - [x] Lua scripting engine (src/scripting/lua_engine.zig)
 - [x] Basic initialization flow for all subsystems
@@ -78,17 +78,20 @@
 - [x] Performance optimization (damage tracking, one instanced draw, coalesced PTY reads; see docs/PERFORMANCE.md)
 
 ### Phase 3 - AI Integration (Medium Priority)
-- [ ] OpenAI-compatible HTTP/JSON client (default: local Ollama, configurable)
-- [ ] AI service connection management
-- [ ] Context gathering (working directory, command history, shell state)
-- [ ] Context sanitization for privacy
-- [ ] Suggestion request/response handling
-- [ ] Async suggestion processing
-- [ ] Ghost-text suggestion UI (Tab to accept)
-- [ ] Local vs remote model support
-- [ ] Offline mode handling
-- [ ] Configuration for AI endpoints
-- [ ] Rate limiting and error handling
+- [x] OpenAI-compatible HTTP/JSON client with SSE streaming (default: local Ollama, configurable) — src/ai/openai.zig (replaces the gRPC plan)
+- [x] AI service connection management (worker thread, cancel on keystroke, timeouts) — src/ai/engine.zig
+- [x] Context gathering (working directory, command history + exit codes, output tail, shell, OS) via OSC 133/OSC 7 shell integration (bash/zsh/fish, auto-injected)
+- [x] Context sanitization for privacy — src/ai/redact.zig with tests
+- [x] Suggestion request/response handling, debounce
+- [x] Async suggestion processing (no UI stalls)
+- [x] Ghost-text suggestion UI (Tab accepts, Esc dismisses, Alt+]/Alt+[ cycle)
+- [x] "Explain / fix last error" overlay (Ctrl+Shift+A)
+- [x] Local vs remote model support (endpoint, model, API key from an env var)
+- [x] Offline mode handling ("AI offline" badge, backoff)
+- [x] Configuration for AI endpoints (`config.ai.*`)
+- [x] Rate limiting and error handling (one request at a time, backoff)
+- [ ] Connect timeout (std.http has none; only the worker thread waits)
+- [ ] Multi-line suggestions; keep-alive connections
 
 ### Phase 4 - SSH Tunneling (Medium Priority)
 - [ ] SSH library integration (libssh2)
@@ -128,7 +131,7 @@
 - [x] Unit tests for ANSI parser (basic)
 - [ ] Integration tests for PTY handling
 - [ ] Rendering tests
-- [ ] AI integration tests
+- [x] AI integration tests (mock HTTP server: streaming, errors, timeouts, cancel, offline)
 - [ ] SSH connection tests
 - [ ] Lua scripting tests
 - [ ] Cross-platform testing (Linux, macOS, Windows)
@@ -187,7 +190,7 @@
 - renderer/software.zig: CPU rasterizer fallback
 - main.zig: CLI + subsystem wiring
 - ssh/tunnel.zig: 70 lines (stub)
-- ai/autocomplete.zig: 55 lines (stub)
+- ai/: openai.zig (HTTP/SSE client), engine.zig (worker), context.zig (prompts/parsing), redact.zig (secret scrubbing), mock_server.zig (tests)
 - scripting/lua_engine.zig: 48 lines (stub)
 
 **Next Immediate Steps**:

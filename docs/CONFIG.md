@@ -92,7 +92,18 @@ config is reloaded.
 | `shell.args` | `{}` | e.g. `{ "-l" }` (**restart**) |
 | `shell.env` | `{}` | Extra environment, e.g. `{ EDITOR = "nvim" }`. These values beat inherited ones and even `TERM` (**restart**) |
 | `shell.cwd` | `""` | Starting directory. `""` inherits it; a leading `~` means `$HOME` (**restart**) |
-| `ai.enabled`, `ai.endpoint`, `ai.model`, `ai.api_key_env` | `true`, `http://localhost:11434/v1`, `""`, `""` | Placeholders for milestone 8 (OpenAI-compatible, Ollama by default). `api_key_env` names an environment variable, so the key itself never goes in the file |
+| `shell.integration` | `true` | Load the OSC 133 prompt marks for bash/zsh/fish so AI suggestions know the typed command, history and exit codes ([AI.md](AI.md#shell-integration-osc-133)) (**restart**) |
+| `ai.enabled` | `true` | AI command suggestions on/off (`--no-ai` overrides). See [AI.md](AI.md) |
+| `ai.endpoint` | `"http://localhost:11434/v1"` | OpenAI-compatible base URL (http/https); Ollama by default |
+| `ai.model` | `"qwen2.5-coder:0.5b"` | Model name |
+| `ai.api_key_env` | `""` | **Name** of an environment variable holding the API key; the key itself never goes in the file (values that look like keys are rejected) |
+| `ai.timeout_ms` | `5000` | Request timeout, 200–120000 |
+| `ai.debounce_ms` | `300` | Typing pause before a suggestion is requested, 0–10000 |
+| `ai.max_tokens` | `64` | Tokens per suggestion, 8–4096 |
+| `ai.explain_max_tokens` | `400` | Tokens per "explain last error" answer, 16–8192 |
+| `ai.history` | `5` | Previous commands (with exit codes) sent as context, 0–32 |
+| `ai.output_lines` | `20` | Lines of recent output sent as context, 0–200 |
+| `ai.accept_key` | `"tab"` | Chord that accepts the ghost text |
 | `ssh.enabled`, `ssh.config_file`, `ssh.keepalive_s` | `true`, `~/.ssh/config`, `30` | Placeholders for the libssh2 milestone |
 
 Key chords use `ctrl`, `shift` and `alt` plus a key name: letters, digits, `f1`–`f12`,
@@ -102,7 +113,9 @@ Key chords use `ctrl`, `shift` and `alt` plus a key name: letters, digits, `f1`�
 Actions: `copy`, `paste`, `paste_selection`, `search`, `scroll_page_up`,
 `scroll_page_down`, `scroll_line_up`, `scroll_line_down`, `scroll_top`,
 `scroll_bottom`, `zoom_in`, `zoom_out`, `zoom_reset`, `select_all`,
-`clear_selection`, `reload_config` (default Ctrl+Shift+R).
+`clear_selection`, `reload_config` (default Ctrl+Shift+R), `ai_accept` (Tab, only
+while a suggestion shows), `ai_dismiss` (Esc, likewise), `ai_next` / `ai_prev`
+(Alt+] / Alt+[), `ai_explain` (Ctrl+Shift+A). `select_all` is Ctrl+Shift+Alt+A.
 
 ## Errors
 

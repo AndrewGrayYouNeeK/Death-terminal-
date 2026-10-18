@@ -97,12 +97,27 @@ pub const Config = struct {
     arena: *std.heap.ArenaAllocator,
     rows: u16 = 24,
     cols: u16 = 80,
+    /// AI command suggestions (docs/AI.md).
     ai_enabled: bool = true,
-    /// OpenAI-compatible endpoint (Ollama by default). Used from milestone 8.
+    /// OpenAI-compatible base URL; requests go to {endpoint}/chat/completions.
     ai_endpoint: []const u8 = "http://localhost:11434/v1",
-    ai_model: []const u8 = "",
-    /// Environment variable holding the API key ("" = none needed).
+    ai_model: []const u8 = "qwen2.5-coder:0.5b",
+    /// Name of the environment variable holding the API key ("" = none).
+    /// The key itself is never stored in the config.
     ai_api_key_env: []const u8 = "",
+    ai_timeout_ms: u32 = 5000,
+    /// Typing pause before a suggestion is requested.
+    ai_debounce_ms: u32 = 300,
+    ai_max_tokens: u16 = 64,
+    /// Tokens for "explain/fix last error" answers.
+    ai_explain_max_tokens: u16 = 400,
+    /// Context: how many previous commands and output lines to send.
+    ai_history: u16 = 5,
+    ai_output_lines: u16 = 20,
+    /// Chord that accepts the ghost-text suggestion.
+    ai_accept_key: []const u8 = "tab",
+    /// Load the OSC 133 shell integration into bash/zsh/fish.
+    shell_integration: bool = true,
     /// SSH placeholders for the libssh2 milestone.
     ssh_enabled: bool = true,
     ssh_config_file: []const u8 = "~/.ssh/config",

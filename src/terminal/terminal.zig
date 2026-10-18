@@ -9,6 +9,7 @@ const unicode = @import("unicode.zig");
 const color = @import("color.zig");
 const scrollback_mod = @import("scrollback.zig");
 const pty_mod = @import("pty.zig");
+pub const shell_integration = @import("shell_integration.zig");
 
 pub const PTY = pty_mod.PTY;
 const CSIParams = ansi_parser.CSIParams;
@@ -248,6 +249,8 @@ pub const Terminal = struct {
     /// OSC 52 requests waiting for the front end (which applies the
     /// configured policy).
     clipboard_ops: std.ArrayList(ClipboardOp),
+    /// OSC 133 prompt/command tracking (see shell_integration.zig).
+    shell: shell_integration.State,
 
     pub fn init(allocator: std.mem.Allocator) !Terminal {
         return initWithSize(allocator, 24, 80, 10_000);
@@ -292,6 +295,7 @@ pub const Terminal = struct {
             .initialized = true,
             .title = title,
             .cwd_uri = cwd,
+            .shell = shell_integration.State.init(allocator),
             .replies = std.ArrayList(u8).init(allocator),
             .links = std.ArrayList([]u8).init(allocator),
             .clipboard_ops = std.ArrayList(ClipboardOp).init(allocator),
@@ -329,6 +333,7 @@ pub const Terminal = struct {
         self.allocator.free(self.tabs);
         self.allocator.free(self.title);
         self.allocator.free(self.cwd_uri);
+        self.shell.deinit();
         self.replies.deinit();
         for (self.links.items) |l| self.allocator.free(l);
         self.links.deinit();
@@ -1094,6 +1099,7 @@ pub const Terminal = struct {
         self.cursor_row = 0;
         self.cursor_col = 0;
         self.parser.reset();
+        self.shell.reset();
     }
 
     pub fn resize(self: *Terminal, rows_in: u16, cols_in: u16) !void {
@@ -1696,6 +1702,7 @@ pub const Terminal = struct {
                 self.cwd_uri = copy;
             },
             8 => try self.setHyperlink(arg),
+            133 => self.shellMark(arg),
             52 => try self.clipboardOsc(arg),
             10, 11 => if (std.mem.eql(u8, arg, "?")) {
                 const c = if (cmd == 10) self.palette.fg else self.palette.bg;
@@ -1742,6 +1749,177 @@ pub const Terminal = struct {
             .query => {},
         };
         self.allocator.free(ops);
+    }
+
+    // ------------------------------------------------- shell integration
+
+    /// Position just after the cursor (where the next character goes).
+    pub fn cursorMark(self: *const Terminal) shell_integration.Mark {
+        const col: u16 = if (self.wrap_pending) self.cols else self.cursor_col;
+        return .{ .line = self.screenTop() + self.cursor_row, .col = col, .gen = self.layout_gen };
+    }
+
+    fn shellMark(self: *Terminal, arg: []const u8) void {
+        if (arg.len == 0 or self.alt_active) return;
+        const sh = &self.shell;
+        sh.seen = true;
+        switch (arg[0]) {
+            'A' => {
+                if (sh.phase == .running) self.finishCommand(null);
+                sh.phase = .prompt;
+                sh.input_start = null;
+            },
+            'B' => {
+                sh.phase = .input;
+                sh.input_start = self.cursorMark();
+            },
+            'C' => {
+                if (sh.pending) |p| self.allocator.free(p);
+                sh.pending = null;
+                if (self.validMark(sh.input_start)) |start| {
+                    if (self.textBetween(self.allocator, start, self.cursorMark(), true)) |t| {
+                        const trimmed = std.mem.trim(u8, t, " \t\r\n");
+                        sh.pending = keepSlice(self.allocator, t, trimmed[0..@min(trimmed.len, shell_integration.max_command)]);
+                    } else |_| {}
+                }
+                sh.output_start = self.cursorMark();
+                sh.phase = .running;
+            },
+            'D' => {
+                if (sh.phase == .running or sh.pending != null) self.finishCommand(shell_integration.parseExit(arg));
+                sh.phase = .none;
+            },
+            else => {},
+        }
+    }
+
+    fn finishCommand(self: *Terminal, exit_code: ?i32) void {
+        const sh = &self.shell;
+        const text = sh.pending orelse {
+            sh.output_start = null;
+            return;
+        };
+        sh.pending = null;
+        var output: []u8 = &.{};
+        if (self.validMark(sh.output_start)) |start| {
+            if (self.textBetween(self.allocator, start, self.cursorMark(), true)) |t| {
+                const trimmed = std.mem.trim(u8, t, " \r\n");
+                var tail = trimmed;
+                if (tail.len > shell_integration.max_output) {
+                    var cut = tail.len - shell_integration.max_output;
+                    while (cut < tail.len and (tail[cut] & 0xC0) == 0x80) cut += 1;
+                    tail = tail[cut..];
+                }
+                output = keepSlice(self.allocator, t, tail) orelse &.{};
+            } else |_| {}
+        }
+        sh.output_start = null;
+        if (output.len == 0) output = self.allocator.alloc(u8, 0) catch {
+            self.allocator.free(text);
+            return;
+        };
+        sh.pushCommand(text, exit_code, output);
+    }
+
+    fn validMark(self: *const Terminal, m: ?shell_integration.Mark) ?shell_integration.Mark {
+        const mark = m orelse return null;
+        if (mark.gen != self.layout_gen) return null;
+        if (mark.line < self.historyTop()) return null;
+        return mark;
+    }
+
+    /// Text of the cells from `from` up to (not including) `to`. Rows that
+    /// soft-wrapped are joined; other row ends become '\n'. With
+    /// `trim_lines`, blanks at the end of each row are dropped (the last
+    /// row is never trimmed, so typed trailing spaces survive).
+    pub fn textBetween(self: *const Terminal, allocator: std.mem.Allocator, from: shell_integration.Mark, to: shell_integration.Mark, trim_lines: bool) ![]u8 {
+        var out = std.ArrayList(u8).init(allocator);
+        errdefer out.deinit();
+        if (to.line < from.line or (to.line == from.line and to.col <= from.col)) return out.toOwnedSlice();
+        var line = from.line;
+        while (line <= to.line) : (line += 1) {
+            const cells = self.lineAt(line) orelse continue;
+            const c0: usize = if (line == from.line) @min(from.col, cells.len) else 0;
+            const c1: usize = if (line == to.line) @min(to.col, cells.len) else cells.len;
+            const seg_start = out.items.len;
+            if (c0 < c1) for (cells[c0..c1]) |cell| {
+                if (cell.width == 0) continue;
+                try appendCodepoint(&out, if (cell.char == 0) ' ' else cell.char);
+                for (cell.combining) |m| if (m != 0) try appendCodepoint(&out, m);
+            };
+            if (line == to.line) break;
+            const wrapped = cells.len > 0 and cells[cells.len - 1].soft_wrap;
+            if (wrapped) continue;
+            if (trim_lines) {
+                var end = out.items.len;
+                while (end > seg_start and out.items[end - 1] == ' ') end -= 1;
+                out.shrinkRetainingCapacity(end);
+            }
+            try out.append('\n');
+        }
+        return out.toOwnedSlice();
+    }
+
+    fn appendCodepoint(out: *std.ArrayList(u8), cp: u21) !void {
+        var buf: [4]u8 = undefined;
+        const n = std.unicode.utf8Encode(cp, &buf) catch return;
+        try out.appendSlice(buf[0..n]);
+    }
+
+    /// Whether the rest of the cursor row (and any rows it soft-wraps
+    /// into) is blank, i.e. the cursor is at the end of the typed text.
+    fn restOfInputBlank(self: *const Terminal) bool {
+        var row = self.cursor_row;
+        var col: usize = if (self.wrap_pending) self.cols else self.cursor_col;
+        while (row < self.rows) : (row += 1) {
+            const cells = self.screenRow(row);
+            for (cells[@min(col, cells.len)..]) |c| if (c.char != ' ' and c.char != 0) return false;
+            if (cells.len == 0 or !cells[cells.len - 1].soft_wrap) return true;
+            col = 0;
+        }
+        return true;
+    }
+
+    /// The command line being typed at the prompt, or null when the user
+    /// is not at a prompt (a command is running, the alternate screen is
+    /// up, or the cursor is not at the end of the input). Uses the OSC 133
+    /// marks when the shell sends them, else guesses from the cursor row.
+    pub fn currentInput(self: *const Terminal, allocator: std.mem.Allocator) !?[]u8 {
+        if (self.alt_active) return null;
+        if (!self.restOfInputBlank()) return null;
+        const cur = self.cursorMark();
+        if (self.shell.seen) {
+            if (self.shell.phase != .input) return null;
+            if (self.validMark(self.shell.input_start)) |start| {
+                const t = try self.textBetween(allocator, start, cur, true);
+                if (t.len > shell_integration.max_command or std.mem.indexOfScalar(u8, t, '\n') != null) {
+                    allocator.free(t);
+                    return null;
+                }
+                return t;
+            }
+        }
+        const row_text = try self.textBetween(allocator, .{ .line = cur.line, .col = 0, .gen = cur.gen }, cur, false);
+        defer allocator.free(row_text);
+        const input = shell_integration.heuristicInput(row_text) orelse return null;
+        return try allocator.dupe(u8, input);
+    }
+
+    /// The last `n` rows up to the cursor row, blank tails trimmed (for
+    /// context when the shell sends no command marks).
+    pub fn recentText(self: *const Terminal, allocator: std.mem.Allocator, n: u16) ![]u8 {
+        const cur = self.cursorMark();
+        const first = @max(self.historyTop(), cur.line - @as(i64, n) + 1);
+        const t = try self.textBetween(allocator, .{ .line = first, .col = 0, .gen = cur.gen }, .{ .line = cur.line, .col = self.cols, .gen = cur.gen }, true);
+        defer allocator.free(t);
+        return allocator.dupe(u8, std.mem.trim(u8, t, " \n"));
+    }
+
+    /// Copy `part` (a slice of `whole`) into its own allocation and free
+    /// `whole`. null if out of memory (`whole` is freed either way).
+    fn keepSlice(allocator: std.mem.Allocator, whole: []u8, part: []const u8) ?[]u8 {
+        defer allocator.free(whole);
+        return allocator.dupe(u8, part) catch null;
     }
 
     // ------------------------------------------------------------ lines
@@ -1852,5 +2030,7 @@ pub fn appendRowText(cells: []const Cell, writer: anytype) !void {
 
 test {
     _ = @import("vt_test.zig");
+    _ = @import("shell_integration_test.zig");
+    _ = shell_integration;
     _ = pty_mod;
 }

@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const terminal = @import("terminal/terminal.zig");
 const renderer = @import("renderer/vulkan_renderer.zig");
-const ai = @import("ai/autocomplete.zig");
+const shell_inject = @import("app/shell_inject.zig");
 const ssh = @import("ssh/tunnel.zig");
 const lua_engine = @import("scripting/lua_engine.zig");
 const config = @import("config/config.zig");
@@ -35,6 +35,17 @@ pub fn main() !void {
             return;
         }
     }
+    for (args[1..], 1..) |a, i| {
+        if (std.mem.eql(u8, a, "--print-shell-integration")) {
+            const name = if (i + 1 < args.len) args[i + 1] else "";
+            const sh = std.meta.stringToEnum(shell_inject.Shell, name) orelse {
+                std.debug.print("usage: deathterminal --print-shell-integration bash|zsh|fish\n", .{});
+                std.process.exit(2);
+            };
+            try std.io.getStdOut().writeAll(shell_inject.script(sh));
+            return;
+        }
+    }
 
     // Print banner only for interactive runs
     try printBanner();
@@ -62,12 +73,15 @@ pub fn main() !void {
     defer vulkan_renderer.deinit();
 
     std.debug.print("[2/5] Initializing terminal core...\n", .{});
-    var term = try terminal.Terminal.initWithShell(allocator, cfg.rows, cfg.cols, cfg.scrollback_lines, .{
+    var shell_arena = std.heap.ArenaAllocator.init(allocator);
+    defer shell_arena.deinit();
+    const shell_opts = shell_inject.apply(shell_arena.allocator(), .{
         .program = cfg.shell_program,
         .args = cfg.shell_args.items,
         .env = cfg.shell_env.items,
         .cwd = cfg.shell_cwd,
-    });
+    }, cfg.shell_integration);
+    var term = try terminal.Terminal.initWithShell(allocator, cfg.rows, cfg.cols, cfg.scrollback_lines, shell_opts);
     defer term.deinit();
 
     std.debug.print("[3/5] Initializing Lua scripting engine...\n", .{});
@@ -75,12 +89,10 @@ pub fn main() !void {
     defer lua.deinit();
 
     if (cfg.ai_enabled) {
-        std.debug.print("[4/5] Initializing AI autocomplete...\n", .{});
+        std.debug.print("[4/5] AI suggestions: {s} at {s}\n", .{ cfg.ai_model, cfg.ai_endpoint });
     } else {
-        std.debug.print("[4/5] AI autocomplete disabled\n", .{});
+        std.debug.print("[4/5] AI suggestions disabled\n", .{});
     }
-    var autocomplete = try ai.Autocomplete.init(allocator, cfg.ai_enabled);
-    defer autocomplete.deinit();
 
     std.debug.print("[5/5] Initializing SSH tunnel manager...\n", .{});
     var ssh_manager = try ssh.TunnelManager.init(allocator);
@@ -97,7 +109,7 @@ pub fn main() !void {
         .watch_path = watch_path,
         .startup_diags = &diags,
     };
-    try loop.run(&vulkan_renderer, &term, &lua, &autocomplete, &ssh_manager);
+    try loop.run(&vulkan_renderer, &term, &lua, &ssh_manager);
 }
 
 fn hasFlag(args: []const []const u8, flag: []const u8) bool {
@@ -147,7 +159,8 @@ fn printHelp() !void {
         \\                     $XDG_CONFIG_HOME/death-terminal/config.lua (~/.config/...)
         \\    --print-default-config  Print a documented config.lua with every default
         \\    --lua-unsafe     Give config.lua the full Lua library (io, os.execute, require)
-        \\    --no-ai          Disable AI autocomplete
+        \\    --print-shell-integration <bash|zsh|fish>  Print the OSC 133 shell snippet
+        \\    --no-ai          Disable AI command suggestions
         \\    --headless       Run without a GUI window (default)
         \\    --gui            Open a native window (Wayland/X11/Win32; falls back to headless)
         \\    --scale <n>      UI scale 1–4 (default: auto from DPI / compositor / env)
@@ -161,7 +174,7 @@ fn printHelp() !void {
         \\    reloads it live; see docs/CONFIG.md.
         \\
         \\FEATURES:
-        \\    • AI-powered autocomplete
+        \\    • AI command suggestions (OpenAI-compatible, local Ollama by default)
         \\    • Cross-platform SSH tunneling
         \\    • Vulkan-accelerated rendering
         \\    • Lua scripting support
@@ -213,7 +226,12 @@ test {
     _ = @import("config/lua_config.zig");
     _ = @import("config/lua_config_test.zig");
     _ = @import("scripting/lua.zig");
-    _ = @import("ai/autocomplete.zig");
+    _ = @import("ai/redact.zig");
+    _ = @import("ai/openai.zig");
+    _ = @import("ai/context.zig");
+    _ = @import("ai/engine.zig");
+    _ = @import("app/ai_controller.zig");
+    _ = @import("app/shell_inject.zig");
     _ = @import("ssh/tunnel.zig");
     _ = @import("scripting/lua_engine.zig");
 }
