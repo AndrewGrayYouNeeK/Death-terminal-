@@ -26,7 +26,7 @@ PTY ↔ Terminal Core ↔ Renderer (Vulkan)
 | Event loop | `src/app/event_loop.zig` | Headless + native GUI; exits when the shell exits |
 | Vulkan renderer | `src/renderer/` | Instance/device (`vulkan_renderer.zig`), swapchain acquire/present (`gpu_present.zig`), SPIR-V glyph pipeline (`text_pipeline.zig`), CPU fallback (`software.zig`) |
 | Window | `src/platform/window.zig` | Wayland, X11, Win32 + HiDPI scale; keys/mouse/focus events through `events.zig` |
-| AI suggestions | `src/ai/`, `src/app/ai_controller.zig` | OpenAI-compatible HTTP/JSON + SSE client, worker thread, redaction, ghost text, explain overlay (docs/AI.md) |
+| AI suggestions | `src/ai/`, `src/app/ai_controller.zig` | HTTP/JSON + SSE client (chat/completions, plus the xAI Responses API for Grok 4.7), worker thread, redaction, ghost text, explain overlay (docs/AI.md) |
 | SSH tunneling | `src/ssh/` | Stub (planned: libssh2) |
 | Lua scripting | `src/scripting/` | Stub (Lua not linked yet) |
 | Configuration | `src/config/` | `config.zig` (Config struct, XDG lookup, legacy `config.txt`), `lua_config.zig` (schema + validation, Lua ↔ Zig), `prelude.lua` (sandboxed env, `config` proxy, `dt` table, file:line diagnostics), `themes.zig`. Reference: `docs/CONFIG.md`; `config.example.lua` is embedded for `--print-default-config` and a test checks it equals the defaults |

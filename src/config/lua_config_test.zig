@@ -195,7 +195,7 @@ test "lua config: config.example.lua is valid and matches the defaults" {
     inline for (.{ "rows", "cols", "scale", "backend", "headless", "font_size", "line_height", "font_retro", "font_ligatures", "cursor_shape", "max_fps", "read_budget_kb", "scrollback_lines", "scrollbar", "scroll_lines", "copy_on_select", "paste_confirm", "default_keybindings", "ai_enabled", "ai_timeout_ms", "ai_debounce_ms", "ai_max_tokens", "ai_explain_max_tokens", "ai_history", "ai_output_lines", "shell_integration", "ssh_enabled", "ssh_keepalive_s", "confirm_close", "dim_inactive", "inherit_cwd", "allow_column_switch" }) |name| {
         try t.expectEqual(@field(def, name), @field(cfg, name));
     }
-    inline for (.{ "font_family", "theme", "present_mode", "osc52", "word_chars", "url_open_command", "shell_program", "shell_cwd", "ai_endpoint", "ai_model", "ai_api_key_env", "ai_accept_key", "ssh_config_file", "ssh_known_hosts", "tab_bar" }) |name| {
+    inline for (.{ "font_family", "theme", "present_mode", "osc52", "word_chars", "url_open_command", "shell_program", "shell_cwd", "ai_endpoint", "ai_model", "ai_reasoning", "ai_api_key_env", "ai_accept_key", "ssh_config_file", "ssh_known_hosts", "tab_bar" }) |name| {
         try t.expectEqualStrings(@field(def, name), @field(cfg, name));
     }
     try t.expectEqual(def.palette().hash(), cfg.palette().hash());
@@ -253,6 +253,20 @@ test "lua config: ai options are validated" {
     defer ok.deinit();
     try t.expectEqual(@as(usize, 0), d2.errorCount());
     try t.expectEqualStrings("OPENAI_API_KEY", ok.ai_api_key_env);
+}
+
+test "lua config: ai.reasoning is low/medium/high/xhigh" {
+    var d = config.Diagnostics.init(t.allocator);
+    defer d.deinit();
+    var bad = loadStr("config.ai.reasoning = \"none\"", &d);
+    defer bad.deinit();
+    try t.expect(d.contains("xhigh"));
+    try t.expectEqualStrings("", bad.ai_reasoning);
+    d.clear();
+    var ok = loadStr("config.ai.reasoning = \"xhigh\"", &d);
+    defer ok.deinit();
+    try t.expectEqual(@as(usize, 0), d.errorCount());
+    try t.expectEqualStrings("xhigh", ok.ai_reasoning);
 }
 
 test "lua config: ssh.profiles" {

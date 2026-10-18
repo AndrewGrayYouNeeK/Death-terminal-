@@ -125,9 +125,12 @@ pub const Config = struct {
     cols: u16 = 80,
     /// AI command suggestions (docs/AI.md).
     ai_enabled: bool = true,
-    /// OpenAI-compatible base URL; requests go to {endpoint}/chat/completions.
+    /// API root. `api.x.ai` and `us.api.x.ai` use `/responses` (Grok 4.7);
+    /// every other host uses `/chat/completions`.
     ai_endpoint: []const u8 = "http://localhost:11434/v1",
     ai_model: []const u8 = "qwen2.5-coder:0.5b",
+    /// "" = low on xAI, omitted elsewhere. Or low, medium, high, xhigh.
+    ai_reasoning: []const u8 = "",
     /// Name of the environment variable holding the API key ("" = none).
     /// The key itself is never stored in the config.
     ai_api_key_env: []const u8 = "",

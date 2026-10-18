@@ -1,6 +1,9 @@
-//! Minimal OpenAI-compatible chat/completions client with SSE streaming
-//! (Ollama, llama.cpp server, vLLM, LM Studio, OpenAI, ...). Plain
-//! HTTP/1.1 JSON over std.http.Client; https works through std's TLS.
+//! Chat client with SSE streaming. Ollama, llama.cpp, vLLM, LM Studio and
+//! OpenAI speak `{endpoint}/chat/completions`. `api.x.ai` and `us.api.x.ai`
+//! (Grok 4.7, the model Grok Bot uses) speak `{endpoint}/responses`:
+//! `reasoning.effort`, live search off, and `store: false`. Reasoning
+//! text is never treated as the answer. Plain HTTP/1.1 JSON over
+//! std.http.Client; https works through std's TLS.
 //!
 //! Blocking by design: it runs on the AI worker thread. `Cancel` aborts an
 //! in-flight request from another thread by shutting the socket down, and
@@ -20,18 +23,54 @@ pub const Message = struct {
     content: []const u8,
 };
 
+pub const Api = enum { chat, responses };
+
 pub const Request = struct {
-    /// Base URL ending in the API root, e.g. "http://localhost:11434/v1".
+    /// Base URL ending in the API root, e.g. "http://localhost:11434/v1"
+    /// or "https://api.x.ai/v1".
     endpoint: []const u8,
     model: []const u8,
     /// Sent as "Authorization: Bearer ..." when set.
     api_key: ?[]const u8 = null,
     messages: []const Message,
+    /// Visible-token budget. On the Responses API the request adds a
+    /// reasoning allowance, because `max_output_tokens` counts both.
     max_tokens: u32 = 64,
     temperature: f32 = 0.2,
-    /// Whole request deadline (connect excluded, see docs/AI.md).
+    /// Whole request deadline. xAI hosts wait at least 15s, because
+    /// grok-4.7 reasons before the first visible token.
     timeout_ms: u32 = 5000,
+    /// "" = "low" on the Responses API, omitted for chat/completions.
+    /// Otherwise "low", "medium", "high" or "xhigh".
+    reasoning: []const u8 = "",
+    /// null = pick from the endpoint host. Tests set this to force a path.
+    api: ?Api = null,
 };
+
+/// Grok's current API. Chat completions stays the path for every other host.
+pub fn usesResponsesApi(endpoint: []const u8) bool {
+    const base = std.mem.trimRight(u8, endpoint, "/");
+    const uri = std.Uri.parse(base) catch return false;
+    const host_c = uri.host orelse return false;
+    var buf: [256]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    const host = host_c.toRawMaybeAlloc(fba.allocator()) catch return false;
+    return std.ascii.eqlIgnoreCase(host, "api.x.ai") or std.ascii.eqlIgnoreCase(host, "us.api.x.ai");
+}
+
+fn resolveApi(req: Request) Api {
+    return req.api orelse if (usesResponsesApi(req.endpoint)) .responses else .chat;
+}
+
+/// grok-4.7 thinks before it emits text. A 5s ghost-text timeout dies in
+/// that gap, so xAI hosts get a floor. A longer `ai.timeout_ms` still wins.
+const xai_min_timeout_ms: u32 = 15_000;
+const grok_reasoning_allowance: u32 = 1024;
+
+fn effectiveTimeout(req: Request) u32 {
+    if (usesResponsesApi(req.endpoint) and req.timeout_ms < xai_min_timeout_ms) return xai_min_timeout_ms;
+    return req.timeout_ms;
+}
 
 pub const Error = error{
     Cancelled,
@@ -92,14 +131,16 @@ pub const Cancel = struct {
 /// Status code of the last `HttpStatus` failure (for logs).
 pub threadlocal var last_status: u16 = 0;
 
-/// POST {endpoint}/chat/completions with stream=true and call
-/// `sink.onDelta(text)` for every content fragment. `sink.onDelta` may
-/// return false to stop early. Servers that ignore `stream` and answer
-/// with plain JSON are handled too.
+/// POST `{endpoint}/chat/completions`, or `{endpoint}/responses` on
+/// api.x.ai and us.api.x.ai. `stream: true`. `sink.onDelta` may return
+/// false to stop early. Servers that ignore `stream` and answer with
+/// plain JSON are handled too.
 pub fn chatStream(allocator: std.mem.Allocator, req: Request, cancel: *Cancel, sink: anytype) Error!void {
+    const api = resolveApi(req);
+    const timeout_ms = effectiveTimeout(req);
     var url_buf: [1024]u8 = undefined;
     const base = std.mem.trimRight(u8, req.endpoint, "/");
-    const url = std.fmt.bufPrint(&url_buf, "{s}/chat/completions", .{base}) catch return error.BadEndpoint;
+    const url = std.fmt.bufPrint(&url_buf, "{s}{s}", .{ base, if (api == .responses) "/responses" else "/chat/completions" }) catch return error.BadEndpoint;
     const uri = std.Uri.parse(url) catch return error.BadEndpoint;
 
     const body = try buildBody(allocator, req);
@@ -114,13 +155,13 @@ pub fn chatStream(allocator: std.mem.Allocator, req: Request, cancel: *Cancel, s
         auth = .{ .override = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{k}) catch return error.BadEndpoint };
     };
     if (cancel.isCancelled()) return error.Cancelled;
-    const deadline = std.time.milliTimestamp() + req.timeout_ms;
+    const deadline = std.time.milliTimestamp() + timeout_ms;
 
     // Our own connection, so name lookup and connect obey the deadline
     // (std.http would block in tcpConnectToHost).
     var relay: ?*Relay = null;
     defer if (relay) |rl| rl.finish();
-    const conn = try openConnection(&client, uri, req.timeout_ms, deadline, cancel, &relay);
+    const conn = try openConnection(&client, uri, timeout_ms, deadline, cancel, &relay);
 
     var r = client.open(.POST, uri, .{
         .connection = conn,
@@ -139,7 +180,7 @@ pub fn chatStream(allocator: std.mem.Allocator, req: Request, cancel: *Cancel, s
     const fd = r.connection.?.stream.handle;
     if (!cancel.attach(fd)) return error.Cancelled;
     defer cancel.detach();
-    setTimeout(fd, req.timeout_ms);
+    setTimeout(fd, timeout_ms);
 
     r.transfer_encoding = .{ .content_length = body.len };
     r.send() catch |err| return mapErr(err, cancel, deadline);
@@ -317,7 +358,19 @@ fn mapErr(err: anyerror, cancel: *Cancel, deadline: i64) Error {
     };
 }
 
+fn reasoningEffort(req: Request, buf: *[8]u8) []const u8 {
+    const raw = if (req.reasoning.len == 0) "low" else req.reasoning;
+    const n = @min(raw.len, buf.len);
+    for (raw[0..n], 0..) |c, i| buf[i] = std.ascii.toLower(c);
+    return buf[0..n];
+}
+
 fn buildBody(allocator: std.mem.Allocator, req: Request) ![]u8 {
+    if (resolveApi(req) == .responses) return buildResponsesBody(allocator, req);
+    return buildChatBody(allocator, req);
+}
+
+fn buildChatBody(allocator: std.mem.Allocator, req: Request) ![]u8 {
     var out = std.ArrayList(u8).init(allocator);
     errdefer out.deinit();
     try std.json.stringify(.{
@@ -330,25 +383,81 @@ fn buildBody(allocator: std.mem.Allocator, req: Request) ![]u8 {
     return out.toOwnedSlice();
 }
 
+fn buildResponsesBody(allocator: std.mem.Allocator, req: Request) ![]u8 {
+    var effort_buf: [8]u8 = undefined;
+    const effort = reasoningEffort(req, &effort_buf);
+    var out = std.ArrayList(u8).init(allocator);
+    errdefer out.deinit();
+    try std.json.stringify(.{
+        .model = req.model,
+        .input = req.messages,
+        .stream = true,
+        .max_output_tokens = req.max_tokens +| grok_reasoning_allowance,
+        .reasoning = .{ .effort = effort },
+        // The server default is to search. That would ship the command
+        // line to the web; suggestions stay on the prompt we already sent.
+        .search_parameters = .{ .mode = "off" },
+        .store = false,
+        .prompt_cache_key = "deathterminal",
+    }, .{}, out.writer());
+    return out.toOwnedSlice();
+}
+
+const TextPart = struct {
+    type: ?[]const u8 = null,
+    text: ?[]const u8 = null,
+};
+
+const OutputItem = struct {
+    type: ?[]const u8 = null,
+    content: []const TextPart = &.{},
+};
+
 const Chunk = struct {
+    type: ?[]const u8 = null,
+    delta: ?[]const u8 = null,
     choices: []const struct {
-        delta: ?struct { content: ?[]const u8 = null } = null,
+        delta: ?struct {
+            content: ?[]const u8 = null,
+        } = null,
         message: ?struct { content: ?[]const u8 = null } = null,
         text: ?[]const u8 = null,
     } = &.{},
+    output: []const OutputItem = &.{},
     @"error": ?std.json.Value = null,
 };
+
+fn emit(sink: anytype, text: []const u8) bool {
+    if (text.len == 0) return true;
+    return sink.onDelta(text);
+}
 
 fn handlePayload(allocator: std.mem.Allocator, payload: []const u8, sink: anytype) Error!void {
     const parsed = std.json.parseFromSlice(Chunk, allocator, payload, .{ .ignore_unknown_fields = true }) catch return error.BadResponse;
     defer parsed.deinit();
-    if (parsed.value.@"error" != null) return error.ApiError;
-    for (parsed.value.choices) |ch| {
+    const v = parsed.value;
+    if (v.@"error" != null) return error.ApiError;
+    if (v.type) |ty| {
+        if (std.mem.eql(u8, ty, "error") or std.mem.eql(u8, ty, "response.failed")) return error.ApiError;
+        if (std.mem.eql(u8, ty, "response.output_text.delta")) {
+            if (v.delta) |t| if (!emit(sink, t)) return;
+            return;
+        }
+        // Reasoning summaries, encrypted reasoning, completed events.
+        if (std.mem.startsWith(u8, ty, "response.")) return;
+    }
+    if (v.choices.len > 0) {
+        const ch = v.choices[0];
         const text = if (ch.delta) |d| d.content else if (ch.message) |m| m.content else ch.text;
-        if (text) |t| if (t.len > 0) {
-            if (!sink.onDelta(t)) return;
-        };
-        break; // first choice only
+        if (text) |t| if (!emit(sink, t)) return;
+        return;
+    }
+    for (v.output) |item| {
+        if (item.type) |ty| if (!std.mem.eql(u8, ty, "message")) continue;
+        for (item.content) |part| {
+            if (part.type) |ty| if (!std.mem.eql(u8, ty, "output_text")) continue;
+            if (part.text) |t| if (!emit(sink, t)) return;
+        }
     }
 }
 
@@ -371,12 +480,16 @@ pub const SseParser = struct {
         if (self.done) return false;
         for (data) |b| {
             if (b != '\n') {
-                if (self.line.items.len > 256 * 1024) return error.BadResponse;
-                try self.line.append(b);
+                // grok-4.7's completed event carries encrypted reasoning and
+                // can dwarf a suggestion. Drop the overflow; visible deltas
+                // are small, and a truncated JSON line would not parse.
+                if (self.line.items.len < 256 * 1024) try self.line.append(b);
                 continue;
             }
+            const truncated = self.line.items.len >= 256 * 1024;
             const line = std.mem.trimRight(u8, self.line.items, "\r");
             defer self.line.clearRetainingCapacity();
+            if (truncated) continue;
             if (!std.mem.startsWith(u8, line, "data:")) continue; // comments, event:, id:
             const payload = std.mem.trim(u8, line["data:".len..], " ");
             if (std.mem.eql(u8, payload, "[DONE]")) {
@@ -448,6 +561,65 @@ test "request body is valid JSON with stream=true" {
     try std.testing.expectEqualStrings("s \"q\"", v.value.object.get("messages").?.array.items[0].object.get("content").?.string);
 }
 
+test "x.ai hosts use the Responses API; other hosts stay on chat completions" {
+    try std.testing.expect(usesResponsesApi("https://api.x.ai/v1"));
+    try std.testing.expect(usesResponsesApi("https://api.x.ai/v1/"));
+    try std.testing.expect(usesResponsesApi("https://US.API.X.AI/v1"));
+    try std.testing.expect(usesResponsesApi("https://us.api.x.ai/v1"));
+    try std.testing.expect(!usesResponsesApi("http://localhost:11434/v1"));
+    try std.testing.expect(!usesResponsesApi("https://api.openai.com/v1"));
+    try std.testing.expect(!usesResponsesApi("https://openrouter.ai/api/v1"));
+
+    const msgs = [_]Message{.{ .role = "user", .content = "git st" }};
+    const body = try buildBody(std.testing.allocator, .{
+        .endpoint = "https://api.x.ai/v1",
+        .model = "grok-4.7",
+        .messages = &msgs,
+        .max_tokens = 64,
+        .reasoning = "Low",
+    });
+    defer std.testing.allocator.free(body);
+    const v = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, body, .{});
+    defer v.deinit();
+    const obj = v.value.object;
+    try std.testing.expect(obj.get("messages") == null);
+    try std.testing.expect(obj.get("temperature") == null);
+    try std.testing.expect(obj.get("max_tokens") == null);
+    try std.testing.expectEqualStrings("grok-4.7", obj.get("model").?.string);
+    try std.testing.expect(obj.get("stream").?.bool);
+    try std.testing.expect(!obj.get("store").?.bool);
+    try std.testing.expectEqualStrings("deathterminal", obj.get("prompt_cache_key").?.string);
+    try std.testing.expectEqualStrings("off", obj.get("search_parameters").?.object.get("mode").?.string);
+    try std.testing.expectEqualStrings("low", obj.get("reasoning").?.object.get("effort").?.string);
+    try std.testing.expectEqual(@as(i64, 64 + grok_reasoning_allowance), obj.get("max_output_tokens").?.integer);
+    try std.testing.expectEqualStrings("git st", obj.get("input").?.array.items[0].object.get("content").?.string);
+}
+
+test "sse parser: grok reasoning is not the suggestion" {
+    var p = SseParser.init(std.testing.allocator);
+    defer p.deinit();
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    const c = Collect{ .out = &out };
+    const body =
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking \"}}]}\n" ++
+        "data: {\"choices\":[{\"delta\":{\"content\":\"git \"}}]}\n" ++
+        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"nope\"}\n" ++
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"status\"}\n" ++
+        "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"git status\"}]}]}}\n" ++
+        "data: [DONE]\n";
+    try std.testing.expect(!try p.feed(body, c));
+    try std.testing.expectEqualStrings("git status", out.items);
+
+    var whole = std.ArrayList(u8).init(std.testing.allocator);
+    defer whole.deinit();
+    const json =
+        \\{"object":"response","output":[{"type":"reasoning","content":[{"type":"reasoning_text","text":"secret"}]},{"type":"message","content":[{"type":"output_text","text":"ls -la"}]}]}
+    ;
+    try handlePayload(std.testing.allocator, json, Collect{ .out = &whole });
+    try std.testing.expectEqualStrings("ls -la", whole.items);
+}
+
 // ------------------------------------------------- against a mock server
 
 const mock = @import("mock_server.zig");
@@ -473,6 +645,34 @@ test "chatStream: streams deltas from a mock server" {
     try std.testing.expect(std.mem.startsWith(u8, raw, "POST /v1/chat/completions HTTP/1.1"));
     try std.testing.expect(std.ascii.indexOfIgnoreCase(raw, "authorization: Bearer sk-test-key") != null);
     try std.testing.expect(std.mem.indexOf(u8, raw, "\"model\":\"tiny\"") != null);
+}
+
+test "chatStream: xAI Responses API stream, reasoning excluded" {
+    const stream_body = "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"think\"}\n\n" ++
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"git \"}\n\n" ++
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"status\"}\n\n" ++
+        "data: {\"type\":\"response.completed\"}\n\n" ++
+        "data: [DONE]\n\n";
+    const replies = [_]mock.Reply{.{ .chunks = &.{stream_body} }};
+    var srv = try mock.MockServer.start(std.testing.allocator, &replies);
+    defer srv.deinit();
+    var ub: [64]u8 = undefined;
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    var cancel = Cancel{};
+    var req = testRequest(srv.url(&ub), &.{.{ .role = "user", .content = "hi" }});
+    req.api = .responses;
+    req.model = "grok-4.7";
+    req.reasoning = "low";
+    try chatStream(std.testing.allocator, req, &cancel, Collect{ .out = &out });
+    try std.testing.expectEqualStrings("git status", out.items);
+    const raw = srv.requests.items[0];
+    try std.testing.expect(std.mem.indexOf(u8, raw, "POST /v1/responses HTTP/1.1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "\"model\":\"grok-4.7\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "\"effort\":\"low\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "\"store\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "\"mode\":\"off\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, raw, "\"max_tokens\"") == null);
 }
 
 test "chatStream: plain JSON reply, HTTP errors, refused connection" {

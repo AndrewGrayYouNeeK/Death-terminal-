@@ -94,10 +94,11 @@ config is reloaded.
 | `shell.cwd` | `""` | Starting directory. `""` inherits it; a leading `~` means `$HOME` (**restart**) |
 | `shell.integration` | `true` | Load the OSC 133 prompt marks for bash/zsh/fish so AI suggestions know the typed command, history and exit codes ([AI.md](AI.md#shell-integration-osc-133)) (**restart**) |
 | `ai.enabled` | `true` | AI command suggestions on/off (`--no-ai` overrides). See [AI.md](AI.md) |
-| `ai.endpoint` | `"http://localhost:11434/v1"` | OpenAI-compatible base URL (http/https); Ollama by default |
-| `ai.model` | `"qwen2.5-coder:0.5b"` | Model name |
-| `ai.api_key_env` | `""` | **Name** of an environment variable holding the API key; the key itself never goes in the file (values that look like keys are rejected) |
-| `ai.timeout_ms` | `5000` | Request timeout, 200–120000 |
+| `ai.endpoint` | `"http://localhost:11434/v1"` | Base URL (http/https). Ollama and other OpenAI-compatible servers use `/chat/completions`. `api.x.ai` and `us.api.x.ai` use `/responses` (Grok 4.7) |
+| `ai.model` | `"qwen2.5-coder:0.5b"` | Model name (`grok-4.7` on xAI) |
+| `ai.reasoning` | `""` | `""` sends `low` on xAI and nothing elsewhere. Or `low`, `medium`, `high`, `xhigh` |
+| `ai.api_key_env` | `""` | **Name** of an environment variable holding the API key; the key itself never goes in the file (values that look like keys are rejected). `XAI_API_KEY` for Grok |
+| `ai.timeout_ms` | `5000` | Request timeout, 200–600000. x.ai waits at least 15s |
 | `ai.debounce_ms` | `300` | Typing pause before a suggestion is requested, 0–10000 |
 | `ai.max_tokens` | `64` | Tokens per suggestion, 8–4096 |
 | `ai.explain_max_tokens` | `400` | Tokens per "explain last error" answer, 16–8192 |

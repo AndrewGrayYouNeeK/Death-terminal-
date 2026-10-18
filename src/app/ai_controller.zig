@@ -22,6 +22,7 @@ pub const Settings = struct {
     endpoint: []const u8 = "http://localhost:11434/v1",
     model: []const u8 = "",
     api_key_env: []const u8 = "",
+    reasoning: []const u8 = "",
     timeout_ms: u32 = 5000,
     debounce_ms: u32 = 300,
     max_tokens: u16 = 64,
@@ -39,6 +40,7 @@ pub const Settings = struct {
             .endpoint = cfg.ai_endpoint,
             .model = cfg.ai_model,
             .api_key_env = cfg.ai_api_key_env,
+            .reasoning = cfg.ai_reasoning,
             .timeout_ms = cfg.ai_timeout_ms,
             .debounce_ms = cfg.ai_debounce_ms,
             .max_tokens = cfg.ai_max_tokens,
@@ -50,7 +52,7 @@ pub const Settings = struct {
     }
 
     fn engineOptions(self: Settings) engine_mod.Options {
-        return .{ .endpoint = self.endpoint, .model = self.model, .api_key_env = self.api_key_env, .timeout_ms = self.timeout_ms };
+        return .{ .endpoint = self.endpoint, .model = self.model, .api_key_env = self.api_key_env, .reasoning = self.reasoning, .timeout_ms = self.timeout_ms };
     }
 };
 

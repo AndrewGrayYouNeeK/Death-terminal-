@@ -75,6 +75,13 @@ fn checkEnvName(s: []const u8) ?[]const u8 {
     return null;
 }
 
+fn checkReasoning(s: []const u8) ?[]const u8 {
+    if (s.len == 0) return null;
+    const ok = [_][]const u8{ "low", "medium", "high", "xhigh" };
+    for (ok) |v| if (std.ascii.eqlIgnoreCase(s, v)) return null;
+    return "expected \"\", \"low\", \"medium\", \"high\" or \"xhigh\" (grok-4.7 cannot turn reasoning off)";
+}
+
 fn checkChord(s: []const u8) ?[]const u8 {
     _ = events.parseChord(s) catch return "cannot parse the key chord (use e.g. \"tab\", \"ctrl+space\", \"right\")";
     return null;
@@ -168,8 +175,9 @@ pub const schema = [_]Field{
     .{ .path = "ai.enabled", .kind = .boolean, .ref = ref(.boolean, "ai_enabled") },
     .{ .path = "ai.endpoint", .kind = .string, .ref = ref(.string, "ai_endpoint"), .check = checkEndpoint },
     .{ .path = "ai.model", .kind = .string, .ref = ref(.string, "ai_model") },
+    .{ .path = "ai.reasoning", .kind = .string, .ref = ref(.string, "ai_reasoning"), .check = checkReasoning },
     .{ .path = "ai.api_key_env", .kind = .string, .ref = ref(.string, "ai_api_key_env"), .check = checkEnvName },
-    .{ .path = "ai.timeout_ms", .kind = .integer, .min = 200, .max = 120_000, .ref = ref(.u32, "ai_timeout_ms") },
+    .{ .path = "ai.timeout_ms", .kind = .integer, .min = 200, .max = 600_000, .ref = ref(.u32, "ai_timeout_ms") },
     .{ .path = "ai.debounce_ms", .kind = .integer, .min = 0, .max = 10_000, .ref = ref(.u32, "ai_debounce_ms") },
     .{ .path = "ai.max_tokens", .kind = .integer, .min = 8, .max = 4096, .ref = ref(.u16, "ai_max_tokens") },
     .{ .path = "ai.explain_max_tokens", .kind = .integer, .min = 16, .max = 8192, .ref = ref(.u16, "ai_explain_max_tokens") },

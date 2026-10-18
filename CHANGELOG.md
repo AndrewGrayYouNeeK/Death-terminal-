@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Grok 4.7 on `api.x.ai` and `us.api.x.ai` (the model Grok Bot uses) goes through the Responses API: `reasoning.effort` defaults to `low` (`config.ai.reasoning`: `low` / `medium` / `high` / `xhigh`), live search is off, responses are not stored, and reasoning text is not shown as the suggestion. Other endpoints stay on chat/completions. xAI requests wait at least 15s; `ai.timeout_ms` now allows up to 600000
+
 ## [0.1.0] - 2026-10-17
 
 First versioned release. Everything below (milestones 1–12) ships in it.
