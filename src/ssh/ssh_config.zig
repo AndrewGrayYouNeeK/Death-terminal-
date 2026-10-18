@@ -335,7 +335,7 @@ test "ssh_config: Include with globs relative to ~/.ssh" {
     try tmp.dir.writeFile(.{ .sub_path = ".ssh/conf.d/b.conf", .data = "Host box\n  Port 2022\n" });
     try tmp.dir.writeFile(.{ .sub_path = ".ssh/conf.d/a.conf", .data = "Host box\n  HostName box.lan\n  Port 1111\n" });
     try tmp.dir.writeFile(.{ .sub_path = ".ssh/conf.d/skip.txt", .data = "Host box\n  User nope\n" });
-    const home = try tmp.dir.realpathAlloc(t.allocator, ".");
+    const home = try @import("../testutil.zig").tmpPath(t.allocator, &tmp, ".");
     defer t.allocator.free(home);
     var cfg = SshConfig.init(t.allocator);
     defer cfg.deinit();

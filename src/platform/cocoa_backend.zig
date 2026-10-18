@@ -1,0 +1,607 @@
+//! macOS window backend: an NSWindow whose content view hosts a
+//! CAMetalLayer (Vulkan via MoltenVK, VK_EXT_metal_surface), with a
+//! CoreGraphics fallback for the software renderer.
+//!
+//! UNTESTED AT RUNTIME: this file is cross-compiled from Linux only. The
+//! design keeps the dependency surface small: the Objective-C runtime and
+//! frameworks are loaded with dlopen (see objc.zig), there is no
+//! NSApplicationDelegate or NSView subclass, and events are read straight
+//! off the AppKit queue.
+//!
+//! Waiting: AppKit wants its main thread blocked in
+//! nextEventMatchingMask, but the event loop also waits on PTY / wake fds.
+//! `wait` hands the fds to a helper thread that poll()s them and posts an
+//! application-defined NSEvent when one is ready, so a single blocking
+//! call covers both sources and idle CPU stays at zero.
+
+const std = @import("std");
+const builtin = @import("builtin");
+const events = @import("events.zig");
+const Event = events.Event;
+const input = @import("../terminal/input.zig");
+const io = @import("io.zig");
+const objc = @import("objc.zig");
+const Id = objc.Id;
+const msg = objc.msg;
+const posix = std.posix;
+
+const NSEventType = struct {
+    const left_down = 1;
+    const left_up = 2;
+    const right_down = 3;
+    const right_up = 4;
+    const mouse_moved = 5;
+    const left_dragged = 6;
+    const right_dragged = 7;
+    const key_down = 10;
+    const key_up = 11;
+    const flags_changed = 12;
+    const app_defined = 15;
+    const scroll_wheel = 22;
+    const other_down = 25;
+    const other_up = 26;
+    const other_dragged = 27;
+};
+
+const Flag = struct {
+    const shift: u64 = 1 << 17;
+    const control: u64 = 1 << 18;
+    const option: u64 = 1 << 19;
+    const command: u64 = 1 << 20;
+};
+
+/// Subtype marking our own wake-up events.
+const wake_subtype: i16 = 0x4454; // "DT"
+
+pub const State = struct {
+    allocator: std.mem.Allocator = undefined,
+    app: Id = null,
+    window: Id = null,
+    view: Id = null,
+    layer: Id = null,
+    /// Plain CALayer for software frames (sublayer of `layer`).
+    sw_layer: Id = null,
+    run_mode: Id = null,
+    width: u32 = 0,
+    height: u32 = 0,
+    scale: f32 = 1.0,
+    visible: bool = true,
+    key_window: bool = false,
+    queue: events.EventQueue = .{},
+    held: input.MouseButton = .none,
+    scroll_acc: f64 = 0,
+    primary_text: ?[]u8 = null,
+    paste_buf: std.ArrayListUnmanaged(u8) = .{},
+    waiter: ?*Waiter = null,
+};
+
+// ------------------------------------------------------------------ waiter
+
+/// Helper thread that poll()s the event loop's fds while the main thread
+/// sleeps inside AppKit.
+const Waiter = struct {
+    mutex: std.Thread.Mutex = .{},
+    cond: std.Thread.Condition = .{},
+    /// Main → helper: fds to watch (null = idle). Helper → main: busy flag.
+    fds: ?[]io.PollFd = null,
+    /// Helper is inside poll() with `fds` (guarded by `mutex`).
+    busy: bool = false,
+    quit: bool = false,
+    stop: io.Wake,
+    app: Id,
+    thread: std.Thread = undefined,
+
+    fn run(self: *Waiter) void {
+        var local: [64]posix.pollfd = undefined;
+        while (true) {
+            self.mutex.lock();
+            while (self.fds == null and !self.quit) self.cond.wait(&self.mutex);
+            if (self.quit) {
+                self.mutex.unlock();
+                return;
+            }
+            const fds = self.fds.?;
+            self.busy = true;
+            self.mutex.unlock();
+
+            const n = @min(fds.len, local.len - 1);
+            for (fds[0..n], 0..) |f, i| local[i] = .{ .fd = f.fd, .events = f.events, .revents = 0 };
+            local[n] = .{ .fd = self.stop.fd(), .events = posix.POLL.IN, .revents = 0 };
+            _ = posix.poll(local[0 .. n + 1], -1) catch {};
+            if (local[n].revents == 0) {
+                postWake(self.app);
+                // Don't spin on a ready fd: park until the main thread
+                // takes the fds back.
+                var p = [_]posix.pollfd{.{ .fd = self.stop.fd(), .events = posix.POLL.IN, .revents = 0 }};
+                _ = posix.poll(&p, -1) catch {};
+            }
+            self.stop.drain();
+
+            self.mutex.lock();
+            self.busy = false;
+            self.cond.broadcast();
+            self.mutex.unlock();
+        }
+    }
+
+    /// Main thread: stop watching. The stop pipe is only signalled while
+    /// the helper is busy, so no stale wake-up leaks into the next round.
+    fn reclaim(self: *Waiter) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.fds = null;
+        if (!self.busy) return;
+        self.stop.signal();
+        while (self.busy) self.cond.wait(&self.mutex);
+    }
+};
+
+fn postWake(app: Id) void {
+    const pool = objc.rt.poolPush();
+    defer objc.rt.poolPop(pool);
+    const ev = msg(Id, objc.class("NSEvent"), "otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:", .{
+        @as(u64, NSEventType.app_defined), objc.NSPoint{}, @as(u64, 0), @as(f64, 0), @as(isize, 0), @as(Id, null), wake_subtype, @as(isize, 0), @as(isize, 0),
+    });
+    msg(void, app, "postEvent:atStart:", .{ ev, objc.NO });
+}
+
+// ------------------------------------------------------------------ API
+
+pub fn open(st: *State, allocator: std.mem.Allocator, title: []const u8, width: u32, height: u32, scale: f32) !void {
+    if (builtin.os.tag != .macos) return error.UnsupportedPlatform;
+    try objc.load();
+    st.allocator = allocator;
+    const pool = objc.rt.poolPush();
+    defer objc.rt.poolPop(pool);
+
+    st.app = msg(Id, objc.class("NSApplication"), "sharedApplication", .{});
+    if (st.app == null) return error.NoNSApplication;
+    _ = msg(objc.BOOL, st.app, "setActivationPolicy:", .{@as(isize, 0)}); // Regular
+    st.run_mode = objc.constant("NSDefaultRunLoopMode");
+
+    const pts_scale: f64 = @max(1.0, scale);
+    const rect = objc.NSRect{ .size = .{
+        .width = @as(f64, @floatFromInt(width)) / pts_scale,
+        .height = @as(f64, @floatFromInt(height)) / pts_scale,
+    } };
+    const style: u64 = 1 | 2 | 4 | 8; // titled | closable | miniaturizable | resizable
+    st.window = msg(Id, objc.alloc("NSWindow"), "initWithContentRect:styleMask:backing:defer:", .{ rect, style, @as(u64, 2), objc.NO });
+    if (st.window == null) return error.NoWindow;
+    msg(void, st.window, "setReleasedWhenClosed:", .{objc.NO});
+    msg(void, st.window, "setAcceptsMouseMovedEvents:", .{objc.YES});
+    setTitle(st, title);
+
+    st.view = msg(Id, st.window, "contentView", .{});
+    st.layer = msg(Id, objc.class("CAMetalLayer"), "layer", .{});
+    if (st.layer == null) return error.NoMetalLayer;
+    msg(void, st.view, "setLayer:", .{st.layer});
+    msg(void, st.view, "setWantsLayer:", .{objc.YES});
+
+    msg(void, st.window, "center", .{});
+    msg(void, st.window, "makeKeyAndOrderFront:", .{@as(Id, null)});
+    msg(void, st.app, "finishLaunching", .{});
+    msg(void, st.app, "activateIgnoringOtherApps:", .{objc.YES});
+
+    syncGeometry(st, false);
+
+    const w = try allocator.create(Waiter);
+    errdefer allocator.destroy(w);
+    w.* = .{ .stop = try io.Wake.init(), .app = st.app };
+    w.thread = try std.Thread.spawn(.{}, Waiter.run, .{w});
+    st.waiter = w;
+}
+
+pub fn close(st: *State) void {
+    if (st.waiter) |w| {
+        w.reclaim();
+        w.mutex.lock();
+        w.quit = true;
+        w.cond.broadcast();
+        w.mutex.unlock();
+        w.thread.join();
+        w.stop.deinit();
+        st.allocator.destroy(w);
+        st.waiter = null;
+    }
+    if (st.window != null) {
+        msg(void, st.window, "close", .{});
+        objc.release(st.window);
+        st.window = null;
+    }
+    if (st.primary_text) |t| st.allocator.free(t);
+    st.primary_text = null;
+    st.paste_buf.deinit(st.allocator);
+}
+
+/// Block until `fds` are ready, an AppKit event arrives or the timeout
+/// passes. Returns the number of ready fds (their revents are filled in).
+pub fn wait(st: *State, fds: []io.PollFd, timeout_ms: i32) usize {
+    const ready_now = io.poll(fds, 0);
+    if (ready_now > 0 or st.queue.len > 0) return ready_now;
+
+    const w = st.waiter orelse return io.poll(fds, timeout_ms);
+    w.mutex.lock();
+    w.fds = fds;
+    w.cond.broadcast();
+    w.mutex.unlock();
+
+    {
+        const pool = objc.rt.poolPush();
+        defer objc.rt.poolPop(pool);
+        const until: Id = if (timeout_ms < 0)
+            msg(Id, objc.class("NSDate"), "distantFuture", .{})
+        else
+            msg(Id, objc.class("NSDate"), "dateWithTimeIntervalSinceNow:", .{@as(f64, @floatFromInt(timeout_ms)) / 1000.0});
+        const ev = msg(Id, st.app, "nextEventMatchingMask:untilDate:inMode:dequeue:", .{ std.math.maxInt(u64), until, st.run_mode, objc.YES });
+        if (ev != null) handleEvent(st, ev);
+    }
+
+    w.reclaim();
+
+    syncGeometry(st, true);
+    return io.poll(fds, 0);
+}
+
+pub fn poll(st: *State) Event {
+    if (st.queue.len == 0) pump(st);
+    return st.queue.pop();
+}
+
+pub fn hasPending(st: *const State) bool {
+    return st.queue.len > 0;
+}
+
+pub fn setTitle(st: *State, title: []const u8) void {
+    if (st.window == null) return;
+    const pool = objc.rt.poolPush();
+    defer objc.rt.poolPop(pool);
+    msg(void, st.window, "setTitle:", .{objc.nsString(title)});
+}
+
+pub fn setClipboard(st: *State, target: events.ClipTarget, text: []const u8) void {
+    switch (target) {
+        .primary => {
+            // macOS has no PRIMARY selection; emulate it in-process.
+            const copy = st.allocator.dupe(u8, text) catch return;
+            if (st.primary_text) |old| st.allocator.free(old);
+            st.primary_text = copy;
+        },
+        .clipboard => {
+            const pool = objc.rt.poolPush();
+            defer objc.rt.poolPop(pool);
+            const pb = msg(Id, objc.class("NSPasteboard"), "generalPasteboard", .{});
+            _ = msg(isize, pb, "clearContents", .{});
+            _ = msg(objc.BOOL, pb, "setString:forType:", .{ objc.nsString(text), objc.constant("NSPasteboardTypeString") });
+        },
+    }
+}
+
+pub fn requestClipboard(st: *State, target: events.ClipTarget, purpose: events.PastePurpose) void {
+    st.paste_buf.clearRetainingCapacity();
+    switch (target) {
+        .primary => if (st.primary_text) |t| st.paste_buf.appendSlice(st.allocator, t) catch {},
+        .clipboard => {
+            const pool = objc.rt.poolPush();
+            defer objc.rt.poolPop(pool);
+            const pb = msg(Id, objc.class("NSPasteboard"), "generalPasteboard", .{});
+            const s = msg(Id, pb, "stringForType:", .{objc.constant("NSPasteboardTypeString")});
+            st.paste_buf.appendSlice(st.allocator, objc.utf8(s)) catch {};
+        },
+    }
+    st.queue.pushPaste(st.paste_buf.items, target, purpose);
+}
+
+/// CAMetalLayer for vkCreateMetalSurfaceEXT.
+pub fn metalLayerPtr(st: *const State) ?*anyopaque {
+    return st.layer;
+}
+
+const CGImageFns = struct {
+    colorSpace: *const fn () callconv(.C) ?*anyopaque,
+    dataCreate: *const fn (?*anyopaque, [*]const u8, isize) callconv(.C) ?*anyopaque,
+    providerCreate: *const fn (?*anyopaque) callconv(.C) ?*anyopaque,
+    imageCreate: *const fn (usize, usize, usize, usize, usize, ?*anyopaque, u32, ?*anyopaque, ?*const f64, bool, i32) callconv(.C) ?*anyopaque,
+    cfRelease: *const fn (?*anyopaque) callconv(.C) void,
+};
+var cg_fns: ?CGImageFns = null;
+
+fn cgFns() ?CGImageFns {
+    if (cg_fns) |f| return f;
+    cg_fns = .{
+        .colorSpace = objc.cfn(*const fn () callconv(.C) ?*anyopaque, "CGColorSpaceCreateDeviceRGB") orelse return null,
+        .dataCreate = objc.cfn(*const fn (?*anyopaque, [*]const u8, isize) callconv(.C) ?*anyopaque, "CFDataCreate") orelse return null,
+        .providerCreate = objc.cfn(*const fn (?*anyopaque) callconv(.C) ?*anyopaque, "CGDataProviderCreateWithCFData") orelse return null,
+        .imageCreate = objc.cfn(@TypeOf(@as(CGImageFns, undefined).imageCreate), "CGImageCreate") orelse return null,
+        .cfRelease = objc.cfn(*const fn (?*anyopaque) callconv(.C) void, "CFRelease") orelse return null,
+    };
+    return cg_fns;
+}
+
+/// Software renderer path: wrap the frame in a CGImage and make it the
+/// contents of a sublayer (pixels are 0x00RRGGBB words).
+pub fn presentRgba(st: *State, pixels: []const u32, width: u32, height: u32) void {
+    const f = cgFns() orelse return;
+    if (st.layer == null or width == 0 or height == 0) return;
+    const pool = objc.rt.poolPush();
+    defer objc.rt.poolPop(pool);
+    if (st.sw_layer == null) {
+        st.sw_layer = msg(Id, objc.class("CALayer"), "layer", .{});
+        msg(void, st.sw_layer, "setContentsGravity:", .{objc.nsString("topLeft")});
+        msg(void, st.layer, "addSublayer:", .{st.sw_layer});
+    }
+    const bytes = std.mem.sliceAsBytes(pixels[0 .. @as(usize, width) * height]);
+    const data = f.dataCreate(null, bytes.ptr, @intCast(bytes.len)) orelse return;
+    defer f.cfRelease(data);
+    const provider = f.providerCreate(data) orelse return;
+    defer f.cfRelease(provider);
+    const space = f.colorSpace() orelse return;
+    defer f.cfRelease(space);
+    const info: u32 = (2 << 12) | 6; // kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipFirst
+    const image = f.imageCreate(width, height, 8, 32, @as(usize, width) * 4, space, info, provider, null, false, 0) orelse return;
+    defer f.cfRelease(image);
+
+    const tx = objc.class("CATransaction");
+    msg(void, tx, "begin", .{});
+    msg(void, tx, "setDisableActions:", .{objc.YES});
+    const bounds = msg(objc.NSRect, st.view, "bounds", .{});
+    msg(void, st.sw_layer, "setFrame:", .{bounds});
+    msg(void, st.sw_layer, "setContentsScale:", .{@as(f64, st.scale)});
+    msg(void, st.sw_layer, "setContents:", .{@as(Id, image)});
+    msg(void, tx, "commit", .{});
+}
+
+// ------------------------------------------------------------------ events
+
+fn pump(st: *State) void {
+    if (st.app == null) return;
+    const pool = objc.rt.poolPush();
+    defer objc.rt.poolPop(pool);
+    const past = msg(Id, objc.class("NSDate"), "distantPast", .{});
+    var n: usize = 0;
+    while (n < 256) : (n += 1) {
+        const ev = msg(Id, st.app, "nextEventMatchingMask:untilDate:inMode:dequeue:", .{ std.math.maxInt(u64), past, st.run_mode, objc.YES });
+        if (ev == null) break;
+        handleEvent(st, ev);
+    }
+    syncGeometry(st, true);
+}
+
+/// Pixel size / scale / visibility / focus, pushing events on change.
+fn syncGeometry(st: *State, notify: bool) void {
+    if (st.window == null) return;
+    const scale = msg(f64, st.window, "backingScaleFactor", .{});
+    const frame = msg(objc.NSRect, st.view, "frame", .{});
+    const s: f32 = @floatCast(@max(1.0, scale));
+    const w: u32 = @intFromFloat(@max(1.0, @round(frame.size.width * s)));
+    const h: u32 = @intFromFloat(@max(1.0, @round(frame.size.height * s)));
+    if (s != st.scale) {
+        st.scale = s;
+        msg(void, st.layer, "setContentsScale:", .{@as(f64, s)});
+    }
+    if (w != st.width or h != st.height) {
+        st.width = w;
+        st.height = h;
+        if (notify) st.queue.pushResize(w, h);
+    }
+    const visible = objc.isTrue(msg(objc.BOOL, st.window, "isVisible", .{}));
+    const miniaturized = objc.isTrue(msg(objc.BOOL, st.window, "isMiniaturized", .{}));
+    if (st.visible and !visible and !miniaturized) {
+        if (notify) st.queue.pushClose();
+    }
+    st.visible = visible or miniaturized;
+    const key = objc.isTrue(msg(objc.BOOL, st.window, "isKeyWindow", .{}));
+    if (key != st.key_window) {
+        st.key_window = key;
+        if (notify) st.queue.pushFocus(key);
+    }
+}
+
+fn modsOf(flags: u64) input.Mods {
+    return .{
+        .shift = flags & Flag.shift != 0,
+        .ctrl = flags & Flag.control != 0,
+        .alt = flags & Flag.option != 0,
+    };
+}
+
+fn handleEvent(st: *State, ev: Id) void {
+    const ty = msg(u64, ev, "type", .{});
+    switch (ty) {
+        NSEventType.app_defined => {
+            if (msg(i16, ev, "subtype", .{}) == wake_subtype) return;
+        },
+        NSEventType.key_down => {
+            if (handleKey(st, ev)) return;
+        },
+        NSEventType.key_up, NSEventType.flags_changed => return,
+        NSEventType.left_down, NSEventType.left_up, NSEventType.right_down, NSEventType.right_up, NSEventType.other_down, NSEventType.other_up, NSEventType.mouse_moved, NSEventType.left_dragged, NSEventType.right_dragged, NSEventType.other_dragged => {
+            if (msg(Id, ev, "window", .{}) == st.window) handleMouse(st, ev, ty);
+        },
+        NSEventType.scroll_wheel => {
+            if (msg(Id, ev, "window", .{}) == st.window) handleScroll(st, ev);
+        },
+        else => {},
+    }
+    // Everything else (title bar drags, resize, menus) goes to AppKit.
+    msg(void, st.app, "sendEvent:", .{ev});
+}
+
+/// Returns true when the key was consumed (not forwarded to AppKit, which
+/// would beep for keys no responder handles).
+fn handleKey(st: *State, ev: Id) bool {
+    const flags = msg(u64, ev, "modifierFlags", .{});
+    const code = msg(u16, ev, "keyCode", .{});
+    const mods = modsOf(flags);
+
+    if (flags & Flag.command != 0) {
+        // Cmd shortcuts reuse the Ctrl+Shift bindings (Cmd+C copy,
+        // Cmd+V paste, Cmd+T new tab, ...), then the Ctrl ones (zoom).
+        const chars = objc.utf8(msg(Id, ev, "charactersIgnoringModifiers", .{}));
+        if (std.mem.eql(u8, chars, "q")) {
+            st.queue.pushClose();
+            return true;
+        }
+        if (keysymOf(code, chars)) |sym| {
+            const alts = [_]input.Mods{ .{ .ctrl = true, .shift = true }, .{ .ctrl = true }, .{ .ctrl = true, .shift = mods.shift } };
+            for (alts) |m| if (events.matchBinding(sym, m)) |a| {
+                st.queue.pushAction(a);
+                return true;
+            };
+        }
+        return false; // let AppKit handle (Cmd+M, Cmd+H, ...)
+    }
+
+    if (keysymOf(code, objc.utf8(msg(Id, ev, "charactersIgnoringModifiers", .{})))) |sym| {
+        if (events.matchBinding(sym, mods)) |a| {
+            st.queue.pushAction(a);
+            return true;
+        }
+    }
+    if (keyOf(code)) |key| {
+        st.queue.pushKey(key, mods);
+        return true;
+    }
+    if (mods.alt) {
+        // Option as Meta: ESC + the unmodified character.
+        const raw = objc.utf8(msg(Id, ev, "charactersIgnoringModifiers", .{}));
+        st.queue.pushText(raw, true);
+        return true;
+    }
+    const text = objc.utf8(msg(Id, ev, "characters", .{}));
+    if (text.len == 0) return true;
+    // Function-key private-use characters (U+F700..U+F8FF) have no text.
+    if (std.unicode.utf8Decode(text) catch null) |cp| if (cp >= 0xF700 and cp <= 0xF8FF) return true;
+    st.queue.pushText(text, false);
+    return true;
+}
+
+fn handleMouse(st: *State, ev: Id, ty: u64) void {
+    const loc = msg(objc.NSPoint, ev, "locationInWindow", .{});
+    const frame = msg(objc.NSRect, st.view, "frame", .{});
+    const s: f64 = st.scale;
+    const x: i32 = @intFromFloat(@floor(loc.x * s));
+    const y: i32 = @intFromFloat(@floor((frame.size.height - loc.y) * s));
+    const mods = modsOf(msg(u64, ev, "modifierFlags", .{}));
+    const button: input.MouseButton = switch (ty) {
+        NSEventType.left_down, NSEventType.left_up, NSEventType.left_dragged => .left,
+        NSEventType.right_down, NSEventType.right_up, NSEventType.right_dragged => .right,
+        NSEventType.other_down, NSEventType.other_up, NSEventType.other_dragged => .middle,
+        else => st.held,
+    };
+    switch (ty) {
+        NSEventType.left_down, NSEventType.right_down, NSEventType.other_down => {
+            if (y < 0) return; // title bar
+            st.held = button;
+            st.queue.pushMouse(.{ .action = .press, .button = button, .x = x, .y = y, .mods = mods });
+        },
+        NSEventType.left_up, NSEventType.right_up, NSEventType.other_up => {
+            st.held = .none;
+            st.queue.pushMouse(.{ .action = .release, .button = button, .x = x, .y = y, .mods = mods });
+        },
+        else => st.queue.pushMouse(.{ .action = .motion, .button = st.held, .x = x, .y = y, .mods = mods }),
+    }
+}
+
+fn handleScroll(st: *State, ev: Id) void {
+    var dy = msg(f64, ev, "scrollingDeltaY", .{});
+    // Trackpads report pixels; group them into wheel notches.
+    if (objc.isTrue(msg(objc.BOOL, ev, "hasPreciseScrollingDeltas", .{}))) {
+        st.scroll_acc += dy;
+        if (@abs(st.scroll_acc) < 16) return;
+        dy = st.scroll_acc;
+        st.scroll_acc = 0;
+    }
+    if (dy == 0) return;
+    const loc = msg(objc.NSPoint, ev, "locationInWindow", .{});
+    const frame = msg(objc.NSRect, st.view, "frame", .{});
+    const s: f64 = st.scale;
+    st.queue.pushMouse(.{
+        .action = .press,
+        .button = if (dy > 0) .wheel_up else .wheel_down,
+        .x = @intFromFloat(@floor(loc.x * s)),
+        .y = @intFromFloat(@floor((frame.size.height - loc.y) * s)),
+        .mods = modsOf(msg(u64, ev, "modifierFlags", .{})),
+    });
+}
+
+// ------------------------------------------------------------------ keys
+
+/// macOS virtual key codes (Carbon kVK_*) for non-text keys.
+fn keyOf(code: u16) ?input.Key {
+    return switch (code) {
+        126 => .up,
+        125 => .down,
+        124 => .right,
+        123 => .left,
+        115 => .home,
+        119 => .end,
+        114 => .insert, // Help
+        117 => .delete,
+        116 => .page_up,
+        121 => .page_down,
+        122 => .f1,
+        120 => .f2,
+        99 => .f3,
+        118 => .f4,
+        96 => .f5,
+        97 => .f6,
+        98 => .f7,
+        100 => .f8,
+        101 => .f9,
+        109 => .f10,
+        103 => .f11,
+        111 => .f12,
+        36 => .enter,
+        48 => .tab,
+        51 => .backspace,
+        53 => .escape,
+        76 => .kp_enter,
+        else => null,
+    };
+}
+
+/// X11 keysym numbering used by the bindings table.
+fn keysymOf(code: u16, chars: []const u8) ?u32 {
+    const named: ?u32 = switch (code) {
+        114 => 0xff63,
+        117 => 0xffff,
+        116 => 0xff55,
+        121 => 0xff56,
+        115 => 0xff50,
+        119 => 0xff57,
+        126 => 0xff52,
+        125 => 0xff54,
+        123 => 0xff51,
+        124 => 0xff53,
+        69 => 0xffab, // keypad +
+        78 => 0xffad, // keypad -
+        82 => 0xffb0, // keypad 0
+        122 => 0xffbe,
+        120 => 0xffbf,
+        99 => 0xffc0,
+        118 => 0xffc1,
+        96 => 0xffc2,
+        97 => 0xffc3,
+        98 => 0xffc4,
+        100 => 0xffc5,
+        101 => 0xffc6,
+        109 => 0xffc7,
+        103 => 0xffc8,
+        111 => 0xffc9,
+        else => null,
+    };
+    if (named) |n| return n;
+    if (chars.len != 1) return null;
+    const c = chars[0];
+    return switch (c) {
+        'A'...'Z' => c + 32,
+        'a'...'z', '0'...'9', '=', '-', ',', '.', '/', '+', '_' => c,
+        else => null,
+    };
+}
+
+test "cocoa: key tables" {
+    try std.testing.expectEqual(input.Key.up, keyOf(126).?);
+    try std.testing.expectEqual(@as(?u32, 'c'), keysymOf(8, "C"));
+    try std.testing.expectEqual(@as(?u32, 0xffbe), keysymOf(122, ""));
+}

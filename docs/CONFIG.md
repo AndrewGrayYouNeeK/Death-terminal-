@@ -85,7 +85,7 @@ config is reloaded.
 | `selection.word_chars` | ``-_./~:@%+#?&=`` | Extra characters treated as part of a word on double-click |
 | `clipboard.paste_confirm` | `true` | Confirm multi-line pastes when bracketed paste is off |
 | `clipboard.osc52` | `"write"` | `off`, `write`, `read-write` |
-| `links.open_command` | `xdg-open` / `open` | Runs as `<cmd> <url>` for Ctrl+click, with no shell involved |
+| `links.open_command` | `xdg-open` / `open` (macOS) / `""` = ShellExecute (Windows) | Runs as `<cmd> <url>` for Ctrl+click, with no shell involved |
 | `keys` | — | `{ [chord] = action or false }`, applied over the defaults |
 | `default_keybindings` | `true` | `false` starts from an empty binding table |
 | `shell.program` | `""` | `""` uses `$SHELL`, falling back to `/bin/sh`. Names without `/` are searched in `$PATH` (**restart**) |
@@ -176,7 +176,8 @@ selection/clipboard/scrollbar options, key bindings, the status bar and plugins 
 plugin host restarts when a plugin's files, grants or settings changed; otherwise plugins get
 a `config_reload` event).
 
-Watching uses inotify, which is Linux-only. On other platforms only Ctrl+Shift+R reloads.
+Watching uses inotify on Linux, kqueue on macOS and change notifications on Windows (the
+last two compare modification times, and are untested on real hardware).
 
 ## Sandbox
 

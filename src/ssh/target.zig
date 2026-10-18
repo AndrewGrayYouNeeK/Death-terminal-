@@ -157,8 +157,8 @@ pub fn resolve(a: std.mem.Allocator, name: []const u8, profiles: []const Profile
 /// `resolve` with ~/.ssh/config read from `config_file` ("" = none) and
 /// $HOME / $USER from the environment.
 pub fn resolveForConfig(arena: std.mem.Allocator, profiles: []const Profile, config_file: []const u8, keepalive_s: u16, name: []const u8) !Target {
-    const home = std.posix.getenv("HOME") orelse "/";
-    const user = std.posix.getenv("USER") orelse std.posix.getenv("LOGNAME") orelse "root";
+    const home = @import("../platform/env.zig").get("HOME") orelse "/";
+    const user = @import("../platform/env.zig").get("USER") orelse @import("../platform/env.zig").get("LOGNAME") orelse "root";
     var sc = ssh_config.SshConfig.init(arena);
     if (config_file.len > 0) sc.loadFile(config_file, home) catch {};
     return resolve(arena, name, profiles, &sc, .{ .home = home, .local_user = user, .keepalive_s = keepalive_s });
@@ -167,14 +167,14 @@ pub fn resolveForConfig(arena: std.mem.Allocator, profiles: []const Profile, con
 /// Host aliases from ~/.ssh/config (no wildcards), for the palette.
 pub fn configAliases(arena: std.mem.Allocator, config_file: []const u8, out: *std.ArrayList([]const u8)) void {
     if (config_file.len == 0) return;
-    const home = std.posix.getenv("HOME") orelse "/";
+    const home = @import("../platform/env.zig").get("HOME") orelse "/";
     var sc = ssh_config.SshConfig.init(arena);
     sc.loadFile(config_file, home) catch return;
     sc.aliases(out) catch {};
 }
 
 fn defaultIdentities(a: std.mem.Allocator, ids: *std.ArrayList([]const u8), home: []const u8) !void {
-    for ([_][]const u8{ "id_ed25519", "id_ecdsa", "id_rsa" }) |n| try ids.append(try std.fs.path.join(a, &.{ home, ".ssh", n }));
+    for ([_][]const u8{ "id_ed25519", "id_ecdsa", "id_rsa" }) |n| try ids.append(try std.fmt.allocPrint(a, "{s}/.ssh/{s}", .{ home, n })); // same form as "~/" expansion
 }
 
 fn resolveJumps(a: std.mem.Allocator, list: []const u8, cfg: *ssh_config.SshConfig, env: Env, extra_id: ?[]const u8) ![]const Hop {

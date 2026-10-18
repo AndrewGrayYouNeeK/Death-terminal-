@@ -1,0 +1,189 @@
+.\" Man page for DeathTerminal. Keep in sync with `deathterminal --help`.
+.TH DEATHTERMINAL 1 "2026-10-17" "DeathTerminal 0.1.0" "User Commands"
+.SH NAME
+deathterminal \- brutalist GPU terminal emulator with AI suggestions, built\-in SSH and Lua plugins
+.SH SYNOPSIS
+.B deathterminal
+.RI [ OPTIONS ]
+.br
+.B deathterminal
+.B \-\-ssh
+.I target
+.br
+.B deathterminal
+.B \-\-ssh\-session
+.I target
+.RB [ \-L | \-R | \-D
+.IR spec ]...
+.br
+.B deathterminal
+.B \-\-plugins
+.RB list | enable
+.IR name | \fBdisable\fP " " name
+.SH DESCRIPTION
+.B DeathTerminal
+is a terminal emulator written in Zig. It renders with Vulkan (with a software
+fallback), shapes text with HarfBuzz, and supports tabs and split panes, an
+xterm\-compatible VT core (including 80/132\-column switching), OSC 52/7/133,
+an optional OpenAI\-compatible AI assistant, a built\-in SSH client
+(libssh2) and sandboxed Lua plugins.
+.PP
+Without
+.B \-\-gui
+it runs headless in the current terminal (the grid is re\-drawn into the host
+terminal), which is useful for testing and over SSH.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Print usage and exit.
+.TP
+.BR \-v ", " \-\-version
+Print version information and exit.
+.TP
+.BI \-\-config " file"
+Use
+.I file
+(a
+.B .lua
+config, or a legacy
+.B key = value
+text file) instead of the default location.
+.TP
+.B \-\-print\-default\-config
+Print a documented config.lua containing every default.
+.TP
+.B \-\-lua\-unsafe
+Give config.lua the full Lua standard library (io, os.execute, require).
+.TP
+.BI \-\-print\-shell\-integration " bash|zsh|fish"
+Print the OSC 133 shell\-integration snippet for the given shell.
+.TP
+.BI \-\-ssh " target"
+Open a window connected over SSH.
+.I target
+is a
+.B config.ssh.profiles
+name, a
+.I ~/.ssh/config
+Host, or
+.IR user @ host [: port ].
+.TP
+.BI \-\-ssh\-session " target"
+Run the SSH client inside the current terminal; accepts
+.BR \-L ", " \-R " and " \-D
+forwards.
+.TP
+.BI \-\-ssh\-ctl " pid cmd"
+Control a running SSH session:
+.BR status ", " list ", " toggle " n, " on " n, " off " n, " add " spec, " reconnect .
+.TP
+.B \-\-plugins list\fR | \fBenable\fR \fIname\fR | \fBdisable\fR \fIname
+Show installed plugins and their permissions, or switch one on or off.
+.TP
+.B \-\-no\-plugins
+Start without loading any plugin.
+.TP
+.B \-\-no\-ai
+Disable AI command suggestions.
+.TP
+.B \-\-headless
+Run without a GUI window (the default).
+.TP
+.B \-\-gui
+Open a native window (Wayland, X11, Win32 or Cocoa); falls back to headless.
+.TP
+.BI \-\-scale " n"
+UI scale 1\(en4 (default: from DPI, compositor or environment).
+.TP
+.BI \-\-backend " name"
+Window backend:
+.BR auto ", " x11 ", " wayland ", " win32 ", " cocoa .
+.TP
+.BI \-\-font " retro|default"
+Font renderer (retro is the built\-in 8x8 bitmap font).
+.TP
+.BI \-\-font\-family " name"
+Font family (looked up with fontconfig on Linux, in the system font folders on
+Windows and macOS). Default: the bundled JetBrains Mono.
+.TP
+.BI \-\-font\-size " pt"
+Font size in points (default 11; Ctrl+= / Ctrl+\- / Ctrl+0 zoom).
+.TP
+.BI \-\-line\-height " n"
+Cell height multiplier (default 1.0).
+.PP
+Command\-line flags override the config file.
+.SH KEYS
+The defaults below can be changed or disabled in config.lua
+.RB ( config.keys ", " config.default_keybindings ).
+.TP
+.B Ctrl+Shift+C / Ctrl+Shift+V
+Copy the selection / paste the clipboard (Shift+Insert pastes PRIMARY).
+.TP
+.B Ctrl+Shift+F
+Search the scrollback.
+.TP
+.B Ctrl+Shift+T / Ctrl+Shift+Alt+W
+New tab / close tab.
+.TP
+.B Ctrl+Shift+E / Ctrl+Shift+O / Ctrl+Shift+W
+Split right / split down / close pane.
+.TP
+.B Alt+arrows / Alt+Shift+arrows
+Move focus between panes / resize the focused pane.
+.TP
+.B Ctrl+Shift+P
+Command palette.
+.TP
+.B Ctrl+Shift+S
+SSH palette (profiles and forwards).
+.TP
+.B Ctrl+Shift+A
+AI: explain and fix the last error.
+.TP
+.B Ctrl+Shift+R
+Reload the configuration.
+.PP
+On macOS the Command key stands in for Ctrl+Shift (Cmd+C, Cmd+V, Cmd+T, ...).
+.SH FILES
+.TP
+.I $XDG_CONFIG_HOME/death\-terminal/config.lua
+User configuration (default
+.IR ~/.config/death\-terminal/config.lua ).
+On Windows:
+.IR %APPDATA%\edeath\-terminal\econfig.lua .
+Saving it reloads it live.
+.TP
+.I $XDG_CONFIG_HOME/death\-terminal/plugins/
+Lua plugins, one directory each (manifest.lua, init.lua).
+.TP
+.I /usr/share/doc/deathterminal/
+README, CHANGELOG, configuration and plugin documentation, example config and
+plugins.
+.SH ENVIRONMENT
+.TP
+.B SHELL
+Shell to run when
+.B config.shell.program
+is empty (Windows: pwsh, then powershell, then %COMSPEC%).
+.TP
+.B DT_SCALE\fR, \fBGDK_SCALE\fR, \fBQT_SCALE_FACTOR
+UI scale hints when no
+.B \-\-scale
+is given.
+.TP
+.B WAYLAND_DISPLAY\fR, \fBDISPLAY
+Select the Wayland or X11 backend.
+.SH EXIT STATUS
+The exit status of the shell (or SSH session) when it ends; 2 for usage errors.
+.SH SEE ALSO
+.BR xterm (1),
+.BR ssh (1),
+.BR ssh_config (5)
+.PP
+Documentation: https://github.com/AndrewGrayYouNeeK/Death\-terminal\-
+.SH LICENSE
+Public domain (The Unlicense). Bundled JetBrains Mono is under the SIL Open
+Font License 1.1; FreeType (Windows/macOS builds) under the FreeType License;
+HarfBuzz under the MIT license; libssh2 under the BSD 3\-clause license; Lua
+under the MIT license.

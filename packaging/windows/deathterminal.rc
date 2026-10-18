@@ -1,0 +1,34 @@
+// Windows resources: application icon and version info.
+// Keep FILEVERSION / ProductVersion in sync with build.zig (default_version).
+#include <winver.h>
+
+1 ICON "deathterminal.ico"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 0,1,0,0
+PRODUCTVERSION 0,1,0,0
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "DeathTerminal"
+            VALUE "FileDescription", "DeathTerminal - Brutalist Terminal Emulator"
+            VALUE "FileVersion", "0.1.0"
+            VALUE "InternalName", "deathterminal"
+            VALUE "LegalCopyright", "Public domain (The Unlicense)"
+            VALUE "OriginalFilename", "deathterminal.exe"
+            VALUE "ProductName", "DeathTerminal"
+            VALUE "ProductVersion", "0.1.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

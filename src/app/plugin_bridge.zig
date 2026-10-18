@@ -18,7 +18,7 @@ pub const Host = host_mod.Host;
 const Entry = value.Entry;
 const V = value.Value;
 
-pub const version = "0.11.0";
+pub const version = @import("build_options").version;
 
 /// What one pane (terminal) looked like at its last `afterOutput`.
 pub const Track = struct {
@@ -376,8 +376,8 @@ pub const Bridge = struct {
 
     // ------------------------------------------------------- scheduling
 
-    pub fn wakeFd(self: *const Bridge) std.posix.fd_t {
-        const h = self.host orelse return -1;
+    pub fn wakeFd(self: *const Bridge) @import("../platform/io.zig").Fd {
+        const h = self.host orelse return @import("../platform/io.zig").none;
         return h.wakeFd();
     }
 

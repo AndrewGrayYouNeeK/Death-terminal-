@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-17
+
+First versioned release. Everything below (milestones 1–12) ships in it.
+
 ### Changed
+- Version 0.1.0 comes from `build.zig` (`-Dversion=` to override); `--version`, `dt.version` and the packages use it (the plugin API used to report 0.11.0)
+- Vulkan is no longer linked: the loader is always opened at run time and the headers are vendored (`vendor/vulkan-headers`, v1.4.309), so builds need no Vulkan SDK
+- DECCOLM (`CSI ?3 h/l`) now really switches 80/132 columns in headless mode when `window.allow_column_switch` (default true) and `?40` allow it; GUI panes keep their layout width and get the clear/home/margin reset only. vttest's 132-column screens pass headless
+- X11 windows set WM_CLASS `deathterminal` (matches the .desktop file)
 - The SSH tunnel-manager stub (`src/ssh/tunnel.zig`) is replaced by the real client
 - The AI client is HTTP/JSON (OpenAI-compatible) instead of the originally planned gRPC service; the gRPC stub (`src/ai/autocomplete.zig`) is gone
 - `select_all` moved from Ctrl+Shift+A to Ctrl+Shift+Alt+A (Ctrl+Shift+A is now `ai_explain`)
@@ -17,8 +25,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - AI "offline" with endpoints that answer HTTP/1.0 or `Connection: close` and label an SSE stream as `application/json` (or send no Content-Type): the body is now sniffed (`data:` vs `{`), so these replies are parsed instead of failing as bad JSON. Close-delimited and Content-Length bodies are covered by tests
+- Windows: AI requests can now time out and be cancelled. std's socket reads (ReadFile) ignore SO_RCVTIMEO and can't be interrupted, so requests go through a small relay thread
+- Windows: plugin directories are under `%APPDATA%` and `%LOCALAPPDATA%` instead of a relative `.config` path when HOME is unset
+- Windows: `config.example.lua` no longer sets `links.open_command = "xdg-open"`
+- Windows: each wait in the event layer gets its own socket event, so concurrent waiters don't steal each other's wake-ups
+- Plugin status text treats CRLF as one line break
 
 ### Added
+- Windows: ConPTY PTY (pwsh → powershell → %COMSPEC%, or `config.shell.program`), socket-based event loop with zero idle CPU, Win32 clipboard and `ShellExecuteW` URL opening, FreeType + HarfBuzz built from source with a Windows font-folder scan, config in `%APPDATA%\death-terminal`, config watching, exe icon + version info. Cross-compiles with `zig build -Dtarget=x86_64-windows`; checked under Wine 10 (GUI, Vulkan, fonts, input) — see docs/PLATFORMS.md for what could not be verified
+- macOS: Cocoa window backend (AppKit via dlopen, CAMetalLayer + MoltenVK through `VK_EXT_metal_surface`, CoreGraphics software fallback), NSPasteboard clipboard, Cmd shortcuts, posix PTY on Darwin, kqueue config watching, font-folder scan. Cross-compiles for aarch64/x86_64; **untested at runtime**
+- `window.allow_column_switch` and DECSET 40; DECRQM reports modes 3 and 40
+- `zig build release`: stripped ReleaseFast staged tree + .tar.gz/.zip + SHA256SUMS in `zig-out/release`; `-Dpackages=true` adds the AppImage, .deb and .rpm (nfpm)
+- Packaging: .desktop file, skull/terminal icon (SVG + PNG 16–512, .ico), man page `deathterminal(1)`, AUR PKGBUILD, winget manifests, WiX MSI skeleton, macOS `.app` script, Homebrew cask and formula (packaging/README.md)
+- CI workflow updates (font/SSH deps, cross-compile checks) and a release workflow under `packaging/ci/`, ready to copy into `.github/workflows`
 - Tabs and split panes (docs/TABS.md): every pane has its own PTY, grid, scrollback, selection, search and AI context. Layout tree with right/down splits, resize from the keyboard (Alt+Shift+arrows) or by dragging dividers, directional (Alt+arrows) and click focus, zoom (Ctrl+Shift+Z), equalize, close pane
 - Tab bar (`config.tabs.bar` = auto/top/bottom/hidden): themed, title + cwd, bell / failed / running / activity markers, close buttons, `+`, drag to reorder, double-click (or Ctrl+Shift+Alt+R) to rename, wheel to cycle; new/close/next/prev/move/goto-N actions
 - New tabs and panes start in the focused pane's OSC 7 directory (`config.tabs.inherit_cwd`); SSH palette opens profiles in a tab (Enter), split (Shift+Enter) or window (Alt+Enter)

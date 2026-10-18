@@ -1,6 +1,8 @@
 //! Plugin host tests: sandbox, permissions, hook dispatch, error isolation.
 
 const std = @import("std");
+const builtin = @import("builtin");
+const io = @import("../platform/io.zig");
 const t = std.testing;
 const host_mod = @import("host.zig");
 const Host = host_mod.Host;
@@ -34,7 +36,7 @@ const Fixture = struct {
     fn init() !*Fixture {
         const f = try t.allocator.create(Fixture);
         f.* = .{ .tmp = std.testing.tmpDir(.{}), .root = undefined };
-        f.root = try f.tmp.dir.realpathAlloc(t.allocator, ".");
+        f.root = try @import("../testutil.zig").tmpPath(t.allocator, &f.tmp, ".");
         return f;
     }
 
@@ -479,19 +481,24 @@ test "async: exec results arrive through the wake fd" {
     defer f.deinit();
     try f.start(&.{.{
         "runner",
-        \\dt.exec({ "sh", "-c", "echo out; exit 4" }, { cwd = "/" }, function(r)
-        \\  dt.status.set("r", string.format("%s|%d|%s", tostring(r.ok), r.code, r.stdout))
-        \\end)
+        if (builtin.os.tag == .windows)
+            \\dt.exec({ "cmd.exe", "/d", "/c", "echo out&exit /b 4" }, { cwd = "C:\\" }, function(r)
+            \\  dt.status.set("r", string.format("%s|%d|%s", tostring(r.ok), r.code, r.stdout))
+            \\end)
+        else
+            \\dt.exec({ "sh", "-c", "echo out; exit 4" }, { cwd = "/" }, function(r)
+            \\  dt.status.set("r", string.format("%s|%d|%s", tostring(r.ok), r.code, r.stdout))
+            \\end)
         ,
         &.{.exec},
-        .{ .name = "", .allow = allow(&.{.exec}), .exec = &.{"sh"} },
+        .{ .name = "", .allow = allow(&.{.exec}), .exec = &.{if (builtin.os.tag == .windows) "cmd.exe" else "sh"} },
     }});
     const h = f.host;
     try t.expectEqual(host_mod.Status.running, f.plugin(0).status);
     const deadline = std.time.milliTimestamp() + 5000;
     while (h.segments.items.len == 0 and std.time.milliTimestamp() < deadline) {
-        var pfd = [1]std.posix.pollfd{.{ .fd = h.wakeFd(), .events = std.posix.POLL.IN, .revents = 0 }};
-        _ = try std.posix.poll(&pfd, 100);
+        var pfd = [1]io.PollFd{io.pollFd(h.wakeFd(), io.POLL.IN)};
+        _ = io.poll(&pfd, 100);
         h.tick(std.time.milliTimestamp());
     }
     try t.expectEqualStrings("false|4|out ", h.segments.items[0].text);
@@ -502,7 +509,7 @@ test "examples: the bundled plugins load and do their job" {
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
     const aa = arena.allocator();
-    const dir = std.fs.cwd().realpathAlloc(aa, "plugins") catch return error.SkipZigTest;
+    const dir = @import("../testutil.zig").cwdPath(aa, &.{"plugins"}) catch return error.SkipZigTest;
     const f = try Fixture.init();
     defer f.deinit();
     const paths = registry.Paths{
@@ -558,14 +565,14 @@ test "examples: the bundled plugins load and do their job" {
     try t.expect(!f.noticeContains("after"));
 
     // git_branch: the repo's branch shows up once the cwd is known.
-    const repo = try std.fs.cwd().realpathAlloc(aa, ".");
+    const repo = try @import("../testutil.zig").cwdPath(aa, &.{"."});
     f.host.setInfo(.cwd, repo);
     f.host.emit(.cwd, .{ .map = &.{.{ .key = "cwd", .value = V{ .string = repo } }} });
     const deadline = std.time.milliTimestamp() + 5000;
     var seg: ?[]const u8 = null;
     while (std.time.milliTimestamp() < deadline and seg == null) {
-        var fds = [_]std.posix.pollfd{.{ .fd = f.host.wakeFd(), .events = std.posix.POLL.IN, .revents = 0 }};
-        _ = try std.posix.poll(&fds, 100);
+        var fds = [_]io.PollFd{io.pollFd(f.host.wakeFd(), io.POLL.IN)};
+        _ = io.poll(&fds, 100);
         f.host.pollJobs();
         for (f.host.segments.items) |s| if (std.mem.eql(u8, s.id, "branch")) {
             seg = s.text;

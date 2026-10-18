@@ -9,9 +9,13 @@ const w = if (builtin.os.tag == .windows) @cImport({
     @cInclude("windows.h");
 }) else struct {};
 
+/// The C HWND type (a [*c] pointer, so no alignment assertions: window
+/// handles needn't be 4-aligned).
+const Hwnd = if (builtin.os.tag == .windows) w.HWND else ?*anyopaque;
+
 pub const State = struct {
     allocator: std.mem.Allocator = undefined,
-    hwnd: ?*anyopaque = null,
+    hwnd: Hwnd = null,
     hinstance: ?*anyopaque = null,
     width: u32 = 0,
     height: u32 = 0,
@@ -76,7 +80,7 @@ pub fn presentRgba(st: *State, pixels: []const u32, width: u32, height: u32) voi
 }
 
 pub fn hwndPtr(st: *const State) ?*anyopaque {
-    return st.hwnd;
+    return @ptrCast(st.hwnd);
 }
 
 pub fn instancePtr(st: *const State) ?*anyopaque {
@@ -103,8 +107,9 @@ const Win = if (builtin.os.tag == .windows) struct {
         wc.lpfnWndProc = wndProc;
         wc.hInstance = hinstance;
         wc.lpszClassName = class_name;
-        wc.hCursor = w.LoadCursorW(null, w.IDC_ARROW);
-        wc.hbrBackground = @ptrFromInt(@as(usize, @intCast(w.COLOR_WINDOW + 1)));
+        wc.hCursor = w.LoadCursorW(null, @ptrFromInt(32512)); // IDC_ARROW
+        // No class brush: we paint every pixel (WM_ERASEBKGND is a no-op).
+        wc.hbrBackground = null;
         const atom = w.RegisterClassW(&wc);
         if (atom == 0) {
             const err = w.GetLastError();
@@ -142,7 +147,7 @@ const Win = if (builtin.os.tag == .windows) struct {
     }
 
     fn setClipboard(st: *State, text: []const u8) void {
-        const hwnd: w.HWND = @ptrCast(@alignCast(st.hwnd orelse return));
+        const hwnd = st.hwnd orelse return;
         const wide = std.unicode.utf8ToUtf16LeAllocZ(st.allocator, text) catch return;
         defer st.allocator.free(wide);
         const bytes = (wide.len + 1) * 2;
@@ -164,7 +169,7 @@ const Win = if (builtin.os.tag == .windows) struct {
     }
 
     fn readClipboard(st: *State) void {
-        const hwnd: w.HWND = @ptrCast(@alignCast(st.hwnd orelse return));
+        const hwnd = st.hwnd orelse return;
         if (w.OpenClipboard(hwnd) == 0) return;
         defer _ = w.CloseClipboard();
         const h = w.GetClipboardData(w.CF_UNICODETEXT) orelse return;
@@ -183,7 +188,7 @@ const Win = if (builtin.os.tag == .windows) struct {
             st.dib_pixels = &.{};
         }
         if (st.hwnd) |hwnd| {
-            _ = w.DestroyWindow(@ptrCast(@alignCast(hwnd)));
+            _ = w.DestroyWindow(hwnd);
             st.hwnd = null;
         }
         st.* = .{};
@@ -214,8 +219,7 @@ const Win = if (builtin.os.tag == .windows) struct {
     }
 
     fn presentRgba(st: *State, pixels: []const u32, width: u32, height: u32) void {
-        const hwnd_ptr = st.hwnd orelse return;
-        const hwnd: w.HWND = @ptrCast(@alignCast(hwnd_ptr));
+        const hwnd = st.hwnd orelse return;
         if (width == 0 or height == 0) return;
         const count = @as(usize, width) * @as(usize, height);
         if (pixels.len < count) return;
@@ -249,14 +253,14 @@ const Win = if (builtin.os.tag == .windows) struct {
         );
     }
 
-    fn wndProc(hwnd: w.HWND, msg: w.UINT, wparam: w.WPARAM, lparam: w.LPARAM) callconv(w.WINAPI) w.LRESULT {
+    fn wndProc(hwnd: w.HWND, msg: w.UINT, wparam: w.WPARAM, lparam: w.LPARAM) callconv(std.os.windows.WINAPI) w.LRESULT {
         if (msg == w.WM_NCCREATE) {
             const cs: *w.CREATESTRUCTW = @ptrFromInt(@as(usize, @intCast(lparam)));
-            _ = w.SetWindowLongPtrW(hwnd, w.GWLP_USERDATA, @intFromPtr(cs.lpCreateParams));
+            _ = w.SetWindowLongPtrW(hwnd, w.GWLP_USERDATA, @bitCast(@intFromPtr(cs.lpCreateParams)));
         }
         const raw = w.GetWindowLongPtrW(hwnd, w.GWLP_USERDATA);
         if (raw == 0) return w.DefWindowProcW(hwnd, msg, wparam, lparam);
-        const st: *State = @ptrFromInt(@as(usize, @intCast(raw)));
+        const st: *State = @ptrFromInt(@as(usize, @bitCast(raw)));
 
         switch (msg) {
             w.WM_CLOSE => {
@@ -267,6 +271,7 @@ const Win = if (builtin.os.tag == .windows) struct {
                 w.PostQuitMessage(0);
                 return 0;
             },
+            w.WM_ERASEBKGND => return 1,
             w.WM_PAINT => {
                 var ps: w.PAINTSTRUCT = undefined;
                 _ = w.BeginPaint(hwnd, &ps);
@@ -297,7 +302,7 @@ const Win = if (builtin.os.tag == .windows) struct {
                     return 0;
                 }
                 // Backspace is sent from WM_KEYDOWN as DEL; drop its translated 0x08.
-                if (cp == 0x08 and (w.GetKeyState(w.VK_BACK) & 0x8000) != 0) return 0;
+                if (cp == 0x08 and w.GetKeyState(w.VK_BACK) < 0) return 0;
                 var buf: [8]u8 = undefined;
                 const n = std.unicode.utf8Encode(cp, &buf) catch 0;
                 if (n > 0) st.queue.pushText(buf[0..n], false);
@@ -398,9 +403,9 @@ const Win = if (builtin.os.tag == .windows) struct {
 
     fn currentMods() input.Mods {
         return .{
-            .shift = (w.GetKeyState(w.VK_SHIFT) & 0x8000) != 0,
-            .ctrl = (w.GetKeyState(w.VK_CONTROL) & 0x8000) != 0,
-            .alt = (w.GetKeyState(w.VK_MENU) & 0x8000) != 0,
+            .shift = w.GetKeyState(w.VK_SHIFT) < 0,
+            .ctrl = w.GetKeyState(w.VK_CONTROL) < 0,
+            .alt = w.GetKeyState(w.VK_MENU) < 0,
         };
     }
 
@@ -438,13 +443,13 @@ const Win = if (builtin.os.tag == .windows) struct {
         const hwnd_ptr = st.hwnd orelse return;
         const wide = std.unicode.utf8ToUtf16LeAllocZ(st.allocator, title) catch return;
         defer st.allocator.free(wide);
-        _ = w.SetWindowTextW(@ptrCast(@alignCast(hwnd_ptr)), wide.ptr);
+        _ = w.SetWindowTextW(hwnd_ptr, wide.ptr);
     }
 
     fn enableDpiAwareness() void {
         const user32 = w.GetModuleHandleW(std.unicode.utf8ToUtf16LeStringLiteral("user32.dll"));
         if (user32 == null) return;
-        const SetContext = *const fn (w.DPI_AWARENESS_CONTEXT) callconv(w.WINAPI) w.BOOL;
+        const SetContext = *const fn (w.DPI_AWARENESS_CONTEXT) callconv(std.os.windows.WINAPI) w.BOOL;
         const proc = w.GetProcAddress(user32, "SetProcessDpiAwarenessContext");
         if (proc) |p| {
             const fn_ptr: SetContext = @ptrCast(p);
@@ -455,7 +460,7 @@ const Win = if (builtin.os.tag == .windows) struct {
     fn windowScale(hwnd: w.HWND) f32 {
         const user32 = w.GetModuleHandleW(std.unicode.utf8ToUtf16LeStringLiteral("user32.dll"));
         if (user32 == null) return 1.0;
-        const GetDpi = *const fn (w.HWND) callconv(w.WINAPI) w.UINT;
+        const GetDpi = *const fn (w.HWND) callconv(std.os.windows.WINAPI) w.UINT;
         const proc = w.GetProcAddress(user32, "GetDpiForWindow");
         if (proc) |p| {
             const fn_ptr: GetDpi = @ptrCast(p);

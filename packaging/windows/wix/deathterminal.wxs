@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  WiX v4 MSI skeleton (optional; the zip is the primary Windows artifact).
+  Build on Windows from the staged release directory:
+    wix build packaging\windows\wix\deathterminal.wxs ^
+      -d Stage=zig-out\release\deathterminal-0.1.0-x86_64-windows ^
+      -o zig-out\release\deathterminal-0.1.0-x86_64.msi
+  Not built or tested on the Linux box.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="DeathTerminal" Manufacturer="DeathTerminal" Version="0.1.0"
+           UpgradeCode="6f0f3c3e-4f8e-4d84-9a7e-2f1b0d1e7c55" Scope="perUserOrMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer DeathTerminal is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Icon Id="DeathTerminalIcon" SourceFile="..\deathterminal.ico" />
+    <Property Id="ARPPRODUCTICON" Value="DeathTerminalIcon" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="DeathTerminal">
+        <Component Id="MainExe" Guid="*">
+          <File Source="$(var.Stage)\deathterminal.exe" KeyPath="yes" />
+          <Environment Id="PathEntry" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="yes" />
+        </Component>
+        <Component Id="Docs" Guid="*">
+          <File Source="$(var.Stage)\README.md" />
+          <File Source="$(var.Stage)\LICENSE" />
+          <File Source="$(var.Stage)\CHANGELOG.md" />
+          <File Source="$(var.Stage)\config.example.lua" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut" Guid="*">
+        <Shortcut Id="DeathTerminalShortcut" Name="DeathTerminal" Target="[INSTALLFOLDER]deathterminal.exe"
+                  Arguments="--gui" WorkingDirectory="INSTALLFOLDER" Icon="DeathTerminalIcon" />
+        <RegistryValue Root="HKCU" Key="Software\DeathTerminal" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="Main">
+      <ComponentRef Id="MainExe" />
+      <ComponentRef Id="Docs" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>

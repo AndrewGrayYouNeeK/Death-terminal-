@@ -212,7 +212,7 @@ pub const Client = struct {
     fn announce(self: *Client, up: bool) void {
         if (up == self.announced) return;
         self.announced = up;
-        const nonce = posix.getenv("DT_SSH_NONCE") orelse return;
+        const nonce = @import("../platform/env.zig").get("DT_SSH_NONCE") orelse return;
         if (nonce.len == 0 or nonce.len > 64) return;
         for (nonce) |ch| if (!std.ascii.isAlphanumeric(ch)) return;
         var db: [300]u8 = undefined;
@@ -260,7 +260,7 @@ pub const Client = struct {
         }
         if (self.tty.isTty()) {
             const sz = self.tty.size();
-            const term = posix.getenv("TERM") orelse "xterm-256color";
+            const term = @import("../platform/env.zig").get("TERM") orelse "xterm-256color";
             // VINTR ^C, VERASE ^?, IUTF8 on, TTY_OP_END.
             const modes = [_]u8{ 1, 0, 0, 0, 3, 3, 0, 0, 0, 0x7f, 42, 0, 0, 0, 1, 0 };
             if (c.libssh2_channel_request_pty_ex(chan, term.ptr, @intCast(term.len), &modes, modes.len, sz.cols, sz.rows, sz.xpx, sz.ypx) != 0)
@@ -856,7 +856,7 @@ pub fn main(a: std.mem.Allocator, args: []const []const u8) u8 {
         std.debug.print("ssh: cannot use \"{s}\": {s} (expected a profile from config.ssh.profiles, a ~/.ssh/config Host, or user@host[:port])\n", .{ tname, @errorName(err) });
         return exit_conn_error;
     };
-    const home = posix.getenv("HOME") orelse "/";
+    const home = @import("../platform/env.zig").get("HOME") orelse "/";
     const kh_path = ssh_config.expandTilde(aa, cfg.ssh_known_hosts, home) catch return exit_conn_error;
 
     installSignals() catch {};

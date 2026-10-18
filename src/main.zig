@@ -6,14 +6,14 @@ const shell_inject = @import("app/shell_inject.zig");
 const ssh_target = @import("ssh/target.zig");
 // libssh2 is only built for Linux (see build.zig addLibssh2).
 const ssh_client = if (builtin.os.tag == .linux) @import("ssh/client.zig") else @import("ssh/unsupported.zig");
-const ssh_control = @import("ssh/control.zig");
+const ssh_control = if (builtin.os.tag == .linux) @import("ssh/control.zig") else @import("ssh/control_unsupported.zig");
 const lua_engine = @import("scripting/lua_engine.zig");
 const config = @import("config/config.zig");
 const event_loop = @import("app/event_loop.zig");
 const plugin_registry = @import("plugins/registry.zig");
 const spawn = @import("app/spawn.zig");
 
-const VERSION = "0.1.0";
+const VERSION = @import("build_options").version;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -111,6 +111,7 @@ pub fn main() !void {
     var term = try terminal.Terminal.initWithShell(allocator, cfg.rows, cfg.cols, cfg.scrollback_lines, sp.opts);
     defer term.deinit();
     term.setSshNonce(sp.nonce);
+    event_loop.applyColumnSwitch(&term, cfg.allow_column_switch, true);
 
     std.debug.print("[3/5] Initializing Lua scripting engine...\n", .{});
     var lua = try lua_engine.LuaEngine.init(allocator);
@@ -177,7 +178,7 @@ fn sshCtl(args: []const []const u8) u8 {
         std.debug.print("usage: deathterminal --ssh-ctl <pid> status|list|toggle <n>|on <n>|off <n>|add <spec>|reconnect\n", .{});
         return 2;
     }
-    const pid = std.fmt.parseInt(std.posix.pid_t, args[i + 1], 10) catch {
+    const pid = std.fmt.parseInt(if (builtin.os.tag == .windows) i32 else std.posix.pid_t, args[i + 1], 10) catch {
         std.debug.print("ssh-ctl: bad pid {s}\n", .{args[i + 1]});
         return 2;
     };
@@ -248,7 +249,8 @@ fn printHelp() !void {
         \\    -h, --help       Print this help message
         \\    -v, --version    Print version information
         \\    --config <file>  Config file (.lua, or legacy key = value .txt). Default:
-        \\                     $XDG_CONFIG_HOME/death-terminal/config.lua (~/.config/...)
+        \\                     $XDG_CONFIG_HOME/death-terminal/config.lua (~/.config/...);
+        \\                     Windows: %APPDATA%\\death-terminal\\config.lua
         \\    --print-default-config  Print a documented config.lua with every default
         \\    --lua-unsafe     Give config.lua the full Lua library (io, os.execute, require)
         \\    --print-shell-integration <bash|zsh|fish>  Print the OSC 133 shell snippet
@@ -263,11 +265,12 @@ fn printHelp() !void {
         \\    --no-plugins     Start without loading any plugin
         \\    --no-ai          Disable AI command suggestions
         \\    --headless       Run without a GUI window (default)
-        \\    --gui            Open a native window (Wayland/X11/Win32; falls back to headless)
+        \\    --gui            Open a native window (Wayland/X11/Win32/Cocoa; falls back to headless)
         \\    --scale <n>      UI scale 1–4 (default: auto from DPI / compositor / env)
-        \\    --backend <name>  Window backend: auto | x11 | wayland | win32
+        \\    --backend <name>  Window backend: auto | x11 | wayland | win32 | cocoa
         \\    --font <retro|default>  Font renderer (retro = built-in 8x8 bitmap)
-        \\    --font-family <name>    Font family via fontconfig (default: bundled JetBrains Mono)
+        \\    --font-family <name>    Font family (fontconfig on Linux, font folders on Windows/macOS;
+        \\                            default: bundled JetBrains Mono)
         \\    --font-size <pt>        Font size in points (default: 11; Ctrl+= / Ctrl+- / Ctrl+0 zoom)
         \\    --line-height <n>       Cell height multiplier (default: 1.0)
         \\
@@ -288,6 +291,8 @@ fn printHelp() !void {
 }
 
 test {
+    _ = @import("testutil.zig");
+    _ = @import("net/relay.zig");
     _ = @import("terminal/terminal.zig");
     _ = @import("terminal/ansi_parser.zig");
     _ = @import("terminal/scrollback.zig");
@@ -331,6 +336,12 @@ test {
     _ = @import("plugins/registry.zig");
     _ = @import("platform/wayland_backend.zig");
     _ = @import("platform/win32_backend.zig");
+    _ = @import("platform/io.zig");
+    _ = @import("platform/env.zig");
+    _ = @import("platform/objc.zig");
+    _ = @import("platform/cocoa_backend.zig");
+    _ = @import("platform/procinfo.zig");
+    _ = @import("terminal/pty_windows.zig");
     _ = @import("app/event_loop.zig");
     _ = @import("app/config_watch.zig");
     _ = @import("config/config.zig");
@@ -345,16 +356,19 @@ test {
     _ = @import("ai/engine.zig");
     _ = @import("app/ai_controller.zig");
     _ = @import("app/shell_inject.zig");
-    _ = @import("ssh/forward.zig");
-    _ = @import("ssh/ssh_config.zig");
-    _ = @import("ssh/target.zig");
-    _ = @import("ssh/tty.zig");
-    _ = @import("ssh/keyfile.zig");
-    _ = @import("ssh/known_hosts.zig");
-    _ = @import("ssh/bridge.zig");
-    _ = @import("ssh/session.zig");
-    _ = @import("ssh/control.zig");
-    _ = @import("ssh/client.zig");
+    // The built-in SSH client is Linux-only.
+    if (builtin.os.tag == .linux) {
+        _ = @import("ssh/forward.zig");
+        _ = @import("ssh/ssh_config.zig");
+        _ = @import("ssh/target.zig");
+        _ = @import("ssh/tty.zig");
+        _ = @import("ssh/keyfile.zig");
+        _ = @import("ssh/known_hosts.zig");
+        _ = @import("ssh/bridge.zig");
+        _ = @import("ssh/session.zig");
+        _ = @import("ssh/control.zig");
+        _ = @import("ssh/client.zig");
+    }
     _ = @import("scripting/lua_engine.zig");
 }
 

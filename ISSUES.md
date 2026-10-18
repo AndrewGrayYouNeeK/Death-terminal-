@@ -45,7 +45,7 @@
 - [x] Cursor movement and control
 - [x] Scrollback buffer implementation
 - [x] PTY on Unix (Linux/macOS)
-- [ ] PTY on Windows (ConPTY)
+- [x] PTY on Windows (ConPTY; checked under Wine only, see docs/PLATFORMS.md)
 - [x] UTF-8 decoding with U+FFFD for malformed input
 - [x] Wide characters (East Asian wide/fullwidth, emoji) as 2-column cells
 - [x] Combining marks stored on the base cell (up to 2; shaping waits for real fonts)
@@ -139,7 +139,7 @@
 - [x] AI integration tests (mock HTTP server: streaming, errors, timeouts, cancel, offline)
 - [ ] SSH connection tests
 - [ ] Lua scripting tests
-- [ ] Cross-platform testing (Linux, macOS, Windows)
+- [ ] Cross-platform testing (Linux done; Windows under Wine; macOS compile-only)
 - [ ] Performance benchmarks
 - [ ] Memory leak detection
 - [x] CI/CD pipeline setup
@@ -149,7 +149,8 @@
 - [x] Theme system implementation (7 bundled themes + per-colour overrides)
 - [x] Keybinding customization
 - [x] Font selection and management (real fonts + optional retro 8x8 bitmap font)
-- [ ] Fonts on macOS/Windows (FreeType is Linux-only for now; other platforms use the retro font)
+- [x] Fonts on macOS/Windows (FreeType + HarfBuzz from source, font-folder scan instead of fontconfig)
+- [ ] Colour emoji from sbix/CBDT fonts (Apple Color Emoji) on macOS/Windows: needs libpng in the FreeType build
 - [ ] Emoji ZWJ sequences / flags composed into one glyph
 - [x] Color scheme support
 - [x] Terminal size configuration
@@ -175,9 +176,10 @@
 - [ ] Video demos or GIFs
 - [ ] Community chat setup
 - [x] GitHub Actions for CI
-- [ ] Release automation
-- [ ] Package managers (Homebrew, AUR, etc.)
-- [ ] macOS window backend
+- [ ] Release automation (workflow ready in packaging/ci/release.yml, not installed yet)
+- [x] Package managers: AUR PKGBUILD, winget, Homebrew cask/formula skeletons (not submitted)
+- [x] macOS window backend (Cocoa + MoltenVK; untested at runtime)
+- [ ] Runtime testing on real Windows and macOS hardware
 
 ## 📊 Current Status Summary
 

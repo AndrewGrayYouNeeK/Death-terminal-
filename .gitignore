@@ -33,8 +33,10 @@ vendor/*
 # Vendored sources that are part of the build
 !vendor/lua-5.4.7/
 !vendor/libssh2-1.11.1/
+!vendor/vulkan-headers/
 
 # Distribution
+packaging/.cache/
 dist/
 release/
 *.tar.gz

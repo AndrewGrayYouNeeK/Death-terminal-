@@ -4,11 +4,16 @@
 //!
 //! Blocking by design: it runs on the AI worker thread. `Cancel` aborts an
 //! in-flight request from another thread by shutting the socket down, and
-//! a receive timeout bounds every read.
+//! a receive timeout bounds every read. On Windows neither reaches std's
+//! ReadFile, so the connection goes through a relay (net/relay.zig) that
+//! enforces both.
+const builtin = @import("builtin");
 
 const std = @import("std");
 const posix = std.posix;
 const dial = @import("../net/dial.zig");
+const Relay = @import("../net/relay.zig").Relay;
+const use_relay = builtin.os.tag == .windows;
 
 pub const Message = struct {
     role: []const u8,
@@ -49,7 +54,11 @@ pub const Cancel = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.cancelled = true;
-        if (self.fd) |fd| posix.shutdown(fd, .both) catch {};
+        // Windows: the relay sees `cancelled` and ends the stream. A
+        // shutdown() under a blocked ReadFile makes Wine fail that read with
+        // ERROR_IO_PENDING, which std treats as unreachable.
+        if (use_relay) return;
+        if (self.fd) |fd| dial.shutdownSocket(fd, .both);
     }
 
     pub fn reset(self: *Cancel) void {
@@ -109,7 +118,9 @@ pub fn chatStream(allocator: std.mem.Allocator, req: Request, cancel: *Cancel, s
 
     // Our own connection, so name lookup and connect obey the deadline
     // (std.http would block in tcpConnectToHost).
-    const conn = try openConnection(&client, uri, req.timeout_ms, deadline, cancel);
+    var relay: ?*Relay = null;
+    defer if (relay) |rl| rl.finish();
+    const conn = try openConnection(&client, uri, req.timeout_ms, deadline, cancel, &relay);
 
     var r = client.open(.POST, uri, .{
         .connection = conn,
@@ -153,7 +164,15 @@ pub fn chatStream(allocator: std.mem.Allocator, req: Request, cancel: *Cancel, s
         if (left <= 0) return error.Timeout;
         setTimeout(fd, @intCast(left));
         const n = r.read(&buf) catch |err| return mapErr(err, cancel, deadline);
-        if (n == 0) break;
+        if (n == 0) {
+            // A relay that gave up ends the stream early; that's not success.
+            if (relay) |rl| switch (rl.why()) {
+                .timeout => return error.Timeout,
+                .cancelled => return error.Cancelled,
+                .closed, .none => {},
+            };
+            break;
+        }
         if (sse == null) sse = sniffSse(buf[0..n]);
         if (sse == true) {
             if (whole.items.len > 0) {
@@ -192,7 +211,7 @@ fn cancelCheck(ctx: *anyopaque) bool {
 /// Connect (and for https, handshake) within the deadline and register
 /// the connection with `client`'s pool, which closes it when the request
 /// is done.
-fn openConnection(client: *std.http.Client, uri: std.Uri, timeout_ms: u32, deadline: i64, cancel: *Cancel) Error!*std.http.Client.Connection {
+fn openConnection(client: *std.http.Client, uri: std.Uri, timeout_ms: u32, deadline: i64, cancel: *Cancel, relay_out: *?*Relay) Error!*std.http.Client.Connection {
     const Conn = std.http.Client.Connection;
     const protocol: Conn.Protocol = if (std.ascii.eqlIgnoreCase(uri.scheme, "http"))
         .plain
@@ -216,12 +235,22 @@ fn openConnection(client: *std.http.Client, uri: std.Uri, timeout_ms: u32, deadl
         error.OutOfMemory => error.OutOfMemory,
         else => error.Offline,
     };
+    // The socket std will use (and close): the real one, or the relay's end.
+    var std_fd = fd;
     var fd_owned = true;
-    errdefer if (fd_owned) posix.close(fd);
-    if (!cancel.attach(fd)) return error.Cancelled;
+    errdefer if (fd_owned) dial.closeSocket(std_fd);
+    if (use_relay) {
+        // The relay owns the real socket from here; std gets `theirs`.
+        fd_owned = false;
+        const rl = Relay.start(client.allocator, fd, deadline, cancel, cancelCheck) catch return error.OutOfMemory;
+        relay_out.* = rl;
+        std_fd = rl.theirs;
+        fd_owned = true;
+    }
+    if (!cancel.attach(std_fd)) return error.Cancelled;
     defer cancel.detach();
-    setTimeout(fd, timeout_ms);
-    const stream = std.net.Stream{ .handle = fd };
+    setTimeout(std_fd, timeout_ms);
+    const stream = std.net.Stream{ .handle = std_fd };
 
     const allocator = client.allocator;
     const node = try allocator.create(std.http.Client.ConnectionPool.Node);
@@ -259,6 +288,13 @@ fn openConnection(client: *std.http.Client, uri: std.Uri, timeout_ms: u32, deadl
 }
 
 fn setTimeout(fd: posix.socket_t, ms: u32) void {
+    if (@import("builtin").os.tag == .windows) {
+        // Winsock takes the timeout as a DWORD of milliseconds.
+        const v: u32 = ms;
+        posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.RCVTIMEO, std.mem.asBytes(&v)) catch {};
+        posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.SNDTIMEO, std.mem.asBytes(&v)) catch {};
+        return;
+    }
     const tv = posix.timeval{ .tv_sec = @intCast(ms / 1000), .tv_usec = @intCast((ms % 1000) * 1000) };
     posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.RCVTIMEO, std.mem.asBytes(&tv)) catch {};
     posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.SNDTIMEO, std.mem.asBytes(&tv)) catch {};

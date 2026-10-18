@@ -112,7 +112,7 @@ less) the bar covers the application's last row.
 
 Ctrl+click on `http(s)://`, `ftp://`, `file://` or `mailto:` text (detected
 across soft wraps, trailing punctuation trimmed, parentheses balanced) or on an
-OSC 8 hyperlink runs `url_open_command` (default `xdg-open`, `open` on macOS)
+OSC 8 hyperlink runs `url_open_command` (default `xdg-open`, `open` on macOS, the ShellExecute default handler on Windows)
 with the URL as its only argument — no shell is involved. Other schemes are
 refused.
 

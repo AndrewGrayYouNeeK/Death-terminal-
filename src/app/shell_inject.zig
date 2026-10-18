@@ -14,6 +14,8 @@
 //! must be owned by the user).
 
 const std = @import("std");
+const builtin = @import("builtin");
+const env_mod = @import("../platform/env.zig");
 const posix = std.posix;
 const pty = @import("../terminal/pty.zig");
 const scripts = @import("shell_scripts");
@@ -47,7 +49,8 @@ pub fn plan(arena: std.mem.Allocator, opts: pty.ShellOptions, program: []const u
             if (opts.args.len != 0) return opts;
             const args = try arena.alloc([]const u8, 2);
             args[0] = "--rcfile";
-            args[1] = try std.fs.path.join(arena, &.{ dir, "bashrc" });
+            // "/" like the other shells: MSYS/Cygwin bash on Windows wants it too.
+            args[1] = try std.fmt.allocPrint(arena, "{s}/bashrc", .{dir});
             out.args = args;
         },
         .zsh => {
@@ -101,13 +104,17 @@ pub fn writeFiles(buf: []u8) ?[]const u8 {
         .{ "bashrc", bashrc },
         .{ "zsh/.zshenv", zshenv },
     };
-    for (files) |f| d.writeFile(.{ .sub_path = f[0], .data = f[1], .flags = .{ .mode = 0o600 } }) catch return null;
+    for (files) |f| d.writeFile(.{ .sub_path = f[0], .data = f[1], .flags = .{ .mode = if (builtin.os.tag == .windows) 0 else 0o600 } }) catch return null;
     return dir;
 }
 
+extern "c" fn getuid() u32;
+const c_getuid = getuid;
+
 fn runtimeDir(buf: []u8) ?[]const u8 {
-    const uid = std.os.linux.getuid();
-    const path = if (posix.getenv("XDG_RUNTIME_DIR")) |x|
+    if (builtin.os.tag == .windows) return null;
+    const uid = c_getuid();
+    const path = if (env_mod.get("XDG_RUNTIME_DIR")) |x|
         std.fmt.bufPrint(buf, "{s}/deathterminal", .{x}) catch return null
     else
         std.fmt.bufPrint(buf, "/tmp/deathterminal-{d}", .{uid}) catch return null;
@@ -116,11 +123,8 @@ fn runtimeDir(buf: []u8) ?[]const u8 {
         else => return null,
     };
     // Refuse a directory someone else owns (or a symlink to one).
-    var st: std.os.linux.Stat = undefined;
-    var zbuf: [std.fs.max_path_bytes]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&zbuf, "{s}", .{path}) catch return null;
-    if (std.os.linux.lstat(z, &st) != 0) return null;
-    if (st.uid != uid or (st.mode & std.os.linux.S.IFMT) != std.os.linux.S.IFDIR) return null;
+    const st = posix.fstatat(posix.AT.FDCWD, path, posix.AT.SYMLINK_NOFOLLOW) catch return null;
+    if (st.uid != uid or (st.mode & posix.S.IFMT) != posix.S.IFDIR) return null;
     if (st.mode & 0o077 != 0) return null;
     return path;
 }
@@ -128,12 +132,14 @@ fn runtimeDir(buf: []u8) ?[]const u8 {
 /// `opts` with the integration added when `enabled` and the shell is
 /// supported. On any failure the shell starts unchanged.
 pub fn apply(arena: std.mem.Allocator, opts: pty.ShellOptions, enabled: bool) pty.ShellOptions {
+    // bash/zsh/fish only; PowerShell and cmd get no integration (yet).
+    if (builtin.os.tag == .windows) return opts;
     if (!enabled) return opts;
-    const program: []const u8 = if (opts.program.len > 0) opts.program else posix.getenv("SHELL") orelse "/bin/sh";
+    const program: []const u8 = if (opts.program.len > 0) opts.program else env_mod.get("SHELL") orelse "/bin/sh";
     if (detect(program) == null) return opts;
     const buf = arena.alloc(u8, std.fs.max_path_bytes) catch return opts;
     const dir = writeFiles(buf) orelse return opts;
-    var out = plan(arena, opts, program, dir, posix.getenv("ZDOTDIR")) catch return opts;
+    var out = plan(arena, opts, program, dir, env_mod.get("ZDOTDIR")) catch return opts;
     // bash and zsh find the snippets through DT_SI_DIR.
     var env = std.ArrayList([]const u8).init(arena);
     env.appendSlice(out.env) catch return opts;

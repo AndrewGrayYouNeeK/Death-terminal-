@@ -93,8 +93,10 @@ pub fn terminalFor(a: std.mem.Allocator, cfg: *const config.Config, ctx: Context
 /// Directory a new pane should start in, taken from `term`'s OSC 7 report
 /// (local file:// URIs only, and only if it still exists). "" = none.
 pub fn inheritedCwd(term: *const terminal.Terminal, buf: []u8) []const u8 {
-    const dir = terminal.shell_integration.cwdFromUri(term.cwd_uri, buf) orelse return "";
+    var dir = terminal.shell_integration.cwdFromUri(term.cwd_uri, buf) orelse return "";
     if (!localUri(term.cwd_uri)) return "";
+    // Windows: file:///C:/Users/me → C:/Users/me.
+    if (builtin.os.tag == .windows and dir.len >= 3 and dir[0] == '/' and dir[2] == ':') dir = dir[1..];
     var d = std.fs.openDirAbsolute(dir, .{}) catch return "";
     d.close();
     return dir;
@@ -106,6 +108,10 @@ fn localUri(uri: []const u8) bool {
     const slash = std.mem.indexOfScalar(u8, rest, '/') orelse return false;
     const host = rest[0..slash];
     if (host.len == 0 or std.mem.eql(u8, host, "localhost")) return true;
+    if (builtin.os.tag == .windows) {
+        const me = @import("../platform/env.zig").get("COMPUTERNAME") orelse return false;
+        return std.ascii.eqlIgnoreCase(host, me);
+    }
     var hb: [std.posix.HOST_NAME_MAX]u8 = undefined;
     const me = std.posix.gethostname(&hb) catch return false;
     return std.mem.eql(u8, host, me);

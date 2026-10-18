@@ -12,6 +12,8 @@
 //!   state, log  $XDG_STATE_HOME/death-terminal/plugins.json, plugins.log
 
 const std = @import("std");
+const builtin = @import("builtin");
+const env_mod = @import("../platform/env.zig");
 const manifest = @import("manifest.zig");
 const permissions = @import("permissions.zig");
 const PluginConfig = @import("plugin_config.zig").PluginConfig;
@@ -26,17 +28,21 @@ pub const Paths = struct {
 
     /// `configured` is config.plugins_dir ("" = default); "~/" is expanded.
     pub fn resolve(a: std.mem.Allocator, configured: []const u8) !Paths {
-        return resolveEnv(a, configured, std.posix.getenv);
+        return resolveEnv(a, configured, env_mod.get);
     }
 
     pub fn resolveEnv(a: std.mem.Allocator, configured: []const u8, env: *const fn ([]const u8) ?[]const u8) !Paths {
-        const home = env("HOME") orelse "";
-        const config_home = try xdg(a, env, "XDG_CONFIG_HOME", home, ".config");
-        const data_home = try xdg(a, env, "XDG_DATA_HOME", home, ".local/share");
-        const state_home = try xdg(a, env, "XDG_STATE_HOME", home, ".local/state");
+        const win = builtin.os.tag == .windows;
+        // Windows: config in %APPDATA% (next to config.lua), data and state
+        // in %LOCALAPPDATA%; ~ is %USERPROFILE%. HOME is usually unset there.
+        const home = (if (win) env("USERPROFILE") orelse env("HOME") else env("HOME")) orelse "";
+        const config_home = if (win) if (env("APPDATA")) |x| try a.dupe(u8, x) else try xdg(a, env, "XDG_CONFIG_HOME", home, ".config") else try xdg(a, env, "XDG_CONFIG_HOME", home, ".config");
+        const local = if (win) env("LOCALAPPDATA") else null;
+        const data_home = if (local) |x| try a.dupe(u8, x) else try xdg(a, env, "XDG_DATA_HOME", home, ".local/share");
+        const state_home = if (local) |x| try a.dupe(u8, x) else try xdg(a, env, "XDG_STATE_HOME", home, ".local/state");
         const dir = if (configured.len == 0)
             try std.fs.path.join(a, &.{ config_home, "death-terminal", "plugins" })
-        else if (std.mem.startsWith(u8, configured, "~/"))
+        else if (std.mem.startsWith(u8, configured, "~/") or (win and std.mem.startsWith(u8, configured, "~\\")))
             try std.fs.path.join(a, &.{ home, configured[2..] })
         else
             try a.dupe(u8, configured);
@@ -330,7 +336,7 @@ test "discover, decide and plan" {
     try d.makePath("plugins/off");
     try d.writeFile(.{ .sub_path = "plugins/off/manifest.lua", .data = "return { name = 'off', version = '1' }" });
     try d.writeFile(.{ .sub_path = "plugins/off/init.lua", .data = "" });
-    const root = try d.realpathAlloc(a, ".");
+    const root = try @import("../testutil.zig").tmpPath(a, &tmp, ".");
     const paths = Paths{
         .plugins_dir = try std.fs.path.join(a, &.{ root, "plugins" }),
         .data_root = try std.fs.path.join(a, &.{ root, "data" }),
@@ -384,6 +390,23 @@ test "paths follow XDG" {
             return null;
         }
     }.get;
+    if (builtin.os.tag == .windows) {
+        const wenv = struct {
+            fn get(name: []const u8) ?[]const u8 {
+                if (std.mem.eql(u8, name, "USERPROFILE")) return "C:\\Users\\u";
+                if (std.mem.eql(u8, name, "APPDATA")) return "C:\\Users\\u\\AppData\\Roaming";
+                if (std.mem.eql(u8, name, "LOCALAPPDATA")) return "C:\\Users\\u\\AppData\\Local";
+                return null;
+            }
+        }.get;
+        const w = try Paths.resolveEnv(arena.allocator(), "", wenv);
+        try std.testing.expectEqualStrings("C:\\Users\\u\\AppData\\Roaming\\death-terminal\\plugins", w.plugins_dir);
+        try std.testing.expectEqualStrings("C:\\Users\\u\\AppData\\Local\\death-terminal\\plugins", w.data_root);
+        try std.testing.expectEqualStrings("C:\\Users\\u\\AppData\\Local\\death-terminal\\plugins.json", w.state_file);
+        const wq = try Paths.resolveEnv(arena.allocator(), "~\\dt", wenv);
+        try std.testing.expectEqualStrings("C:\\Users\\u\\dt", wq.plugins_dir);
+        return;
+    }
     const p = try Paths.resolveEnv(arena.allocator(), "", env);
     try std.testing.expectEqualStrings("/home/u/.config/death-terminal/plugins", p.plugins_dir);
     try std.testing.expectEqualStrings("/home/u/.local/share/death-terminal/plugins", p.data_root);

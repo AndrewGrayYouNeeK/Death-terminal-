@@ -156,7 +156,7 @@ test "lua config: sandbox hides io, os.execute and require" {
         \\assert(io == nil, "io")
         \\assert(os.execute == nil, "os.execute")
         \\assert(os.remove == nil and require == nil and dofile == nil and loadfile == nil and debug == nil)
-        \\assert(os.getenv("HOME") ~= nil and type(os.time()) == "number")
+        \\assert(os.getenv("PATH") ~= nil and type(os.time()) == "number")
         \\assert(load(string.dump(function() end)) == nil, "binary chunks")
         \\config.font.size = 12
     , &d);
@@ -192,7 +192,7 @@ test "lua config: config.example.lua is valid and matches the defaults" {
     try t.expectEqual(@as(usize, 0), d.items.items.len);
     var def = config.Config.init(t.allocator);
     defer def.deinit();
-    inline for (.{ "rows", "cols", "scale", "backend", "headless", "font_size", "line_height", "font_retro", "font_ligatures", "cursor_shape", "max_fps", "read_budget_kb", "scrollback_lines", "scrollbar", "scroll_lines", "copy_on_select", "paste_confirm", "default_keybindings", "ai_enabled", "ai_timeout_ms", "ai_debounce_ms", "ai_max_tokens", "ai_explain_max_tokens", "ai_history", "ai_output_lines", "shell_integration", "ssh_enabled", "ssh_keepalive_s", "confirm_close", "dim_inactive", "inherit_cwd" }) |name| {
+    inline for (.{ "rows", "cols", "scale", "backend", "headless", "font_size", "line_height", "font_retro", "font_ligatures", "cursor_shape", "max_fps", "read_budget_kb", "scrollback_lines", "scrollbar", "scroll_lines", "copy_on_select", "paste_confirm", "default_keybindings", "ai_enabled", "ai_timeout_ms", "ai_debounce_ms", "ai_max_tokens", "ai_explain_max_tokens", "ai_history", "ai_output_lines", "shell_integration", "ssh_enabled", "ssh_keepalive_s", "confirm_close", "dim_inactive", "inherit_cwd", "allow_column_switch" }) |name| {
         try t.expectEqual(@field(def, name), @field(cfg, name));
     }
     inline for (.{ "font_family", "theme", "present_mode", "osc52", "word_chars", "url_open_command", "shell_program", "shell_cwd", "ai_endpoint", "ai_model", "ai_api_key_env", "ai_accept_key", "ssh_config_file", "ssh_known_hosts", "tab_bar" }) |name| {
@@ -206,7 +206,7 @@ test "lua config: load() falls back to defaults on errors" {
     var tmp = t.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.writeFile(.{ .sub_path = "config.lua", .data = "config.font.size = 14\nconfig.render.max_fps = -1\n" });
-    const path = try tmp.dir.realpathAlloc(t.allocator, "config.lua");
+    const path = try @import("../testutil.zig").tmpPath(t.allocator, &tmp, "config.lua");
     defer t.allocator.free(path);
     var d = config.Diagnostics.init(t.allocator);
     defer d.deinit();

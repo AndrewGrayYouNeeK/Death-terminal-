@@ -1,7 +1,15 @@
 const std = @import("std");
+const env_mod = @import("../platform/env.zig");
 const builtin = @import("builtin");
 const posix = std.posix;
 const linux = std.os.linux;
+const io = @import("../platform/io.zig");
+
+const is_linux = builtin.os.tag == .linux;
+const is_darwin = builtin.os.tag.isDarwin();
+
+/// ConPTY on Windows, /dev/ptmx elsewhere.
+pub const PTY = if (builtin.os.tag == .windows) @import("pty_windows.zig").WinPty else PosixPty;
 
 /// What to run in the terminal (config.lua `shell.*`).
 pub const ShellOptions = struct {
@@ -14,31 +22,27 @@ pub const ShellOptions = struct {
     cwd: []const u8 = "",
 };
 
-/// PTY represents a pseudo-terminal
-pub const PTY = struct {
+/// A POSIX pseudo-terminal (Linux, macOS).
+pub const PosixPty = struct {
     master_fd: posix.fd_t,
     slave_fd: posix.fd_t,
     child_pid: ?posix.pid_t,
     slave_name_buf: [64]u8,
 
     /// Open a new PTY pair (master and slave)
-    pub fn open() !PTY {
-        if (builtin.os.tag == .windows) {
-            return error.UnsupportedPlatform;
-        }
-
+    pub fn open() !PosixPty {
         // Open PTY master using posix_openpt
         const master_fd = try openPtyMaster();
         errdefer posix.close(master_fd);
 
         // Grant access to slave PTY
-        try grantpt(master_fd);
+        try grantPty(master_fd);
 
         // Unlock slave PTY
-        try unlockpt(master_fd);
+        try unlockPty(master_fd);
 
         // Get slave PTY name
-        var pty: PTY = .{
+        var pty: PosixPty = .{
             .master_fd = master_fd,
             .slave_fd = -1,
             .child_pid = null,
@@ -55,7 +59,12 @@ pub const PTY = struct {
         return pty;
     }
 
-    pub fn close(self: *PTY) void {
+    /// What the event loop polls for output.
+    pub fn fd(self: PosixPty) io.Fd {
+        return self.master_fd;
+    }
+
+    pub fn close(self: *PosixPty) void {
         posix.close(self.master_fd);
         if (self.slave_fd >= 0) {
             posix.close(self.slave_fd);
@@ -63,28 +72,28 @@ pub const PTY = struct {
     }
 
     /// Set PTY window size
-    pub fn setWindowSize(self: PTY, rows: u16, cols: u16) !void {
-        const ws = linux.winsize{
+    pub fn setWindowSize(self: PosixPty, rows: u16, cols: u16) !void {
+        const ws = posix.winsize{
             .ws_row = rows,
             .ws_col = cols,
             .ws_xpixel = 0,
             .ws_ypixel = 0,
         };
-
-        const TIOCSWINSZ = 0x5414;
-        const result = linux.ioctl(self.master_fd, TIOCSWINSZ, @intFromPtr(&ws));
-        if (result != 0) {
-            return error.IoctlFailed;
+        if (is_linux) {
+            const TIOCSWINSZ = 0x5414;
+            if (linux.ioctl(self.master_fd, TIOCSWINSZ, @intFromPtr(&ws)) != 0) return error.IoctlFailed;
+        } else {
+            if (std.c.ioctl(self.master_fd, @bitCast(@as(u32, darwin_tiocswinsz)), &ws) != 0) return error.IoctlFailed;
         }
     }
 
     /// Spawn a shell process in the PTY
-    pub fn spawnShell(self: *PTY, allocator: std.mem.Allocator, opts: ShellOptions) !void {
+    pub fn spawnShell(self: *PosixPty, allocator: std.mem.Allocator, opts: ShellOptions) !void {
         // Everything the child needs is built before fork (no allocation after).
         var arena_state = std.heap.ArenaAllocator.init(allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        const program: []const u8 = if (opts.program.len > 0) opts.program else posix.getenv("SHELL") orelse "/bin/sh";
+        const program: []const u8 = if (opts.program.len > 0) opts.program else env_mod.get("SHELL") orelse "/bin/sh";
         const shell = try resolveProgram(arena, program);
         const argv = try arena.allocSentinel(?[*:0]const u8, opts.args.len + 1, null);
         argv[0] = shell;
@@ -111,18 +120,21 @@ pub const PTY = struct {
         }
     }
 
-    fn setupChildProcess(self: *PTY, shell: [*:0]const u8, argv: [*:null]const ?[*:0]const u8, cwd: ?[:0]const u8, envp: [*:null]const ?[*:0]const u8) !void {
+    fn setupChildProcess(self: *PosixPty, shell: [*:0]const u8, argv: [*:null]const ?[*:0]const u8, cwd: ?[:0]const u8, envp: [*:null]const ?[*:0]const u8) !void {
         // The shell must start with default signal dispositions and an
         // empty mask even if we were launched with SIGINT ignored (e.g. as a
         // background job), otherwise Ctrl+C would never interrupt anything.
         resetSignals();
 
-        // Create a new session
-        _ = linux.syscall0(.setsid);
-
-        // Make slave the controlling terminal
-        const TIOCSCTTY = 0x540E;
-        _ = linux.ioctl(self.slave_fd, TIOCSCTTY, 0);
+        // Create a new session and make the slave its controlling terminal.
+        if (is_linux) {
+            _ = linux.syscall0(.setsid);
+            const TIOCSCTTY = 0x540E;
+            _ = linux.ioctl(self.slave_fd, TIOCSCTTY, 0);
+        } else {
+            _ = c_setsid();
+            _ = std.c.ioctl(self.slave_fd, @bitCast(@as(u32, darwin_tiocsctty)), @as(c_int, 0));
+        }
 
         // Redirect stdin, stdout, stderr to slave
         try posix.dup2(self.slave_fd, posix.STDIN_FILENO);
@@ -138,9 +150,15 @@ pub const PTY = struct {
         if (cwd) |dir| posix.chdirZ(dir) catch {
             std.debug.print("deathterminal: cannot change to {s}, staying in the current directory\n", .{dir});
         };
-        const err = linux.execve(shell, argv, envp);
-        std.debug.print("deathterminal: cannot run {s}\n", .{shell});
-        posix.exit(@intCast(err));
+        if (is_linux) {
+            const err = linux.execve(shell, argv, envp);
+            std.debug.print("deathterminal: cannot run {s}\n", .{shell});
+            posix.exit(@intCast(err));
+        } else {
+            _ = std.c.execve(shell, argv, envp);
+            std.debug.print("deathterminal: cannot run {s}\n", .{shell});
+            posix.exit(127);
+        }
     }
 
     fn resetSignals() void {
@@ -156,12 +174,12 @@ pub const PTY = struct {
     }
 
     /// Write data to PTY master
-    pub fn write(self: PTY, data: []const u8) !usize {
+    pub fn write(self: PosixPty, data: []const u8) !usize {
         return posix.write(self.master_fd, data);
     }
 
     /// Read data from PTY master
-    pub fn read(self: PTY, buffer: []u8) !usize {
+    pub fn read(self: PosixPty, buffer: []u8) !usize {
         return posix.read(self.master_fd, buffer);
     }
 };
@@ -169,7 +187,7 @@ pub const PTY = struct {
 /// `name` as an executable path: names without '/' are looked up in $PATH.
 fn resolveProgram(arena: std.mem.Allocator, name: []const u8) ![:0]const u8 {
     if (std.mem.indexOfScalar(u8, name, '/') != null) return arena.dupeZ(u8, try expandHome(arena, name));
-    var dirs = std.mem.tokenizeScalar(u8, posix.getenv("PATH") orelse "/usr/local/bin:/usr/bin:/bin", ':');
+    var dirs = std.mem.tokenizeScalar(u8, env_mod.get("PATH") orelse "/usr/local/bin:/usr/bin:/bin", ':');
     while (dirs.next()) |d| {
         const full = try std.fmt.allocPrintZ(arena, "{s}/{s}", .{ d, name });
         posix.accessZ(full, posix.X_OK) catch continue;
@@ -180,7 +198,7 @@ fn resolveProgram(arena: std.mem.Allocator, name: []const u8) ![:0]const u8 {
 
 fn expandHome(arena: std.mem.Allocator, path: []const u8) ![]const u8 {
     if (path.len == 0 or path[0] != '~' or (path.len > 1 and path[1] != '/')) return path;
-    const home = posix.getenv("HOME") orelse return path;
+    const home = env_mod.get("HOME") orelse return path;
     return std.fmt.allocPrint(arena, "{s}{s}", .{ home, path[1..] });
 }
 
@@ -279,22 +297,38 @@ test "child env sets TERM=xterm-256color exactly once" {
     try std.testing.expectEqual(@as(usize, 1), count);
 }
 
-// Platform-specific PTY functions
+// Platform-specific PTY functions. macOS: the libc calls (its ioctl
+// numbers differ and there is no TIOCGPTN).
+const darwin_tiocswinsz: u32 = 0x80087467;
+const darwin_tiocsctty: u32 = 0x20007461;
+extern "c" fn posix_openpt(flags: c_int) c_int;
+extern "c" fn grantpt(fd: c_int) c_int;
+extern "c" fn unlockpt(fd: c_int) c_int;
+extern "c" fn ptsname_r(fd: c_int, buf: [*]u8, len: usize) c_int;
+
 fn openPtyMaster() !posix.fd_t {
-    if (builtin.os.tag == .linux or builtin.os.tag == .macos) {
-        return posix.open("/dev/ptmx", .{ .ACCMODE = .RDWR, .NOCTTY = true }, 0);
+    if (is_linux) return posix.open("/dev/ptmx", .{ .ACCMODE = .RDWR, .NOCTTY = true }, 0);
+    if (is_darwin) {
+        const O_RDWR = 0x2;
+        const O_NOCTTY = 0x20000;
+        const fd = posix_openpt(O_RDWR | O_NOCTTY);
+        if (fd < 0) return error.OpenPtyFailed;
+        return fd;
     }
     return error.UnsupportedPlatform;
 }
 
-fn grantpt(fd: posix.fd_t) !void {
-    // On Linux, grantpt is typically not needed with /dev/ptmx
-    // The kernel handles permissions automatically
-    _ = fd;
+fn grantPty(fd: posix.fd_t) !void {
+    // Linux: /dev/ptmx needs no grantpt (the kernel sets permissions).
+    if (is_darwin and grantpt(fd) != 0) return error.GrantptFailed;
 }
 
-fn unlockpt(fd: posix.fd_t) !void {
-    if (builtin.os.tag == .linux) {
+fn unlockPty(fd: posix.fd_t) !void {
+    if (is_darwin) {
+        if (unlockpt(fd) != 0) return error.UnlockFailed;
+        return;
+    }
+    if (is_linux) {
         const TIOCSPTLCK = 0x40045431;
         const unlock: c_int = 0;
         const result = linux.ioctl(fd, TIOCSPTLCK, @intFromPtr(&unlock));
@@ -305,7 +339,11 @@ fn unlockpt(fd: posix.fd_t) !void {
 }
 
 fn ptsname(fd: posix.fd_t, buffer: []u8) ![]const u8 {
-    if (builtin.os.tag == .linux) {
+    if (is_darwin) {
+        if (ptsname_r(fd, buffer.ptr, buffer.len) != 0) return error.PtsnameFailed;
+        return std.mem.sliceTo(buffer, 0);
+    }
+    if (is_linux) {
         var n: u32 = 0;
         const TIOCGPTN = 0x80045430;
         const result = linux.ioctl(fd, TIOCGPTN, @intFromPtr(&n));
@@ -340,12 +378,16 @@ test "child env applies config overrides" {
 }
 
 test "resolveProgram searches PATH and expands ~" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const sh = try resolveProgram(arena.allocator(), "sh");
     try std.testing.expect(std.mem.endsWith(u8, sh, "/sh"));
-    if (posix.getenv("HOME")) |home| {
+    if (env_mod.get("HOME")) |home| {
         const p = try expandHome(arena.allocator(), "~/x");
         try std.testing.expect(std.mem.startsWith(u8, p, home));
     }
 }
+
+extern "c" fn setsid() c_int;
+const c_setsid = setsid;

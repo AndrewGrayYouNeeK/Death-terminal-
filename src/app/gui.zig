@@ -4,6 +4,8 @@
 //! and AI worker; with nothing to do it sleeps without a timeout.
 
 const std = @import("std");
+const env_mod = @import("../platform/env.zig");
+const io = @import("../platform/io.zig");
 const builtin = @import("builtin");
 const posix = std.posix;
 
@@ -13,7 +15,7 @@ const renderer = @import("../renderer/vulkan_renderer.zig");
 const software = @import("../renderer/software.zig");
 const ai_controller = @import("ai_controller.zig");
 const ssh_target = @import("../ssh/target.zig");
-const ssh_control = @import("../ssh/control.zig");
+const ssh_control = if (builtin.os.tag == .linux) @import("../ssh/control.zig") else @import("../ssh/control_unsupported.zig");
 const ui_mod = @import("ui.zig");
 const palette_mod = ui_mod.palette_mod;
 const plugin_bridge = @import("plugin_bridge.zig");
@@ -133,15 +135,15 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
     pace.presented(el.nowNs());
 
     // Self-pipe for signals (see el.signal_wake_fd).
-    const sig_pipe: ?[2]posix.fd_t = if (builtin.os.tag == .windows) null else posix.pipe2(.{ .NONBLOCK = true, .CLOEXEC = true }) catch null;
+    const sig_pipe: ?[2]io.Fd = if (builtin.os.tag == .windows) null else posix.pipe2(.{ .NONBLOCK = true, .CLOEXEC = true }) catch null;
     if (sig_pipe) |sp| el.signal_wake_fd.store(sp[1], .seq_cst);
     defer if (sig_pipe) |sp| {
         el.signal_wake_fd.store(-1, .seq_cst);
-        posix.close(sp[0]);
-        posix.close(sp[1]);
+        io.close(sp[0]);
+        io.close(sp[1]);
     };
 
-    var fds = std.ArrayList(posix.pollfd).init(a);
+    var fds = std.ArrayList(io.PollFd).init(a);
     defer fds.deinit();
     // Pane id for each PTY / AI slot in `fds` after the fixed three.
     var fd_panes = std.ArrayList(PaneId).init(a);
@@ -150,17 +152,17 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
     while (!el.shutdown_requested.load(.seq_cst) and !gui.closing) {
         fds.clearRetainingCapacity();
         fd_panes.clearRetainingCapacity();
-        try fds.append(.{ .fd = window.connectionFd() orelse -1, .events = posix.POLL.IN, .revents = 0 });
-        try fds.append(.{ .fd = if (watcher) |w| w.fd else -1, .events = posix.POLL.IN, .revents = 0 });
-        try fds.append(.{ .fd = plugins.wakeFd(), .events = posix.POLL.IN, .revents = 0 });
+        try fds.append(io.pollFd(window.connectionFd() orelse io.none, io.POLL.IN));
+        try fds.append(io.pollFd(if (watcher) |w| w.fd else io.none, io.POLL.IN));
+        try fds.append(io.pollFd(plugins.wakeFd(), io.POLL.IN));
         var backlog = false;
         for (ws.panes.items) |p| {
-            try fds.append(.{ .fd = p.ptyFd(), .events = posix.POLL.IN, .revents = 0 });
-            try fds.append(.{ .fd = p.ai.wakeFd(), .events = posix.POLL.IN, .revents = 0 });
+            try fds.append(io.pollFd(p.ptyFd(), io.POLL.IN));
+            try fds.append(io.pollFd(p.ai.wakeFd(), io.POLL.IN));
             try fd_panes.append(p.id);
             backlog = backlog or p.backlog;
         }
-        try fds.append(.{ .fd = if (sig_pipe) |sp| sp[0] else -1, .events = posix.POLL.IN, .revents = 0 });
+        try fds.append(io.pollFd(if (sig_pipe) |sp| sp[0] else io.none, io.POLL.IN));
 
         // Sleep until input, output or the next frame slot; with nothing to
         // do the timeout is infinite (no wakeups when idle).
@@ -178,13 +180,13 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
             if (p.ui.noticeTimeout(now_ms)) |t| timeout = el.minTimeout(timeout, t);
             if (p.ai.timeout(now_ms)) |t| timeout = el.minTimeout(timeout, t);
         }
-        _ = posix.poll(fds.items, timeout) catch 0;
+        _ = window.wait(fds.items, timeout);
         pace.wakeups += 1;
 
         // AI workers.
         for (fd_panes.items, 0..) |id, i| {
             const p = ws.pane(id) orelse continue;
-            if (fds.items[3 + 2 * i + 1].revents & posix.POLL.IN != 0) {
+            if (fds.items[3 + 2 * i + 1].revents & io.POLL.IN != 0) {
                 if (try p.ai.onWake(&p.ui, p.term, std.time.milliTimestamp())) gui.touch(p);
             }
             p.ai.tick(p.term, std.time.milliTimestamp());
@@ -194,7 +196,7 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
         try gui.pluginEffects();
         if (chrome.tickToasts(std.time.milliTimestamp())) gui.touchAll();
 
-        if (fds.items[1].revents & posix.POLL.IN != 0) {
+        if (fds.items[1].revents & io.POLL.IN != 0) {
             if (watcher) |*w| {
                 if (w.drain()) gui.reload_at = std.time.milliTimestamp() + el.RELOAD_DEBOUNCE_MS;
             }
@@ -242,7 +244,7 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
         }
     }
     if (gui.closing) std.debug.print("\nShell exited.\n", .{});
-    if (std.posix.getenv("DT_PERF_STATS") != null) pace.report();
+    if (env_mod.get("DT_PERF_STATS") != null) pace.report();
 }
 
 fn paneAiSettings(cfg: *const config.Config, remote: []const u8) ai_controller.Settings {
@@ -360,6 +362,7 @@ const Gui = struct {
     fn setupPane(self: *Gui, p: *Pane) void {
         p.term.palette = self.palette.*;
         el.applyCursorShape(p.term, self.cfg.cursor_shape);
+        el.applyColumnSwitch(p.term, self.cfg.allow_column_switch, false);
         p.ai.filter = self.plugins.aiFilter();
     }
 
@@ -635,17 +638,17 @@ const Gui = struct {
 
     /// Parse what pane `p`'s PTY has (up to the budget). True = it exited.
     fn readPane(self: *Gui, p: *Pane, revents: i16) !bool {
-        if (!p.backlog and revents & posix.POLL.IN == 0) {
-            return revents & (posix.POLL.HUP | posix.POLL.ERR) != 0;
+        if (!p.backlog and revents & io.POLL.IN == 0) {
+            return revents & (io.POLL.HUP | io.POLL.ERR) != 0;
         }
         const fd = p.ptyFd();
-        if (fd < 0) return true;
+        if (io.isNone(fd)) return true;
         const s0 = el.nowNs();
         var total: usize = 0;
         p.backlog = false;
         var exited = false;
         while (true) {
-            const n = posix.read(fd, self.read_buf) catch |err| switch (err) {
+            const n = io.read(fd, self.read_buf) catch |err| switch (err) {
                 error.WouldBlock => break,
                 // Linux reports EIO on the master once the shell exits.
                 error.InputOutput => {
@@ -1268,6 +1271,7 @@ const Gui = struct {
         for (self.ws.panes.items) |p| {
             p.term.palette = self.palette.*;
             el.applyCursorShape(p.term, next.cursor_shape);
+            el.applyColumnSwitch(p.term, next.allow_column_switch, false);
         }
         _ = self.fontsChangedAndLoad(old, next);
         self.vk.setPresentMode(renderer.PresentMode.parse(next.present_mode) orelse .fifo);

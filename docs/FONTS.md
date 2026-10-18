@@ -87,3 +87,15 @@ are embedded in the binary.
 - Ligatures are not split under the cursor.
 - The retro font has no bold or italic and covers ASCII plus the
   procedural box/block glyphs only.
+
+## Windows and macOS
+
+There is no fontconfig. FreeType 2.13.3 and HarfBuzz 10.1.0 are built from source, as lazy `build.zig.zon` dependencies. Families are found by scanning the system font folders once, on first use:
+
+- **Windows:** `%WINDIR%\Fonts` and `%LOCALAPPDATA%\Microsoft\Windows\Fonts`.
+- **macOS:** `/System/Library/Fonts` (+ `Supplemental`), `/Library/Fonts` and `~/Library/Fonts`.
+
+`monospace` resolves to Cascadia Mono / Consolas on Windows and SF Mono / Menlo on macOS. The bundled JetBrains Mono stays the default.
+
+Colour emoji works with COLR fonts (Segoe UI Emoji). Bitmap emoji fonts (sbix/CBDT, such as Apple Color Emoji) need libpng in the FreeType build, which isn't included yet.
+

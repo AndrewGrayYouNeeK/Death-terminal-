@@ -7,6 +7,8 @@
 //! cleans up after itself when the lookup eventually returns.
 
 const std = @import("std");
+const builtin = @import("builtin");
+const io = @import("../platform/io.zig");
 const posix = std.posix;
 
 pub const Error = error{
@@ -138,9 +140,29 @@ pub fn resolve(host: []const u8, port: u16, deadline_ms: i64, cancel: ?CancelFn)
 
 /// Connect to one address before `deadline_ms`. The socket comes back in
 /// blocking mode.
+/// shutdown(2) that never traps. On Windows std's posix.shutdown treats
+/// WSAEINVAL/WSAENOTSOCK as unreachable, and Wine returns them for a socket
+/// another thread is blocked reading. Errors don't matter to callers here.
+pub fn shutdownSocket(fd: posix.socket_t, how: posix.ShutdownHow) void {
+    if (builtin.os.tag == .windows) {
+        const ws2 = std.os.windows.ws2_32;
+        _ = ws2.shutdown(fd, switch (how) {
+            .recv => ws2.SD_RECEIVE,
+            .send => ws2.SD_SEND,
+            .both => ws2.SD_BOTH,
+        });
+    } else posix.shutdown(fd, how) catch {};
+}
+
+pub fn closeSocket(fd: posix.socket_t) void {
+    if (builtin.os.tag == .windows) {
+        _ = std.os.windows.ws2_32.closesocket(fd);
+    } else posix.close(fd);
+}
+
 pub fn connectAddress(addr: std.net.Address, deadline_ms: i64, cancel: ?CancelFn) Error!posix.socket_t {
     const fd = posix.socket(addr.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC | posix.SOCK.NONBLOCK, posix.IPPROTO.TCP) catch return error.Unexpected;
-    errdefer posix.close(fd);
+    errdefer closeSocket(fd);
     posix.connect(fd, &addr.any, addr.getOsSockLen()) catch |err| switch (err) {
         error.WouldBlock => {},
         error.ConnectionRefused => return error.Refused,
@@ -151,12 +173,25 @@ pub fn connectAddress(addr: std.net.Address, deadline_ms: i64, cancel: ?CancelFn
         if (CancelFn.check(cancel)) return error.Cancelled;
         const left = deadline_ms - std.time.milliTimestamp();
         if (left <= 0) return error.Timeout;
-        var fds = [_]posix.pollfd{.{ .fd = fd, .events = posix.POLL.OUT, .revents = 0 }};
-        const n = posix.poll(&fds, @intCast(@min(left, 50))) catch return error.Unexpected;
+        var fds = [_]io.PollFd{io.pollFd(fd, io.POLL.OUT)};
+        const n = io.poll(&fds, @intCast(@min(left, 50)));
         if (n == 0) continue;
+        if (builtin.os.tag == .windows) {
+            const ws2 = std.os.windows.ws2_32;
+            var so_err: i32 = 0;
+            var len: i32 = @sizeOf(i32);
+            if (ws2.getsockopt(fd, ws2.SOL.SOCKET, ws2.SO.ERROR, @ptrCast(&so_err), &len) != 0) return error.Unexpected;
+            switch (so_err) {
+                0 => break,
+                10061 => return error.Refused, // WSAECONNREFUSED
+                10051, 10065 => return error.Unreachable, // WSAENETUNREACH, WSAEHOSTUNREACH
+                10060 => return error.Timeout, // WSAETIMEDOUT
+                else => return error.Unexpected,
+            }
+        }
         var so_err: i32 = 0;
         var len: posix.socklen_t = @sizeOf(i32);
-        if (std.os.linux.getsockopt(fd, posix.SOL.SOCKET, posix.SO.ERROR, std.mem.asBytes(&so_err), &len) != 0) return error.Unexpected;
+        if (std.c.getsockopt(fd, posix.SOL.SOCKET, posix.SO.ERROR, std.mem.asBytes(&so_err), &len) != 0) return error.Unexpected;
         switch (@as(posix.E, @enumFromInt(so_err))) {
             .SUCCESS => break,
             .CONNREFUSED => return error.Refused,
@@ -164,6 +199,11 @@ pub fn connectAddress(addr: std.net.Address, deadline_ms: i64, cancel: ?CancelFn
             .TIMEDOUT => return error.Timeout,
             else => return error.Unexpected,
         }
+    }
+    if (builtin.os.tag == .windows) {
+        var off: c_ulong = 0;
+        if (std.os.windows.ws2_32.ioctlsocket(fd, std.os.windows.ws2_32.FIONBIO, &off) != 0) return error.Unexpected;
+        return fd;
     }
     const flags = posix.fcntl(fd, posix.F.GETFL, 0) catch return error.Unexpected;
     _ = posix.fcntl(fd, posix.F.SETFL, flags & ~@as(usize, 1 << @bitOffsetOf(posix.O, "NONBLOCK"))) catch return error.Unexpected;

@@ -23,6 +23,7 @@ config.window.cols = 80              -- (restart)
 config.window.scale = 0              -- UI scale 1-4; 0 = auto from DPI (restart)
 config.window.backend = "auto"       -- auto | x11 | wayland | win32 (restart)
 config.window.headless = true        -- false = open a window; --gui overrides (restart)
+config.window.allow_column_switch = true  -- honour DECCOLM 80/132 switching (CSI ?3h/l; ?40 toggles)
 
 -- Font ---------------------------------------------------------------------
 config.font.family = ""              -- fontconfig family; "" = bundled JetBrains Mono
@@ -68,7 +69,7 @@ config.selection.copy_on_select = false     -- also copy selections to CLIPBOARD
 config.selection.word_chars = "-_./~:@%+#?&="  -- extra word characters for double-click
 config.clipboard.paste_confirm = true       -- confirm multi-line pastes without bracketed paste
 config.clipboard.osc52 = "write"            -- programs may: off | write | read-write the clipboard
-config.links.open_command = dt.os == "macos" and "open" or "xdg-open"
+config.links.open_command = dt.os == "macos" and "open" or dt.os == "windows" and "" or "xdg-open"  -- "" = default handler
 
 -- Key bindings -------------------------------------------------------------
 -- Chords are modifiers (ctrl, shift, alt) plus a key name: letters,

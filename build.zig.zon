@@ -1,11 +1,30 @@
 .{
     .name = "deathterminal",
     .version = "0.1.0",
-    .dependencies = .{},
+    .minimum_zig_version = "0.13.0",
+    .dependencies = .{
+        // FreeType and HarfBuzz are built from source only for Windows and
+        // macOS (Linux links the system libraries); lazy, so Linux builds
+        // never download them.
+        .freetype = .{
+            .url = "https://github.com/freetype/freetype/archive/refs/tags/VER-2-13-3.tar.gz",
+            .hash = "1220179d427a4c911aa99196829e85ffc3a188b12b7a347143b6395d6c92cfc026af",
+            .lazy = true,
+        },
+        .harfbuzz = .{
+            .url = "https://github.com/harfbuzz/harfbuzz/releases/download/10.1.0/harfbuzz-10.1.0.tar.xz",
+            .hash = "1220d4d0df4d68fe8d5f8282520314459de8abe5a141b5d05bb510eec0bd16692201",
+            .lazy = true,
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
+        "vendor",
+        "assets",
+        "shell-integration",
+        "config.example.lua",
         "LICENSE",
         "README.md",
     },

@@ -1,0 +1,63 @@
+# nfpm (https://nfpm.goreleaser.com) config for the .deb and .rpm.
+# Used by packaging/linux/build-packages.sh, which sets VERSION, STAGE
+# (the staged `zig build release` tree) and ARCH.
+name: deathterminal
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+version_schema: semver
+release: 1
+section: x11
+priority: optional
+maintainer: Andrew Gray <AndrewGrayYouNeeK@users.noreply.github.com>
+description: |
+  Brutalist GPU terminal emulator.
+  Vulkan rendering, tabs and split panes, an xterm-compatible VT core,
+  optional AI command suggestions, a built-in SSH client and sandboxed
+  Lua plugins.
+vendor: DeathTerminal
+homepage: https://github.com/AndrewGrayYouNeeK/Death-terminal-
+license: Unlicense
+
+contents:
+  - src: ${STAGE}/bin/deathterminal
+    dst: /usr/bin/deathterminal
+    file_info:
+      mode: 0755
+  - src: ${STAGE}/share/applications/deathterminal.desktop
+    dst: /usr/share/applications/deathterminal.desktop
+  - src: ${STAGE}/share/icons/
+    dst: /usr/share/icons/
+    type: tree
+  - src: ${STAGE}/share/man/man1/deathterminal.1.gz
+    dst: /usr/share/man/man1/deathterminal.1.gz
+  - src: ${STAGE}/share/doc/deathterminal/
+    dst: /usr/share/doc/deathterminal/
+    type: tree
+
+overrides:
+  deb:
+    depends:
+      - libc6 (>= 2.31)
+      - libx11-6
+      - libwayland-client0
+      - libxkbcommon0
+      - libfreetype6
+      - libharfbuzz0b
+      - libfontconfig1
+      - libssl3 | libssl3t64
+    recommends:
+      - libvulkan1
+      - mesa-vulkan-drivers
+  rpm:
+    depends:
+      - libX11
+      - libwayland-client
+      - libxkbcommon
+      - freetype
+      - harfbuzz
+      - fontconfig
+      - openssl-libs
+    recommends:
+      - vulkan-loader
+      - mesa-vulkan-drivers

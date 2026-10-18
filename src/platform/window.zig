@@ -1,9 +1,41 @@
 const std = @import("std");
+const env_mod = @import("env.zig");
+const io = @import("io.zig");
 const builtin = @import("builtin");
 const posix = std.posix;
 const dpi = @import("dpi.zig");
 const wayland = @import("wayland_backend.zig");
 const win32 = @import("win32_backend.zig");
+const cocoa = if (builtin.os.tag == .macos) @import("cocoa_backend.zig") else CocoaStub;
+
+/// Keeps AppKit / libobjc references out of non-macOS binaries.
+const CocoaStub = struct {
+    const State = struct {
+        width: u32 = 0,
+        height: u32 = 0,
+        scale: f32 = 1,
+    };
+    fn open(_: *State, _: std.mem.Allocator, _: []const u8, _: u32, _: u32, _: f32) !void {
+        return error.UnsupportedPlatform;
+    }
+    fn close(_: *State) void {}
+    fn wait(_: *State, fds: []io.PollFd, timeout_ms: i32) usize {
+        return io.poll(fds, timeout_ms);
+    }
+    fn poll(_: *State) Event {
+        return .none;
+    }
+    fn hasPending(_: *const State) bool {
+        return false;
+    }
+    fn setTitle(_: *State, _: []const u8) void {}
+    fn setClipboard(_: *State, _: ClipTarget, _: []const u8) void {}
+    fn requestClipboard(_: *State, _: ClipTarget, _: PastePurpose) void {}
+    fn presentRgba(_: *State, _: []const u32, _: u32, _: u32) void {}
+    fn metalLayerPtr(_: *const State) ?*anyopaque {
+        return null;
+    }
+};
 const Config = @import("../config/config.zig").Config;
 const events = @import("events.zig");
 const input = @import("../terminal/input.zig");
@@ -27,7 +59,7 @@ const PendingPaste = struct {
     incr: bool = false,
 };
 
-pub const Backend = enum { none, x11, wayland, win32 };
+pub const Backend = enum { none, x11, wayland, win32, cocoa };
 
 pub const OpenOptions = struct {
     title: []const u8,
@@ -58,6 +90,7 @@ pub const Window = struct {
     input_len: u8,
     wayland: ?*wayland.State,
     win32: ?*win32.State,
+    cocoa: ?*cocoa.State = null,
     queue: events.EventQueue = .{},
     net_wm_name: usize = 0,
     utf8_string: usize = 0,
@@ -111,10 +144,19 @@ pub const Window = struct {
                 std.debug.print("  → Win32 unavailable ({s})\n", .{@errorName(err)});
                 return win;
             },
+            .cocoa => tryOpenCocoa(&win, opts.title) catch |err| {
+                std.debug.print("  → Cocoa unavailable ({s})\n", .{@errorName(err)});
+                return win;
+            },
             .auto => {
                 if (builtin.os.tag == .windows) {
                     tryOpenWin32(&win, opts.title) catch |err| {
                         std.debug.print("  → Win32 unavailable ({s})\n", .{@errorName(err)});
+                        return win;
+                    };
+                } else if (builtin.os.tag == .macos) {
+                    tryOpenCocoa(&win, opts.title) catch |err| {
+                        std.debug.print("  → Cocoa unavailable ({s})\n", .{@errorName(err)});
                         return win;
                     };
                 } else if (preferWayland()) {
@@ -153,6 +195,11 @@ pub const Window = struct {
             self.allocator.destroy(st);
             self.win32 = null;
         }
+        if (self.cocoa) |st| {
+            cocoa.close(st);
+            self.allocator.destroy(st);
+            self.cocoa = null;
+        }
         if (self.backend == .x11) X11.close(self);
         for (&self.owned) |*o| if (o.*) |t| {
             self.allocator.free(t);
@@ -167,11 +214,24 @@ pub const Window = struct {
         return self.live;
     }
 
-    pub fn connectionFd(self: *const Window) ?posix.fd_t {
+    pub fn connectionFd(self: *const Window) ?io.Fd {
+        if (builtin.os.tag != .linux) return null;
         return switch (self.backend) {
             .x11 => X11.connectionFd(self),
             .wayland => if (self.wayland) |st| wayland.connectionFd(st) else null,
             else => null,
+        };
+    }
+
+    /// Sleep until one of `fds` is ready, a window event arrives or the
+    /// timeout passes. X11/Wayland: the connection fd is in `fds`. Win32:
+    /// also wakes on window messages. Cocoa: AppKit's queue is waited on
+    /// while a helper thread polls `fds`.
+    pub fn wait(self: *Window, fds: []io.PollFd, timeout_ms: i32) usize {
+        return switch (self.backend) {
+            .win32 => io.wait(fds, timeout_ms, true),
+            .cocoa => if (self.cocoa) |st| cocoa.wait(st, fds, timeout_ms) else io.poll(fds, timeout_ms),
+            else => io.poll(fds, timeout_ms),
         };
     }
 
@@ -181,6 +241,7 @@ pub const Window = struct {
     pub fn hasPending(self: *Window) bool {
         return switch (self.backend) {
             .x11 => X11.hasPending(self),
+            .cocoa => if (self.cocoa) |st| cocoa.hasPending(st) else false,
             .wayland, .win32 => false,
             .none => false,
         } or self.queue.len > 0;
@@ -201,6 +262,12 @@ pub const Window = struct {
                 self.syncWin32(st);
                 break :blk ev;
             },
+            .cocoa => blk: {
+                const st = self.cocoa orelse break :blk Event.none;
+                const ev = cocoa.poll(st);
+                self.syncCocoa(st);
+                break :blk ev;
+            },
             .none => .none,
         };
     }
@@ -211,6 +278,7 @@ pub const Window = struct {
             .x11 => X11.setTitle(self, title),
             .wayland => if (self.wayland) |st| wayland.setTitle(st, title),
             .win32 => if (self.win32) |st| win32.setTitle(st, title),
+            .cocoa => if (self.cocoa) |st| cocoa.setTitle(st, title),
             .none => {},
         }
     }
@@ -221,6 +289,7 @@ pub const Window = struct {
             .x11 => X11.setSelection(self, target, text),
             .wayland => if (self.wayland) |st| wayland.setSelection(st, target, text),
             .win32 => if (self.win32) |st| win32.setClipboard(st, target, text),
+            .cocoa => if (self.cocoa) |st| cocoa.setClipboard(st, target, text),
             .none => {},
         }
     }
@@ -232,6 +301,7 @@ pub const Window = struct {
             .x11 => X11.requestSelection(self, target, purpose),
             .wayland => if (self.wayland) |st| wayland.requestSelection(st, target, purpose),
             .win32 => if (self.win32) |st| win32.requestClipboard(st, target, purpose),
+            .cocoa => if (self.cocoa) |st| cocoa.requestClipboard(st, target, purpose),
             .none => {},
         }
     }
@@ -241,6 +311,7 @@ pub const Window = struct {
             .x11 => X11.present(self, pixels, width, height),
             .wayland => if (self.wayland) |st| wayland.presentRgba(st, pixels, width, height),
             .win32 => if (self.win32) |st| win32.presentRgba(st, pixels, width, height),
+            .cocoa => if (self.cocoa) |st| cocoa.presentRgba(st, pixels, width, height),
             .none => {},
         }
     }
@@ -278,6 +349,17 @@ pub const Window = struct {
         }
     }
 
+    /// CAMetalLayer of the Cocoa window (VK_EXT_metal_surface).
+    pub fn metalLayerPtr(self: *const Window) ?*anyopaque {
+        return if (self.cocoa) |st| cocoa.metalLayerPtr(st) else null;
+    }
+
+    fn syncCocoa(self: *Window, st: *cocoa.State) void {
+        self.width = st.width;
+        self.height = st.height;
+        if (!self.forced_scale) self.scale = dpi.normalize(st.scale);
+    }
+
     fn syncWin32(self: *Window, st: *win32.State) void {
         self.width = st.width;
         self.height = st.height;
@@ -287,7 +369,7 @@ pub const Window = struct {
 
 fn preferWayland() bool {
     if (builtin.os.tag != .linux) return false;
-    return posix.getenv("WAYLAND_DISPLAY") != null;
+    return env_mod.get("WAYLAND_DISPLAY") != null;
 }
 
 fn tryOpenWayland(win: *Window, title: []const u8) !void {
@@ -310,6 +392,17 @@ fn tryOpenWin32(win: *Window, title: []const u8) !void {
     win.backend = .win32;
     win.live = true;
     win.syncWin32(st);
+}
+
+fn tryOpenCocoa(win: *Window, title: []const u8) !void {
+    const st = try win.allocator.create(cocoa.State);
+    errdefer win.allocator.destroy(st);
+    st.* = .{};
+    try cocoa.open(st, win.allocator, title, win.width, win.height, win.scale);
+    win.cocoa = st;
+    win.backend = .cocoa;
+    win.live = true;
+    win.syncCocoa(st);
 }
 
 fn tryOpenX11(win: *Window, title: []const u8) !void {
@@ -355,6 +448,9 @@ const X11 = if (builtin.os.tag == .linux) struct {
 
         var protocols = [_]x11.Atom{x11.XInternAtom(dpy, "WM_DELETE_WINDOW", 0)};
         _ = x11.XSetWMProtocols(dpy, xwin, &protocols, 1);
+        // WM_CLASS matches StartupWMClass in deathterminal.desktop.
+        var class_hint = x11.XClassHint{ .res_name = @constCast("deathterminal"), .res_class = @constCast("deathterminal") };
+        _ = x11.XSetClassHint(dpy, xwin, &class_hint);
 
         const gc = x11.XDefaultGC(dpy, screen);
         _ = x11.XMapRaised(dpy, xwin);

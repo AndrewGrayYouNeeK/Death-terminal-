@@ -1,0 +1,9 @@
+#!/bin/sh
+# AppImage entry point: bundled libraries first, then the system ones.
+HERE="$(dirname "$(readlink -f "$0")")"
+export LD_LIBRARY_PATH="$HERE/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# Started from a desktop launcher (no terminal): open a window.
+if [ $# -eq 0 ] && [ ! -t 0 ]; then
+  exec "$HERE/usr/bin/deathterminal" --gui
+fi
+exec "$HERE/usr/bin/deathterminal" "$@"
