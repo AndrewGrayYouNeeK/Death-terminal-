@@ -3,7 +3,10 @@ const builtin = @import("builtin");
 const terminal = @import("terminal/terminal.zig");
 const renderer = @import("renderer/vulkan_renderer.zig");
 const shell_inject = @import("app/shell_inject.zig");
-const ssh = @import("ssh/tunnel.zig");
+const ssh_target = @import("ssh/target.zig");
+// libssh2 is only built for Linux (see build.zig addLibssh2).
+const ssh_client = if (builtin.os.tag == .linux) @import("ssh/client.zig") else @import("ssh/unsupported.zig");
+const ssh_control = @import("ssh/control.zig");
 const lua_engine = @import("scripting/lua_engine.zig");
 const config = @import("config/config.zig");
 const event_loop = @import("app/event_loop.zig");
@@ -18,6 +21,12 @@ pub fn main() !void {
     // Parse command line arguments
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
+
+    // The built-in SSH client (what a window runs in its PTY for --ssh).
+    for (args[1..]) |a| {
+        if (std.mem.eql(u8, a, "--ssh-session")) std.process.exit(ssh_client.main(allocator, args));
+        if (std.mem.eql(u8, a, "--ssh-ctl")) std.process.exit(sshCtl(args));
+    }
 
     if (args.len > 1) {
         if (std.mem.eql(u8, args[1], "--version") or std.mem.eql(u8, args[1], "-v")) {
@@ -75,7 +84,37 @@ pub fn main() !void {
     std.debug.print("[2/5] Initializing terminal core...\n", .{});
     var shell_arena = std.heap.ArenaAllocator.init(allocator);
     defer shell_arena.deinit();
-    const shell_opts = shell_inject.apply(shell_arena.allocator(), .{
+    // `--ssh <target>`: the window runs the built-in SSH client instead of a shell.
+    const ssh_name = sshArg(args);
+    var ssh_display: []const u8 = "";
+    const shell_opts = if (ssh_name) |name| blk: {
+        const sa = shell_arena.allocator();
+        if (builtin.os.tag != .linux) {
+            std.debug.print("--ssh: the built-in SSH client is only available on Linux builds for now\n", .{});
+            std.process.exit(2);
+        }
+        if (!cfg.ssh_enabled) {
+            std.debug.print("--ssh: the built-in SSH client is disabled (config.ssh.enabled = false)\n", .{});
+            std.process.exit(2);
+        }
+        const t = ssh_target.resolveForConfig(sa, cfg.ssh_profiles.items, cfg.ssh_config_file, cfg.ssh_keepalive_s, name) catch |err| {
+            std.debug.print("--ssh: cannot use \"{s}\": {s} (expected a profile from config.ssh.profiles, a ~/.ssh/config Host, or user@host[:port])\n", .{ name, @errorName(err) });
+            std.process.exit(2);
+        };
+        var db: [300]u8 = undefined;
+        ssh_display = try sa.dupe(u8, t.display(&db));
+        var child_args = std.ArrayList([]const u8).init(sa);
+        try child_args.appendSlice(&.{ "--ssh-session", name });
+        if (config_arg) |c| try child_args.appendSlice(&.{ "--config", c });
+        if (load_opts.lua_unsafe) try child_args.append("--lua-unsafe");
+        std.debug.print("  → SSH session: {s} ({s})\n", .{ name, ssh_display });
+        break :blk @import("terminal/pty.zig").ShellOptions{
+            .program = try std.fs.selfExePathAlloc(sa),
+            .args = child_args.items,
+            .env = cfg.shell_env.items,
+            .cwd = cfg.shell_cwd,
+        };
+    } else shell_inject.apply(shell_arena.allocator(), .{
         .program = cfg.shell_program,
         .args = cfg.shell_args.items,
         .env = cfg.shell_env.items,
@@ -94,9 +133,7 @@ pub fn main() !void {
         std.debug.print("[4/5] AI suggestions disabled\n", .{});
     }
 
-    std.debug.print("[5/5] Initializing SSH tunnel manager...\n", .{});
-    var ssh_manager = try ssh.TunnelManager.init(allocator);
-    defer ssh_manager.deinit();
+    std.debug.print("[5/5] SSH: built-in client (libssh2 {s}){s}\n", .{ ssh_client.libssh2Version(), if (cfg.ssh_enabled) "" else " disabled" });
 
     std.debug.print("\n✓ DeathTerminal initialized successfully\n", .{});
 
@@ -108,8 +145,45 @@ pub fn main() !void {
         .load_opts = load_opts,
         .watch_path = watch_path,
         .startup_diags = &diags,
+        .ssh_target = ssh_name,
+        .ssh_remote = ssh_display,
     };
-    try loop.run(&vulkan_renderer, &term, &lua, &ssh_manager);
+    try loop.run(&vulkan_renderer, &term, &lua);
+}
+
+/// `--ssh-ctl <pid> <command…>`: talk to a running SSH session client.
+fn sshCtl(args: []const []const u8) u8 {
+    var i: usize = 0;
+    while (i < args.len and !std.mem.eql(u8, args[i], "--ssh-ctl")) i += 1;
+    if (i + 2 >= args.len) {
+        std.debug.print("usage: deathterminal --ssh-ctl <pid> status|list|toggle <n>|on <n>|off <n>|add <spec>|reconnect\n", .{});
+        return 2;
+    }
+    const pid = std.fmt.parseInt(std.posix.pid_t, args[i + 1], 10) catch {
+        std.debug.print("ssh-ctl: bad pid {s}\n", .{args[i + 1]});
+        return 2;
+    };
+    var cmd_buf: [512]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&cmd_buf);
+    for (args[i + 2 ..], 0..) |a, k| {
+        if (k > 0) fbs.writer().writeByte(' ') catch {};
+        fbs.writer().writeAll(a) catch {};
+    }
+    var out: [8192]u8 = undefined;
+    const r = ssh_control.request(pid, fbs.getWritten(), &out) catch |err| {
+        std.debug.print("ssh-ctl: no SSH session with pid {d} ({s})\n", .{ pid, @errorName(err) });
+        return 1;
+    };
+    std.io.getStdOut().writeAll(r) catch {};
+    return if (std.mem.startsWith(u8, r, "error")) 1 else 0;
+}
+
+fn sshArg(args: []const []const u8) ?[]const u8 {
+    for (args[1..], 1..) |a, i| {
+        if (std.mem.eql(u8, a, "--ssh") and i + 1 < args.len) return args[i + 1];
+        if (std.mem.startsWith(u8, a, "--ssh=")) return a["--ssh=".len..];
+    }
+    return null;
 }
 
 fn hasFlag(args: []const []const u8, flag: []const u8) bool {
@@ -160,6 +234,11 @@ fn printHelp() !void {
         \\    --print-default-config  Print a documented config.lua with every default
         \\    --lua-unsafe     Give config.lua the full Lua library (io, os.execute, require)
         \\    --print-shell-integration <bash|zsh|fish>  Print the OSC 133 shell snippet
+        \\    --ssh <target>   Open a window connected over SSH (built-in client). <target> is a
+        \\                     config.ssh.profiles name, a ~/.ssh/config Host, or user@host[:port]
+        \\    --ssh-session <target> [-L|-R|-D spec]...  Run the SSH client in this terminal
+        \\    --ssh-ctl <pid> <cmd>   Control a running session: status, list, toggle <n>,
+        \\                     on <n>, off <n>, add <spec>, reconnect
         \\    --no-ai          Disable AI command suggestions
         \\    --headless       Run without a GUI window (default)
         \\    --gui            Open a native window (Wayland/X11/Win32; falls back to headless)
@@ -175,7 +254,7 @@ fn printHelp() !void {
         \\
         \\FEATURES:
         \\    • AI command suggestions (OpenAI-compatible, local Ollama by default)
-        \\    • Cross-platform SSH tunneling
+        \\    • Built-in SSH (libssh2): profiles, ProxyJump, -L/-R/-D forwards (Ctrl+Shift+S)
         \\    • Vulkan-accelerated rendering
         \\    • Lua scripting support
         \\    • Brutalist, high-performance design
@@ -217,6 +296,7 @@ test {
     _ = @import("terminal/search.zig");
     _ = @import("terminal/urls.zig");
     _ = @import("app/ui.zig");
+    _ = @import("app/ssh_palette.zig");
     _ = @import("platform/wayland_backend.zig");
     _ = @import("platform/win32_backend.zig");
     _ = @import("app/event_loop.zig");
@@ -226,13 +306,23 @@ test {
     _ = @import("config/lua_config.zig");
     _ = @import("config/lua_config_test.zig");
     _ = @import("scripting/lua.zig");
+    _ = @import("net/dial.zig");
     _ = @import("ai/redact.zig");
     _ = @import("ai/openai.zig");
     _ = @import("ai/context.zig");
     _ = @import("ai/engine.zig");
     _ = @import("app/ai_controller.zig");
     _ = @import("app/shell_inject.zig");
-    _ = @import("ssh/tunnel.zig");
+    _ = @import("ssh/forward.zig");
+    _ = @import("ssh/ssh_config.zig");
+    _ = @import("ssh/target.zig");
+    _ = @import("ssh/tty.zig");
+    _ = @import("ssh/keyfile.zig");
+    _ = @import("ssh/known_hosts.zig");
+    _ = @import("ssh/bridge.zig");
+    _ = @import("ssh/session.zig");
+    _ = @import("ssh/control.zig");
+    _ = @import("ssh/client.zig");
     _ = @import("scripting/lua_engine.zig");
 }
 

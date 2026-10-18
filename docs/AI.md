@@ -170,9 +170,12 @@ screen is used as context. Explain then describes the visible output.
 
 - Small local models give rough suggestions; a bigger model
   (`qwen2.5-coder:1.5b`/`7b`, or a hosted one) is noticeably better.
-- The connect phase is not covered by `ai.timeout_ms` (std.http has no
-  connect timeout). Against an unroutable host a request can sit in
-  `connect()` until the OS gives up; it only blocks the worker thread, and
-  the next request waits behind it.
+- `ai.timeout_ms` covers the whole request, including name resolution and
+  `connect()` (`src/net/dial.zig`), so an unroutable endpoint gives up on
+  time and shows "AI offline".
+- In an SSH window (`--ssh`) the context says the session is remote
+  ("over SSH to user@host") and leaves out the local OS and shell; the
+  usual redaction applies. Without OSC 133 on the remote shell, the prompt
+  is found heuristically (see [SSH.md](SSH.md#ai)).
 - Ghost text is single-line and drawn up to the end of the cursor row.
 - Each request opens a fresh connection (no keep-alive).

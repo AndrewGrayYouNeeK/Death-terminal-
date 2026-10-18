@@ -104,7 +104,11 @@ config is reloaded.
 | `ai.history` | `5` | Previous commands (with exit codes) sent as context, 0–32 |
 | `ai.output_lines` | `20` | Lines of recent output sent as context, 0–200 |
 | `ai.accept_key` | `"tab"` | Chord that accepts the ghost text |
-| `ssh.enabled`, `ssh.config_file`, `ssh.keepalive_s` | `true`, `~/.ssh/config`, `30` | Placeholders for the libssh2 milestone |
+| `ssh.enabled` | `true` | Built-in SSH client (`--ssh`, Ctrl+Shift+S). See [SSH.md](SSH.md) |
+| `ssh.config_file` | `"~/.ssh/config"` | OpenSSH config to read Host aliases from (`""` = none) |
+| `ssh.keepalive_s` | `30` | Default keepalive interval, 0–3600 (0 = off); profiles can override |
+| `ssh.known_hosts` | `"~/.ssh/known_hosts"` | Host keys file (shared with OpenSSH; appended to, never rewritten) |
+| `ssh.profiles` | `{}` | Named connections: `host`, `port`, `user`, `identity_file`, `jump`, `env`, `command`, `theme`, `forwards`, `keepalive_s`, `reconnect` ([SSH.md](SSH.md#profiles)) |
 
 Key chords use `ctrl`, `shift` and `alt` plus a key name: letters, digits, `f1`–`f12`,
 `page_up`, `home`, `insert`, `equal`, `minus`, `plus`, `kp_add`, … (see
@@ -115,7 +119,7 @@ Actions: `copy`, `paste`, `paste_selection`, `search`, `scroll_page_up`,
 `scroll_bottom`, `zoom_in`, `zoom_out`, `zoom_reset`, `select_all`,
 `clear_selection`, `reload_config` (default Ctrl+Shift+R), `ai_accept` (Tab, only
 while a suggestion shows), `ai_dismiss` (Esc, likewise), `ai_next` / `ai_prev`
-(Alt+] / Alt+[), `ai_explain` (Ctrl+Shift+A). `select_all` is Ctrl+Shift+Alt+A.
+(Alt+] / Alt+[), `ai_explain` (Ctrl+Shift+A), `ssh_palette` (Ctrl+Shift+S). `select_all` is Ctrl+Shift+Alt+A.
 
 ## Errors
 

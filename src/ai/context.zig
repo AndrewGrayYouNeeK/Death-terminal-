@@ -24,6 +24,9 @@ pub const Context = struct {
     history: []const HistoryItem = &.{},
     /// Recent terminal output (tail).
     output: []const u8 = "",
+    /// "user@host" when this terminal is an SSH session: commands run
+    /// there, so the local OS / shell are not claimed.
+    remote: []const u8 = "",
 };
 
 pub const max_alternatives = 3;
@@ -42,8 +45,12 @@ const explain_system =
 ;
 
 fn writeCommon(w: anytype, arena: std.mem.Allocator, ctx: Context) !void {
-    try w.print("OS: {s}\n", .{ctx.os});
-    if (ctx.shell.len > 0) try w.print("Shell: {s}\n", .{std.fs.path.basename(ctx.shell)});
+    if (ctx.remote.len > 0) {
+        try w.print("Session: remote, over SSH to {s}. Commands run on that host; its OS and shell are not known (infer them from the output).\n", .{try redact.redact(arena, ctx.remote)});
+    } else {
+        try w.print("OS: {s}\n", .{ctx.os});
+        if (ctx.shell.len > 0) try w.print("Shell: {s}\n", .{std.fs.path.basename(ctx.shell)});
+    }
     if (ctx.cwd.len > 0) try w.print("Working directory: {s}\n", .{try redact.redact(arena, ctx.cwd)});
     if (ctx.history.len > 0) {
         try w.writeAll("Recent commands:\n");
@@ -218,4 +225,22 @@ test "parseSuggestions: trailing space, nothing new, control characters" {
     const b = try parseSuggestions(t.allocator, "docker", "Sure! Here are some options:\nkubectl get pods", 3);
     defer freeSuggestions(t.allocator, b);
     try t.expectEqual(@as(usize, 0), b.len);
+}
+
+test "remote sessions are marked and still redacted" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const msgs = try suggestMessages(a, .{
+        .input = "export TOKEN=" ++ "ghp_" ++ "abcdefghijklmnopqrstuvwxyz0123456789",
+        .remote = "andrew@build.example.com",
+        .shell = "/usr/bin/zsh",
+        .history = &.{.{ .command = "mytool --password hunter2 --user bob" }},
+    });
+    const u = msgs[1].content;
+    try std.testing.expect(std.mem.indexOf(u8, u, "Session: remote, over SSH to andrew@build.example.com") != null);
+    try std.testing.expect(std.mem.indexOf(u8, u, "OS: ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, u, "Shell: zsh") == null);
+    try std.testing.expect(std.mem.indexOf(u8, u, "ghp_" ++ "abcdefghij") == null);
+    try std.testing.expect(std.mem.indexOf(u8, u, "hunter2") == null);
 }

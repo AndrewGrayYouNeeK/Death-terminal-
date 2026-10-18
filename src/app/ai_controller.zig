@@ -28,6 +28,8 @@ pub const Settings = struct {
     output_lines: u16 = 20,
     /// Shell program for the context ("" = $SHELL).
     shell: []const u8 = "",
+    /// "user@host" when the terminal runs an SSH session (see context.zig).
+    remote: []const u8 = "",
 
     pub fn fromConfig(cfg: *const config.Config) Settings {
         return .{
@@ -176,7 +178,8 @@ pub const Controller = struct {
         const n = @min(hist.len, self.settings.history);
         const items = try arena.alloc(context.HistoryItem, n);
         for (hist[hist.len - n ..], items) |h, *dst| dst.* = .{ .command = h.text, .exit_code = h.exit_code };
-        return .{ .input = input, .cwd = cwd, .shell = self.shellName(), .history = items };
+        const remote = self.settings.remote;
+        return .{ .input = input, .cwd = cwd, .shell = if (remote.len > 0) "" else self.shellName(), .history = items, .remote = remote };
     }
 
     fn tailLines(text: []const u8, n: usize) []const u8 {

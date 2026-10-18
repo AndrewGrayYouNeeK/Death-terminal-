@@ -50,6 +50,31 @@ fn addLua(b: *std.Build, step: *std.Build.Step.Compile, target: std.Build.Resolv
     step.addCSourceFiles(.{ .root = b.path("vendor/lua-5.4.7/src"), .files = &srcs, .flags = flags });
 }
 
+/// Vendored libssh2 1.11.1 (vendor/libssh2-1.11.1) with the OpenSSL
+/// backend: compiled here, linked against the system libcrypto.
+fn addLibssh2(b: *std.Build, step: *std.Build.Step.Compile, target: std.Build.ResolvedTarget) void {
+    if (target.result.os.tag != .linux) return;
+    const srcs = [_][]const u8{
+        "agent.c",  "bcrypt_pbkdf.c", "channel.c",  "comp.c",                "chacha.c",    "cipher-chachapoly.c", "crypt.c",
+        "crypto.c", "global.c",       "hostkey.c",  "keepalive.c",           "kex.c",       "knownhost.c",         "mac.c",
+        "misc.c",   "packet.c",       "pem.c",      "poly1305.c",            "publickey.c", "scp.c",               "session.c",
+        "sftp.c",   "transport.c",    "userauth.c", "userauth_kbd_packet.c", "version.c",   "openssl.c",
+    };
+    step.addIncludePath(b.path("vendor/libssh2-1.11.1/include"));
+    step.addCSourceFiles(.{
+        .root = b.path("vendor/libssh2-1.11.1/src"),
+        .files = &srcs,
+        .flags = &.{ "-std=gnu99", "-DHAVE_CONFIG_H", "-DLIBSSH2_OPENSSL", "-fno-sanitize=undefined" },
+    });
+    // Keepalive-reply bookkeeping that needs libssh2's private headers.
+    step.addIncludePath(b.path("vendor/libssh2-1.11.1/src"));
+    step.addCSourceFile(.{
+        .file = b.path("src/ssh/libssh2_extra.c"),
+        .flags = &.{ "-std=gnu99", "-DHAVE_CONFIG_H", "-DLIBSSH2_OPENSSL", "-fno-sanitize=undefined" },
+    });
+    step.linkSystemLibrary("crypto");
+}
+
 /// The documented default config, printed by --print-default-config.
 fn addDefaultConfig(b: *std.Build, step: *std.Build.Step.Compile) void {
     const wf = b.addWriteFiles();
@@ -99,6 +124,7 @@ pub fn build(b: *std.Build) void {
     addPlatform(b, exe, target);
     addFonts(b, exe);
     addLua(b, exe, target);
+    addLibssh2(b, exe, target);
     addDefaultConfig(b, exe);
     addShellIntegration(b, exe);
 
@@ -119,6 +145,7 @@ pub fn build(b: *std.Build) void {
     addPlatform(b, unit_tests, target);
     addFonts(b, unit_tests);
     addLua(b, unit_tests, target);
+    addLibssh2(b, unit_tests, target);
     addDefaultConfig(b, unit_tests);
     addShellIntegration(b, unit_tests);
 
@@ -141,4 +168,12 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     const run_unit_tests = b.addRunArtifact(unit_tests);
     test_step.dependOn(&run_unit_tests.step);
+
+    // `zig build test-ssh`: integration tests against a throwaway local
+    // sshd (needs openssh-server and passwordless sudo; see tests/ssh).
+    const ssh_tests = b.addSystemCommand(&.{ "python3", "tests/ssh/run.py" });
+    ssh_tests.addArtifactArg(exe);
+    ssh_tests.has_side_effects = true;
+    const ssh_step = b.step("test-ssh", "SSH integration tests (local sshd, needs sudo)");
+    ssh_step.dependOn(&ssh_tests.step);
 }
