@@ -128,7 +128,8 @@ pub const Controller = struct {
         }
         if (self.engine) |e| {
             if (!std.mem.eql(u8, was.endpoint, settings.endpoint) or !std.mem.eql(u8, was.model, settings.model) or
-                !std.mem.eql(u8, was.api_key_env, settings.api_key_env) or was.timeout_ms != settings.timeout_ms)
+                !std.mem.eql(u8, was.api_key_env, settings.api_key_env) or !std.mem.eql(u8, was.reasoning, settings.reasoning) or
+                was.timeout_ms != settings.timeout_ms)
             {
                 e.setOptions(settings.engineOptions()) catch {};
                 ui.setAiStatus(null);

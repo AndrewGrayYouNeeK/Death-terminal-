@@ -77,10 +77,12 @@ config.ai.timeout_ms = 20000
 that) and is ignored everywhere else. grok-4.7 cannot turn reasoning off;
 `high` is the server default and is too slow for ghost text. Live search
 is forced off, and the response is not stored. Reasoning text is dropped;
-only the visible answer becomes ghost text or the explain overlay. xAI
-hosts wait at least 15 seconds even when `timeout_ms` is lower, because
-the model thinks before the first token. A higher `timeout_ms` (up to
-600000) is used as-is.
+only the visible answer becomes ghost text or the explain overlay.
+`ai.max_tokens` is sent as `max_output_tokens`, which caps that visible
+answer; reasoning tokens are not counted against it. xAI hosts wait at
+least 15 seconds even when `timeout_ms` is lower, because the model
+thinks before the first token. A higher `timeout_ms` (up to 600000) is
+used as-is.
 
 The API key is read from that environment variable when a request is made.
 It is never stored in the config; a value that looks like a key (e.g.
@@ -93,13 +95,13 @@ All options (see also [CONFIG.md](CONFIG.md)):
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `ai.enabled` | `true` | Master switch (`--no-ai` overrides) |
-| `ai.endpoint` | `http://localhost:11434/v1` | Base URL; requests go to `{endpoint}/chat/completions` (http or https) |
+| `ai.endpoint` | `http://localhost:11434/v1` | Base URL (http or https). `{endpoint}/chat/completions`, or `{endpoint}/responses` on api.x.ai and us.api.x.ai |
 | `ai.model` | `qwen2.5-coder:0.5b` | Model name sent to the server (`grok-4.7` on xAI) |
 | `ai.reasoning` | `""` | `""` = `low` on api.x.ai, ignored elsewhere; or `low`, `medium`, `high`, `xhigh` |
 | `ai.api_key_env` | `""` | Name of the env var holding the key (`""` = no auth; `XAI_API_KEY` for Grok) |
 | `ai.timeout_ms` | `5000` | Give up after this long (200–600000). x.ai waits at least 15s |
 | `ai.debounce_ms` | `300` | Typing pause before asking |
-| `ai.max_tokens` | `64` | Tokens per suggestion request |
+| `ai.max_tokens` | `64` | Visible tokens per suggestion. On xAI this is `max_output_tokens` |
 | `ai.explain_max_tokens` | `400` | Tokens per explain answer |
 | `ai.history` | `5` | Previous commands (with exit codes) sent as context |
 | `ai.output_lines` | `20` | Lines of recent output sent as context |

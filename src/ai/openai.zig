@@ -33,8 +33,8 @@ pub const Request = struct {
     /// Sent as "Authorization: Bearer ..." when set.
     api_key: ?[]const u8 = null,
     messages: []const Message,
-    /// Visible-token budget. On the Responses API the request adds a
-    /// reasoning allowance, because `max_output_tokens` counts both.
+    /// Visible-token budget. On the Responses API this is
+    /// `max_output_tokens`, which caps the answer and not reasoning.
     max_tokens: u32 = 64,
     temperature: f32 = 0.2,
     /// Whole request deadline. xAI hosts wait at least 15s, because
@@ -65,7 +65,6 @@ fn resolveApi(req: Request) Api {
 /// grok-4.7 thinks before it emits text. A 5s ghost-text timeout dies in
 /// that gap, so xAI hosts get a floor. A longer `ai.timeout_ms` still wins.
 const xai_min_timeout_ms: u32 = 15_000;
-const grok_reasoning_allowance: u32 = 1024;
 
 fn effectiveTimeout(req: Request) u32 {
     if (usesResponsesApi(req.endpoint) and req.timeout_ms < xai_min_timeout_ms) return xai_min_timeout_ms;
@@ -392,7 +391,9 @@ fn buildResponsesBody(allocator: std.mem.Allocator, req: Request) ![]u8 {
         .model = req.model,
         .input = req.messages,
         .stream = true,
-        .max_output_tokens = req.max_tokens +| grok_reasoning_allowance,
+        // Caps the visible answer only. Reasoning tokens are extra, so
+        // adding headroom here would lengthen ghost text and explain.
+        .max_output_tokens = req.max_tokens,
         .reasoning = .{ .effort = effort },
         // The server default is to search. That would ship the command
         // line to the web; suggestions stay on the prompt we already sent.
@@ -410,7 +411,8 @@ const TextPart = struct {
 
 const OutputItem = struct {
     type: ?[]const u8 = null,
-    content: []const TextPart = &.{},
+    /// Null on reasoning items. A type mismatch here fails the whole body.
+    content: ?[]const TextPart = null,
 };
 
 const Chunk = struct {
@@ -454,7 +456,8 @@ fn handlePayload(allocator: std.mem.Allocator, payload: []const u8, sink: anytyp
     }
     for (v.output) |item| {
         if (item.type) |ty| if (!std.mem.eql(u8, ty, "message")) continue;
-        for (item.content) |part| {
+        const parts = item.content orelse continue;
+        for (parts) |part| {
             if (part.type) |ty| if (!std.mem.eql(u8, ty, "output_text")) continue;
             if (part.text) |t| if (!emit(sink, t)) return;
         }
@@ -558,17 +561,25 @@ test "request body is valid JSON with stream=true" {
     defer v.deinit();
     try std.testing.expect(v.value.object.get("stream").?.bool);
     try std.testing.expectEqual(@as(i64, 7), v.value.object.get("max_tokens").?.integer);
+    try std.testing.expect(v.value.object.get("reasoning") == null);
+    try std.testing.expect(v.value.object.get("store") == null);
+    try std.testing.expect(v.value.object.get("search_parameters") == null);
     try std.testing.expectEqualStrings("s \"q\"", v.value.object.get("messages").?.array.items[0].object.get("content").?.string);
 }
 
 test "x.ai hosts use the Responses API; other hosts stay on chat completions" {
     try std.testing.expect(usesResponsesApi("https://api.x.ai/v1"));
     try std.testing.expect(usesResponsesApi("https://api.x.ai/v1/"));
+    try std.testing.expect(usesResponsesApi("https://api.x.ai:443/v1"));
     try std.testing.expect(usesResponsesApi("https://US.API.X.AI/v1"));
     try std.testing.expect(usesResponsesApi("https://us.api.x.ai/v1"));
     try std.testing.expect(!usesResponsesApi("http://localhost:11434/v1"));
     try std.testing.expect(!usesResponsesApi("https://api.openai.com/v1"));
     try std.testing.expect(!usesResponsesApi("https://openrouter.ai/api/v1"));
+    try std.testing.expect(!usesResponsesApi("https://api.x.ai.evil.com/v1"));
+    try std.testing.expect(!usesResponsesApi("https://evil.api.x.ai/v1"));
+    try std.testing.expect(!usesResponsesApi("https://us.api.x.ai.attacker.com/v1"));
+    try std.testing.expect(!usesResponsesApi("https://not-us.api.x.ai/v1"));
 
     const msgs = [_]Message{.{ .role = "user", .content = "git st" }};
     const body = try buildBody(std.testing.allocator, .{
@@ -591,8 +602,29 @@ test "x.ai hosts use the Responses API; other hosts stay on chat completions" {
     try std.testing.expectEqualStrings("deathterminal", obj.get("prompt_cache_key").?.string);
     try std.testing.expectEqualStrings("off", obj.get("search_parameters").?.object.get("mode").?.string);
     try std.testing.expectEqualStrings("low", obj.get("reasoning").?.object.get("effort").?.string);
-    try std.testing.expectEqual(@as(i64, 64 + grok_reasoning_allowance), obj.get("max_output_tokens").?.integer);
+    try std.testing.expectEqual(@as(i64, 64), obj.get("max_output_tokens").?.integer);
     try std.testing.expectEqualStrings("git st", obj.get("input").?.array.items[0].object.get("content").?.string);
+
+    const bare = try buildBody(std.testing.allocator, .{
+        .endpoint = "https://us.api.x.ai/v1",
+        .model = "grok-4.7",
+        .messages = &msgs,
+        .max_tokens = 64,
+    });
+    defer std.testing.allocator.free(bare);
+    const bare_v = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, bare, .{});
+    defer bare_v.deinit();
+    try std.testing.expectEqualStrings("low", bare_v.value.object.get("reasoning").?.object.get("effort").?.string);
+    try std.testing.expectEqual(@as(i64, 64), bare_v.value.object.get("max_output_tokens").?.integer);
+}
+
+test "xAI requests wait at least 15s; other hosts keep the configured timeout" {
+    const xai = Request{ .endpoint = "https://api.x.ai/v1", .model = "grok-4.7", .messages = &.{}, .timeout_ms = 5000 };
+    try std.testing.expectEqual(@as(u32, xai_min_timeout_ms), effectiveTimeout(xai));
+    const longer = Request{ .endpoint = "https://us.api.x.ai/v1/", .model = "grok-4.7", .messages = &.{}, .timeout_ms = 20_000 };
+    try std.testing.expectEqual(@as(u32, 20_000), effectiveTimeout(longer));
+    const local = Request{ .endpoint = "http://localhost:11434/v1", .model = "m", .messages = &.{}, .timeout_ms = 200 };
+    try std.testing.expectEqual(@as(u32, 200), effectiveTimeout(local));
 }
 
 test "sse parser: grok reasoning is not the suggestion" {
@@ -605,16 +637,22 @@ test "sse parser: grok reasoning is not the suggestion" {
         "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking \"}}]}\n" ++
         "data: {\"choices\":[{\"delta\":{\"content\":\"git \"}}]}\n" ++
         "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"nope\"}\n" ++
+        "data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"secret \"}\n" ++
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"status\"}\n" ++
+        "data: {\"type\":\"response.output_text.done\",\"text\":\"git status\"}\n" ++
         "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"git status\"}]}]}}\n" ++
         "data: [DONE]\n";
     try std.testing.expect(!try p.feed(body, c));
     try std.testing.expectEqualStrings("git status", out.items);
 
+    var failed = SseParser.init(std.testing.allocator);
+    defer failed.deinit();
+    try std.testing.expectError(error.ApiError, failed.feed("data: {\"type\":\"response.failed\"}\n", c));
+
     var whole = std.ArrayList(u8).init(std.testing.allocator);
     defer whole.deinit();
     const json =
-        \\{"object":"response","output":[{"type":"reasoning","content":[{"type":"reasoning_text","text":"secret"}]},{"type":"message","content":[{"type":"output_text","text":"ls -la"}]}]}
+        \\{"object":"response","output":[{"type":"reasoning","content":null,"summary":[]},{"type":"message","content":[{"type":"output_text","text":"ls -la"}]}]}
     ;
     try handlePayload(std.testing.allocator, json, Collect{ .out = &whole });
     try std.testing.expectEqualStrings("ls -la", whole.items);

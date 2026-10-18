@@ -100,7 +100,7 @@ config is reloaded.
 | `ai.api_key_env` | `""` | **Name** of an environment variable holding the API key; the key itself never goes in the file (values that look like keys are rejected). `XAI_API_KEY` for Grok |
 | `ai.timeout_ms` | `5000` | Request timeout, 200–600000. x.ai waits at least 15s |
 | `ai.debounce_ms` | `300` | Typing pause before a suggestion is requested, 0–10000 |
-| `ai.max_tokens` | `64` | Tokens per suggestion, 8–4096 |
+| `ai.max_tokens` | `64` | Visible tokens per suggestion, 8–4096. On xAI this is `max_output_tokens` (reasoning is not counted) |
 | `ai.explain_max_tokens` | `400` | Tokens per "explain last error" answer, 16–8192 |
 | `ai.history` | `5` | Previous commands (with exit codes) sent as context, 0–32 |
 | `ai.output_lines` | `20` | Lines of recent output sent as context, 0–200 |
