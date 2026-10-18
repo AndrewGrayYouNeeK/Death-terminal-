@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const posix = std.posix;
 const linux = std.os.linux;
 const ansi_parser = @import("ansi_parser.zig");
+const unicode = @import("unicode.zig");
 const scrollback_mod = @import("scrollback.zig");
 
 /// PTY represents a pseudo-terminal
@@ -176,6 +177,15 @@ pub const Cell = struct {
     bold: bool,
     italic: bool,
     underline: bool,
+    /// Columns this cell's glyph covers: 1 normally, 2 for the leading half
+    /// of a wide character, 0 for the trailing spacer of a wide character
+    /// (spacers hold ' ' so renderers that ignore `width` draw a blank).
+    width: u2 = 1,
+    /// Combining marks attached to `char` (0 = empty slot). Extra marks
+    /// beyond the slots are dropped.
+    combining: [max_combining]u21 = .{0} ** max_combining,
+
+    pub const max_combining = 2;
 
     pub fn init() Cell {
         return Cell{
@@ -187,7 +197,27 @@ pub const Cell = struct {
             .underline = false,
         };
     }
+
+    pub fn isSpacer(self: Cell) bool {
+        return self.width == 0;
+    }
+
+    /// Append `char` and its combining marks to `writer` as UTF-8.
+    pub fn writeUtf8(self: Cell, writer: anytype) !void {
+        try writeCodepoint(writer, self.char);
+        for (self.combining) |cp| {
+            if (cp == 0) break;
+            try writeCodepoint(writer, cp);
+        }
+    }
 };
+
+fn writeCodepoint(writer: anytype, cp: u21) !void {
+    if (cp < 0x20 or cp == 0x7F) return writer.writeByte(' ');
+    var buf: [4]u8 = undefined;
+    const n = std.unicode.utf8Encode(cp, &buf) catch return writer.writeAll("\u{FFFD}");
+    try writer.writeAll(buf[0..n]);
+}
 
 /// Terminal represents the core terminal emulator functionality
 /// Handles PTY (pseudo-terminal) creation, process spawning, and I/O
@@ -371,27 +401,115 @@ pub const Terminal = struct {
             if (try self.parser.advance(byte)) |action| {
                 try ansi_parser.applyAction(action, self);
             }
+            if (self.parser.takePending()) |action| {
+                try ansi_parser.applyAction(action, self);
+            }
         }
     }
 
     // ANSI command implementations
     pub fn putChar(self: *Terminal, ch: u21) !void {
         if (self.cursor_row >= self.rows) return;
-        if (self.cursor_col >= self.cols) {
+        var cp = ch;
+        var w: u16 = unicode.width(cp);
+        if (w == 0) return self.attachCombining(cp);
+        if (w == 2 and self.cols < 2) {
+            cp = unicode.replacement_char;
+            w = 1;
+        }
+
+        if (self.cursor_col + w > self.cols) {
+            // A wide char that doesn't fit in the last column: blank that
+            // column and wrap, like xterm.
+            if (self.cursor_col < self.cols) {
+                self.breakWideAt(self.cursor_row, self.cursor_col);
+                self.buffer[self.cellIndex(self.cursor_row, self.cursor_col)] = self.blankCell();
+            }
             try self.lineFeed();
             self.cursor_col = 0;
         }
 
-        const idx = self.cursor_row * self.cols + self.cursor_col;
-        self.buffer[idx] = Cell{
-            .char = ch,
-            .fg_color = self.current_fg,
-            .bg_color = self.current_bg,
-            .bold = self.current_bold,
-            .italic = self.current_italic,
-            .underline = self.current_underline,
-        };
-        self.cursor_col += 1;
+        const row = self.cursor_row;
+        const col = self.cursor_col;
+        self.breakWideAt(row, col);
+        if (w == 2) self.breakWideAt(row, col + 1);
+
+        var cell = self.blankCell();
+        cell.char = cp;
+        cell.width = @intCast(w);
+        self.buffer[self.cellIndex(row, col)] = cell;
+        if (w == 2) {
+            var spacer = self.blankCell();
+            spacer.width = 0;
+            self.buffer[self.cellIndex(row, col + 1)] = spacer;
+        }
+        self.cursor_col += w;
+    }
+
+    fn cellIndex(self: *const Terminal, row: u16, col: u16) usize {
+        return @as(usize, row) * @as(usize, self.cols) + col;
+    }
+
+    /// Cell with the current pen attributes and a blank glyph.
+    fn blankCell(self: *const Terminal) Cell {
+        var cell = Cell.init();
+        cell.fg_color = self.current_fg;
+        cell.bg_color = self.current_bg;
+        cell.bold = self.current_bold;
+        cell.italic = self.current_italic;
+        cell.underline = self.current_underline;
+        return cell;
+    }
+
+    /// Before overwriting (row, col), dissolve any wide pair it belongs to
+    /// so no orphaned half is left behind.
+    fn breakWideAt(self: *Terminal, row: u16, col: u16) void {
+        if (row >= self.rows or col >= self.cols) return;
+        const cell = &self.buffer[self.cellIndex(row, col)];
+        if (cell.width == 0 and col > 0) {
+            const lead = &self.buffer[self.cellIndex(row, col - 1)];
+            if (lead.width == 2) lead.* = blankLike(lead.*);
+        } else if (cell.width == 2 and col + 1 < self.cols) {
+            const spacer = &self.buffer[self.cellIndex(row, col + 1)];
+            if (spacer.width == 0) spacer.* = blankLike(spacer.*);
+        }
+    }
+
+    fn blankLike(cell: Cell) Cell {
+        var out = cell;
+        out.char = ' ';
+        out.width = 1;
+        out.combining = .{0} ** Cell.max_combining;
+        return out;
+    }
+
+    /// Attach a zero-width codepoint to the previously written cell.
+    fn attachCombining(self: *Terminal, cp: u21) void {
+        if (self.cursor_col == 0) return; // nothing to combine with on this row
+        var col = @min(self.cursor_col, self.cols) - 1;
+        if (self.buffer[self.cellIndex(self.cursor_row, col)].width == 0 and col > 0) col -= 1;
+        const cell = &self.buffer[self.cellIndex(self.cursor_row, col)];
+        for (&cell.combining) |*slot| {
+            if (slot.* == 0) {
+                slot.* = cp;
+                return;
+            }
+        }
+    }
+
+    /// Repair wide pairs on one row after a bulk erase/move touched it.
+    fn fixWideRow(self: *Terminal, row: u16) void {
+        if (row >= self.rows) return;
+        var col: u16 = 0;
+        while (col < self.cols) : (col += 1) {
+            const cell = &self.buffer[self.cellIndex(row, col)];
+            if (cell.width == 2) {
+                const ok = col + 1 < self.cols and self.buffer[self.cellIndex(row, col + 1)].width == 0;
+                if (!ok) cell.* = blankLike(cell.*) else col += 1;
+            } else if (cell.width == 0) {
+                cell.* = blankLike(cell.*); // spacer without a lead
+            }
+        }
     }
 
     pub fn clear(self: *Terminal) !void {
@@ -451,56 +569,39 @@ pub const Terminal = struct {
     }
 
     pub fn eraseDisplay(self: *Terminal, mode: u32) !void {
+        const col = @min(self.cursor_col, self.cols - 1);
+        const here = self.cellIndex(self.cursor_row, col);
         switch (mode) {
             0 => {
                 // Clear from cursor to end of screen
-                const start = self.cursor_row * self.cols + self.cursor_col;
-                for (self.buffer[start..]) |*cell| {
-                    cell.* = Cell.init();
-                }
+                for (self.buffer[here..]) |*cell| cell.* = Cell.init();
             },
             1 => {
                 // Clear from beginning to cursor
-                const end = self.cursor_row * self.cols + self.cursor_col + 1;
-                for (self.buffer[0..end]) |*cell| {
-                    cell.* = Cell.init();
-                }
+                for (self.buffer[0 .. here + 1]) |*cell| cell.* = Cell.init();
             },
             2, 3 => {
                 // Clear entire screen
                 try self.clear();
+                return;
             },
-            else => {},
+            else => return,
         }
+        self.fixWideRow(self.cursor_row);
     }
 
     pub fn eraseLine(self: *Terminal, mode: u32) !void {
-        const row_start = self.cursor_row * self.cols;
-        switch (mode) {
-            0 => {
-                // Clear from cursor to end of line
-                const start = row_start + self.cursor_col;
-                const end = row_start + self.cols;
-                for (self.buffer[start..end]) |*cell| {
-                    cell.* = Cell.init();
-                }
-            },
-            1 => {
-                // Clear from beginning of line to cursor
-                const end = row_start + self.cursor_col + 1;
-                for (self.buffer[row_start..end]) |*cell| {
-                    cell.* = Cell.init();
-                }
-            },
-            2 => {
-                // Clear entire line
-                const end = row_start + self.cols;
-                for (self.buffer[row_start..end]) |*cell| {
-                    cell.* = Cell.init();
-                }
-            },
-            else => {},
-        }
+        const row_start = self.cellIndex(self.cursor_row, 0);
+        const row_end = row_start + self.cols;
+        const here = row_start + @min(self.cursor_col, self.cols - 1);
+        const range: []Cell = switch (mode) {
+            0 => self.buffer[here..row_end],
+            1 => self.buffer[row_start .. here + 1],
+            2 => self.buffer[row_start..row_end],
+            else => return,
+        };
+        for (range) |*cell| cell.* = Cell.init();
+        self.fixWideRow(self.cursor_row);
     }
 
     pub fn scrollUp(self: *Terminal, n: u32) !void {
@@ -630,25 +731,27 @@ pub const Terminal = struct {
         self.title = try self.allocator.dupe(u8, title);
     }
 
+    /// The grid as UTF-8 text, one line per row. Wide-char spacers are
+    /// skipped (the wide glyph already covers two columns).
     pub fn visibleText(self: *const Terminal, allocator: std.mem.Allocator) ![]u8 {
         var list = std.ArrayList(u8).init(allocator);
         errdefer list.deinit();
         var row: u16 = 0;
         while (row < self.rows) : (row += 1) {
-            var col: u16 = 0;
-            while (col < self.cols) : (col += 1) {
-                const ch = self.buffer[row * self.cols + col].char;
-                if (ch < 128) {
-                    try list.append(@intCast(ch));
-                } else {
-                    try list.append('?');
-                }
-            }
+            try appendRowText(self.buffer[self.cellIndex(row, 0)..][0..self.cols], list.writer());
             if (row + 1 < self.rows) try list.append('\n');
         }
         return list.toOwnedSlice();
     }
 };
+
+/// Write a row of cells as UTF-8, skipping wide-char spacers.
+pub fn appendRowText(cells: []const Cell, writer: anytype) !void {
+    for (cells) |cell| {
+        if (cell.isSpacer()) continue;
+        try cell.writeUtf8(writer);
+    }
+}
 
 test "Terminal init" {
     const testing = std.testing;
@@ -713,4 +816,116 @@ test "Cell manipulation" {
     try testing.expectEqual(@as(u21, 'A'), cell.char);
     try testing.expect(cell.bold);
     try testing.expectEqual(@as(u32, 0xFF0000), cell.fg_color);
+}
+
+fn expectRowText(term: *const Terminal, row: u16, expected: []const u8) !void {
+    var list = std.ArrayList(u8).init(std.testing.allocator);
+    defer list.deinit();
+    try appendRowText(term.buffer[@as(usize, row) * term.cols ..][0..term.cols], list.writer());
+    try std.testing.expectEqualStrings(expected, std.mem.trimRight(u8, list.items, " "));
+}
+
+test "UTF-8 lands in the grid as codepoints with wide cells" {
+    const t = std.testing;
+    var term = try Terminal.initBuffer(t.allocator, 2, 20, 4);
+    defer term.deinit();
+
+    try term.processOutput("h\xc3\xa9llo \xe6\x97\xa5\xe6\x9c\xac \xf0\x9f\x99\x82");
+    try t.expectEqual(@as(u21, 0xE9), term.getCell(0, 1).?.char);
+    try t.expectEqual(@as(u21, 0x65E5), term.getCell(0, 6).?.char);
+    try t.expectEqual(@as(u2, 2), term.getCell(0, 6).?.width);
+    try t.expect(term.getCell(0, 7).?.isSpacer());
+    try t.expectEqual(@as(u21, 0x672C), term.getCell(0, 8).?.char);
+    try t.expect(term.getCell(0, 9).?.isSpacer());
+    try t.expectEqual(@as(u21, 0x1F642), term.getCell(0, 11).?.char);
+    try t.expect(term.getCell(0, 12).?.isSpacer());
+    try t.expectEqual(@as(u16, 13), term.cursor_col);
+    try expectRowText(&term, 0, "h\u{e9}llo \u{65e5}\u{672c} \u{1f642}");
+}
+
+test "combining marks attach to the previous cell" {
+    const t = std.testing;
+    var term = try Terminal.initBuffer(t.allocator, 1, 10, 4);
+    defer term.deinit();
+
+    // e + U+0301, then wide 日 + U+0301 + two more marks (third is dropped)
+    try term.processOutput("e\xcc\x81x\xe6\x97\xa5\xcc\x81\xcc\x82\xcc\x83y");
+    try t.expectEqual(@as(u21, 'e'), term.getCell(0, 0).?.char);
+    try t.expectEqual(@as(u21, 0x0301), term.getCell(0, 0).?.combining[0]);
+    try t.expectEqual(@as(u21, 'x'), term.getCell(0, 1).?.char);
+    try t.expectEqual(@as(u21, 0x65E5), term.getCell(0, 2).?.char);
+    try t.expectEqual(@as(u21, 0x0301), term.getCell(0, 2).?.combining[0]);
+    try t.expectEqual(@as(u21, 0x0302), term.getCell(0, 2).?.combining[1]);
+    try t.expect(term.getCell(0, 3).?.isSpacer());
+    try t.expectEqual(@as(u21, 'y'), term.getCell(0, 4).?.char);
+    try t.expectEqual(@as(u16, 5), term.cursor_col);
+
+    // A combining mark at column 0 must not corrupt anything.
+    try term.processOutput("\r\xcc\x81");
+    try t.expectEqual(@as(u16, 0), term.cursor_col);
+    try t.expectEqual(@as(u21, 'e'), term.getCell(0, 0).?.char);
+}
+
+test "wide char wraps instead of splitting at the last column" {
+    const t = std.testing;
+    var term = try Terminal.initBuffer(t.allocator, 2, 5, 4);
+    defer term.deinit();
+
+    try term.processOutput("abcd\xe6\x97\xa5");
+    try t.expectEqual(@as(u21, ' '), term.getCell(0, 4).?.char);
+    try t.expectEqual(@as(u2, 1), term.getCell(0, 4).?.width);
+    try t.expectEqual(@as(u21, 0x65E5), term.getCell(1, 0).?.char);
+    try t.expect(term.getCell(1, 1).?.isSpacer());
+    try t.expectEqual(@as(u16, 2), term.cursor_col);
+}
+
+test "overwriting half of a wide char clears the other half" {
+    const t = std.testing;
+    var term = try Terminal.initBuffer(t.allocator, 1, 6, 4);
+    defer term.deinit();
+
+    try term.processOutput("\xe6\x97\xa5\xe6\x9c\xac");
+    // Overwrite the spacer of 日 (col 1) and the lead of 本 (col 2).
+    try term.processOutput("\x1b[1;2HXY");
+    try t.expectEqual(@as(u21, ' '), term.getCell(0, 0).?.char);
+    try t.expectEqual(@as(u2, 1), term.getCell(0, 0).?.width);
+    try t.expectEqual(@as(u21, 'X'), term.getCell(0, 1).?.char);
+    try t.expectEqual(@as(u21, 'Y'), term.getCell(0, 2).?.char);
+    try t.expectEqual(@as(u2, 1), term.getCell(0, 3).?.width);
+    try t.expectEqual(@as(u21, ' '), term.getCell(0, 3).?.char);
+}
+
+test "erase that splits a wide char leaves no orphan half" {
+    const t = std.testing;
+    var term = try Terminal.initBuffer(t.allocator, 1, 6, 4);
+    defer term.deinit();
+
+    try term.processOutput("\xe6\x97\xa5\xe6\x9c\xac");
+    // Cursor onto the spacer of 日 and erase to end of line.
+    try term.processOutput("\x1b[1;2H\x1b[K");
+    try t.expectEqual(@as(u2, 1), term.getCell(0, 0).?.width);
+    try t.expectEqual(@as(u21, ' '), term.getCell(0, 0).?.char);
+}
+
+test "erase with pending-wrap cursor stays in bounds" {
+    const t = std.testing;
+    var term = try Terminal.initBuffer(t.allocator, 2, 4, 4);
+    defer term.deinit();
+
+    try term.processOutput("\x1b[2;1Habcd"); // cursor_col == cols on last row
+    try term.processOutput("\x1b[1K");
+    try term.processOutput("abcd\x1b[1J");
+    try t.expectEqual(@as(u21, ' '), term.getCell(1, 3).?.char);
+}
+
+test "invalid UTF-8 becomes U+FFFD in the grid" {
+    const t = std.testing;
+    var term = try Terminal.initBuffer(t.allocator, 1, 8, 4);
+    defer term.deinit();
+
+    try term.processOutput("a\xffb\xe6\x97c");
+    try t.expectEqual(unicode.replacement_char, term.getCell(0, 1).?.char);
+    try t.expectEqual(@as(u21, 'b'), term.getCell(0, 2).?.char);
+    try t.expectEqual(unicode.replacement_char, term.getCell(0, 3).?.char);
+    try t.expectEqual(@as(u21, 'c'), term.getCell(0, 4).?.char);
 }

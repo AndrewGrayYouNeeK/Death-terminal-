@@ -1,5 +1,6 @@
 const std = @import("std");
-const Cell = @import("terminal.zig").Cell;
+const terminal = @import("terminal.zig");
+const Cell = terminal.Cell;
 
 /// Scrollback stores lines that have scrolled off the top of the viewport.
 pub const Scrollback = struct {
@@ -51,14 +52,10 @@ pub const Scrollback = struct {
         self.lines.clearRetainingCapacity();
     }
 
-    pub fn lineAsAscii(self: *const Scrollback, index: usize, dest: []u8) usize {
-        const line = self.getLine(index) orelse return 0;
-        const n = @min(dest.len, line.len);
-        var i: usize = 0;
-        while (i < n) : (i += 1) {
-            dest[i] = if (line[i].char < 128) @intCast(line[i].char) else '?';
-        }
-        return n;
+    /// Write a scrollback line as UTF-8 (wide-char spacers skipped).
+    pub fn lineText(self: *const Scrollback, index: usize, writer: anytype) !void {
+        const line = self.getLine(index) orelse return;
+        try terminal.appendRowText(line, writer);
     }
 
     /// Return oldest-first indices of lines containing `query`.
@@ -67,10 +64,12 @@ pub const Scrollback = struct {
         errdefer hits.deinit();
         if (query.len == 0) return hits.toOwnedSlice();
 
-        var buf: [512]u8 = undefined;
+        var buf = std.ArrayList(u8).init(allocator);
+        defer buf.deinit();
         for (self.lines.items, 0..) |_, i| {
-            const n = self.lineAsAscii(i, &buf);
-            if (std.mem.indexOf(u8, buf[0..n], query) != null) {
+            buf.clearRetainingCapacity();
+            try self.lineText(i, buf.writer());
+            if (std.mem.indexOf(u8, buf.items, query) != null) {
                 try hits.append(i);
             }
         }
@@ -99,11 +98,29 @@ test "Scrollback push and trim" {
     try testing.expectEqual(@as(u21, 'B'), scrollback.getLine(0).?[0].char);
     try testing.expectEqual(@as(u21, 'C'), scrollback.getLine(1).?[0].char);
 
-    var line_c = [_]u8{0} ** 8;
-    _ = scrollback.lineAsAscii(1, &line_c);
-    try testing.expectEqual(@as(u8, 'C'), line_c[0]);
+    var text = std.ArrayList(u8).init(testing.allocator);
+    defer text.deinit();
+    try scrollback.lineText(1, text.writer());
+    try testing.expectEqualStrings("C  ", text.items);
 
     const hits = try scrollback.search("C", testing.allocator);
+    defer testing.allocator.free(hits);
+    try testing.expectEqual(@as(usize, 1), hits.len);
+}
+
+test "Scrollback search matches UTF-8" {
+    const testing = std.testing;
+    var scrollback = Scrollback.init(testing.allocator, 4);
+    defer scrollback.deinit();
+
+    var line = [_]Cell{Cell.init()} ** 4;
+    line[0].char = 0x65E5; // 日 (wide)
+    line[0].width = 2;
+    line[1].width = 0;
+    line[2].char = 0xE9; // é
+    try scrollback.pushLine(&line);
+
+    const hits = try scrollback.search("\u{65e5}\u{e9}", testing.allocator);
     defer testing.allocator.free(hits);
     try testing.expectEqual(@as(usize, 1), hits.len);
 }

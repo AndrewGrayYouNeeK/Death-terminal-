@@ -1,4 +1,5 @@
 const std = @import("std");
+const unicode = @import("unicode.zig");
 
 /// ANSI escape sequence parser state
 pub const ParserState = enum {
@@ -63,6 +64,15 @@ pub const Parser = struct {
     current_param: u32,
     saw_digit: bool,
     allocator: std.mem.Allocator,
+    /// In-progress UTF-8 sequence (Ground state only).
+    utf8_cp: u21 = 0,
+    utf8_need: u2 = 0,
+    utf8_lo: u8 = 0x80,
+    utf8_hi: u8 = 0xBF,
+    /// Second action produced by one byte: when a byte interrupts a UTF-8
+    /// sequence, `advance` returns U+FFFD and the byte's own action lands
+    /// here. Drain with `takePending` after every `advance`.
+    pending: ?Action = null,
 
     pub fn init(allocator: std.mem.Allocator) Parser {
         return Parser{
@@ -75,6 +85,12 @@ pub const Parser = struct {
         };
     }
 
+    pub fn takePending(self: *Parser) ?Action {
+        const a = self.pending;
+        self.pending = null;
+        return a;
+    }
+
     pub fn deinit(self: *Parser) void {
         self.osc_buffer.deinit();
     }
@@ -85,6 +101,8 @@ pub const Parser = struct {
         self.current_param = 0;
         self.saw_digit = false;
         self.osc_buffer.clearRetainingCapacity();
+        self.utf8_need = 0;
+        self.pending = null;
     }
 
     /// Parse next byte and return action if complete
@@ -99,6 +117,32 @@ pub const Parser = struct {
     }
 
     fn handleGround(self: *Parser, byte: u8) !?Action {
+        if (self.utf8_need > 0) {
+            if (byte >= self.utf8_lo and byte <= self.utf8_hi) {
+                self.utf8_cp = (self.utf8_cp << 6) | @as(u21, byte & 0x3F);
+                self.utf8_need -= 1;
+                self.utf8_lo = 0x80;
+                self.utf8_hi = 0xBF;
+                if (self.utf8_need == 0) return Action{ .Print = self.utf8_cp };
+                return null;
+            }
+            // Truncated sequence: emit U+FFFD, then process this byte afresh.
+            self.utf8_need = 0;
+            self.pending = try self.groundStart(byte);
+            return Action{ .Print = unicode.replacement_char };
+        }
+        return self.groundStart(byte);
+    }
+
+    fn beginUtf8(self: *Parser, bits: u21, need: u2, lo: u8, hi: u8) ?Action {
+        self.utf8_cp = bits;
+        self.utf8_need = need;
+        self.utf8_lo = lo;
+        self.utf8_hi = hi;
+        return null;
+    }
+
+    fn groundStart(self: *Parser, byte: u8) !?Action {
         return switch (byte) {
             0x1B => {
                 self.state = .Escape;
@@ -107,7 +151,17 @@ pub const Parser = struct {
             0x00...0x1A, 0x1C...0x1F => self.handleC0(byte),
             0x20...0x7E => Action{ .Print = byte },
             0x7F => Action{ .Execute = byte },
-            else => Action{ .Print = byte }, // UTF-8 will be handled at a higher level
+            // Lead bytes, with the valid range of the second byte so overlong
+            // forms and surrogates are rejected (RFC 3629).
+            0xC2...0xDF => self.beginUtf8(byte & 0x1F, 1, 0x80, 0xBF),
+            0xE0 => self.beginUtf8(byte & 0x0F, 2, 0xA0, 0xBF),
+            0xE1...0xEC, 0xEE, 0xEF => self.beginUtf8(byte & 0x0F, 2, 0x80, 0xBF),
+            0xED => self.beginUtf8(byte & 0x0F, 2, 0x80, 0x9F),
+            0xF0 => self.beginUtf8(byte & 0x07, 3, 0x90, 0xBF),
+            0xF1...0xF3 => self.beginUtf8(byte & 0x07, 3, 0x80, 0xBF),
+            0xF4 => self.beginUtf8(byte & 0x07, 3, 0x80, 0x8F),
+            // Stray continuation bytes, C0/C1 overlong leads, F5..FF.
+            0x80...0xC1, 0xF5...0xFF => Action{ .Print = unicode.replacement_char },
         };
     }
 
@@ -540,4 +594,66 @@ test "Parser control characters" {
     const cr = try parser.advance(0x0D);
     try testing.expect(cr != null);
     try testing.expect(cr.? == .CarriageReturn);
+}
+
+fn collectPrints(parser: *Parser, bytes: []const u8, out: *std.ArrayList(u21)) !void {
+    for (bytes) |b| {
+        if (try parser.advance(b)) |a| if (a == .Print) try out.append(a.Print);
+        if (parser.takePending()) |a| if (a == .Print) try out.append(a.Print);
+    }
+}
+
+test "Parser decodes UTF-8" {
+    const testing = std.testing;
+    var parser = Parser.init(testing.allocator);
+    defer parser.deinit();
+    var out = std.ArrayList(u21).init(testing.allocator);
+    defer out.deinit();
+
+    try collectPrints(&parser, "h\xc3\xa9 \xe6\x97\xa5\xf0\x9f\x99\x82", &out);
+    try testing.expectEqualSlices(u21, &.{ 'h', 0xE9, ' ', 0x65E5, 0x1F642 }, out.items);
+}
+
+test "Parser UTF-8 split across chunks" {
+    const testing = std.testing;
+    var parser = Parser.init(testing.allocator);
+    defer parser.deinit();
+    var out = std.ArrayList(u21).init(testing.allocator);
+    defer out.deinit();
+
+    try collectPrints(&parser, "\xe6\x97", &out);
+    try testing.expectEqual(@as(usize, 0), out.items.len);
+    try collectPrints(&parser, "\xa5", &out);
+    try testing.expectEqualSlices(u21, &.{0x65E5}, out.items);
+}
+
+test "Parser replaces invalid UTF-8" {
+    const testing = std.testing;
+    var parser = Parser.init(testing.allocator);
+    defer parser.deinit();
+    var out = std.ArrayList(u21).init(testing.allocator);
+    defer out.deinit();
+
+    // stray continuation, overlong C0 lead, truncated sequence followed by
+    // ASCII, surrogate (ED A0 80), F5 lead, overlong E0 80 80
+    try collectPrints(&parser, "\x80\xc0A\xe6\x97B\xed\xa0\x80\xf5\xe0\x80", &out);
+    const R = unicode.replacement_char;
+    try testing.expectEqualSlices(u21, &.{ R, R, 'A', R, 'B', R, R, R, R, R, R }, out.items);
+}
+
+test "Parser: ESC interrupting UTF-8 still starts a sequence" {
+    const testing = std.testing;
+    var parser = Parser.init(testing.allocator);
+    defer parser.deinit();
+
+    const r = try parser.advance(0xC3);
+    try testing.expect(r == null);
+    const a = try parser.advance(0x1B);
+    try testing.expect(a.? == .Print);
+    try testing.expectEqual(unicode.replacement_char, a.?.Print);
+    try testing.expect(parser.takePending() == null);
+    try testing.expectEqual(ParserState.Escape, parser.state);
+    _ = try parser.advance('[');
+    const h = try parser.advance('H');
+    try testing.expect(h.? == .CSI);
 }

@@ -46,7 +46,10 @@
 - [x] Scrollback buffer implementation
 - [x] PTY on Unix (Linux/macOS)
 - [ ] PTY on Windows (ConPTY)
-- [ ] UTF-8 decoding, wide characters, combining marks
+- [x] UTF-8 decoding with U+FFFD for malformed input
+- [x] Wide characters (East Asian wide/fullwidth, emoji) as 2-column cells
+- [x] Combining marks stored on the base cell (up to 2; shaping waits for real fonts)
+- [ ] Non-ASCII glyphs (renderer draws a replacement box until real fonts land)
 - [ ] Scroll regions (DECSTBM), insert/delete line/char, erase char
 - [ ] Alternate screen (?1049), bracketed paste (?2004), mouse reporting
 - [ ] 256-color and true-color SGR
@@ -186,7 +189,7 @@
 5. ✅ Connect GPU rendering to terminal output (swapchain blit) - COMPLETED
 6. ✅ SPIR-V text pipeline (glyph atlas + instanced draw) - COMPLETED
 7. ✅ HiDPI cell scaling (`--scale`, DPI, compositor buffer scale)
-8. UTF-8 + wide characters
+8. ✅ UTF-8 + wide characters
 9. Full-screen app escape sequences (vim/htop/less/tmux)
 10. Real fonts, selection/copy-paste, scrollback navigation
 11. Lua config, AI suggestions, SSH, plugins, tabs/splits, packaging

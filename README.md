@@ -100,7 +100,7 @@ See [QUICKSTART.md](QUICKSTART.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for deta
 🚧 Actively in development — not yet a daily-driver terminal.
 
 **Done**
-- PTY + shell spawning (Unix), ANSI/VT100 parser (cursor movement, erase, 16 colors, bold/italic/underline, title)
+- PTY + shell spawning (Unix), UTF-8 decoding with wide (2-column) and combining characters, ANSI/VT100 parser (cursor movement, erase, 16 colors, bold/italic/underline, title)
 - Scrollback storage
 - Event loop with headless and native GUI modes, signal handling, clean exit when the shell exits
 - Vulkan loader, instance/device, swapchain present, SPIR-V glyph pipeline, software fallback
@@ -108,9 +108,8 @@ See [QUICKSTART.md](QUICKSTART.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for deta
 - CI (build + unit tests)
 
 **Not done yet** (tracked in [ISSUES.md](ISSUES.md))
-- UTF-8 / wide characters
 - Full-screen app support (scroll regions, alternate screen, insert/delete, 256/true color, mouse, bracketed paste)
-- Real fonts, selection + copy/paste, scrollback navigation
+- Real fonts (non-ASCII currently draws a replacement box), selection + copy/paste, scrollback navigation
 - AI suggestions, SSH, Lua, tabs/splits, packaging, macOS
 
 ## 🧩 Architecture (Simplified)

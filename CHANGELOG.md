@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- UTF-8 decoding in the parser (split-chunk safe; malformed, overlong, and surrogate sequences become U+FFFD)
+- Grid cells store codepoints with a column width: wide chars (East Asian wide/fullwidth, emoji) take 2 cells, combining marks attach to the previous cell
+- `src/terminal/unicode.zig` width lookup over tables generated from Unicode 15.1 (`tools/gen_unicode_width.py`)
+- Headless output, `visibleText`, and scrollback search are UTF-8 aware
+
+### Fixed
+- Overwriting or erasing half of a wide char no longer leaves an orphaned half
+- `ESC[1K` / `ESC[1J` no longer index past the row/grid when the cursor is in the pending-wrap column
+
+### Changed
+- Renderers draw a dedicated replacement glyph for non-ASCII codepoints (until real fonts land); wide-char spacer cells draw blank
+
 ### Fixed
 - Headless redraw keeps blank cells, so spaces and column alignment survive (`echo HELLO_DT` no longer renders as `echoHELLO_DT`)
 - Event loop exits cleanly when the shell exits (PTY hang-up / EIO) instead of spinning
