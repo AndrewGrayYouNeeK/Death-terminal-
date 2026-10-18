@@ -1,27 +1,130 @@
+//! Runtime configuration.
+//!
+//! The primary format is Lua (`config.lua`, see `lua_config.zig` and
+//! docs/CONFIG.md); the old `key = value` config.txt is still read, with a
+//! deprecation note. All strings live in a per-Config arena, so replacing a
+//! value never needs a matching free and `deinit` releases everything.
+
 const std = @import("std");
 const builtin = @import("builtin");
+const color = @import("../terminal/color.zig");
+pub const themes = @import("themes.zig");
+pub const lua_config = @import("lua_config.zig");
+
+pub const CursorShape = enum { block, underline, bar };
+
+/// Per-entry colour overrides applied on top of the selected theme
+/// (null = take the theme's value).
+pub const ColorOverrides = struct {
+    fg: ?u32 = null,
+    bg: ?u32 = null,
+    cursor: ?u32 = null,
+    cursor_text: ?u32 = null,
+    selection_bg: ?u32 = null,
+    selection_fg: ?u32 = null,
+    palette: [256]?u32 = [_]?u32{null} ** 256,
+};
+
+/// Messages produced while loading a config; shown in the terminal's
+/// notice bar and on stderr.
+pub const Diagnostics = struct {
+    allocator: std.mem.Allocator,
+    items: std.ArrayList(Item),
+
+    pub const Severity = enum { err, warning };
+    pub const Item = struct { severity: Severity, text: []u8 };
+
+    pub fn init(allocator: std.mem.Allocator) Diagnostics {
+        return .{ .allocator = allocator, .items = std.ArrayList(Item).init(allocator) };
+    }
+
+    pub fn deinit(self: *Diagnostics) void {
+        self.clear();
+        self.items.deinit();
+    }
+
+    pub fn clear(self: *Diagnostics) void {
+        for (self.items.items) |it| self.allocator.free(it.text);
+        self.items.clearRetainingCapacity();
+    }
+
+    pub fn add(self: *Diagnostics, severity: Severity, comptime fmt: []const u8, args: anytype) void {
+        const text = std.fmt.allocPrint(self.allocator, fmt, args) catch return;
+        self.items.append(.{ .severity = severity, .text = text }) catch self.allocator.free(text);
+    }
+
+    pub fn errorCount(self: *const Diagnostics) usize {
+        var n: usize = 0;
+        for (self.items.items) |it| n += @intFromBool(it.severity == .err);
+        return n;
+    }
+
+    pub fn hasErrors(self: *const Diagnostics) bool {
+        return self.errorCount() != 0;
+    }
+
+    pub fn print(self: *const Diagnostics) void {
+        for (self.items.items) |it| {
+            std.debug.print("config {s}: {s}\n", .{ if (it.severity == .err) "error" else "warning", it.text });
+        }
+    }
+
+    pub fn contains(self: *const Diagnostics, needle: []const u8) bool {
+        for (self.items.items) |it| if (std.mem.indexOf(u8, it.text, needle) != null) return true;
+        return false;
+    }
+};
+
+/// Where a config file was found and how to parse it.
+pub const Source = struct {
+    path: []const u8,
+    kind: Kind,
+    pub const Kind = enum { lua, legacy };
+
+    pub fn fromPath(path: []const u8) Source {
+        return .{ .path = path, .kind = if (std.mem.endsWith(u8, path, ".lua")) .lua else .legacy };
+    }
+};
+
+pub const LoadOptions = struct {
+    /// Expose the full Lua standard library (io, os.execute, require...).
+    lua_unsafe: bool = false,
+};
 
 /// Runtime configuration for DeathTerminal.
 pub const Config = struct {
     allocator: std.mem.Allocator,
-    rows: u16,
-    cols: u16,
-    ai_enabled: bool,
-    ai_endpoint: []const u8,
-    scrollback_lines: usize,
-    headless: bool,
-    scale: f32,
-    backend: Backend,
+    arena: *std.heap.ArenaAllocator,
+    rows: u16 = 24,
+    cols: u16 = 80,
+    ai_enabled: bool = true,
+    /// OpenAI-compatible endpoint (Ollama by default). Used from milestone 8.
+    ai_endpoint: []const u8 = "http://localhost:11434/v1",
+    ai_model: []const u8 = "",
+    /// Environment variable holding the API key ("" = none needed).
+    ai_api_key_env: []const u8 = "",
+    /// SSH placeholders for the libssh2 milestone.
+    ssh_enabled: bool = true,
+    ssh_config_file: []const u8 = "~/.ssh/config",
+    ssh_keepalive_s: u16 = 30,
+    scrollback_lines: usize = 10_000,
+    headless: bool = true,
+    scale: f32 = 0,
+    backend: Backend = .auto,
     /// Font family looked up with fontconfig; empty = bundled JetBrains Mono.
-    font_family: []u8,
+    font_family: []const u8 = "",
     /// Font size in points (at 96 DPI, before HiDPI scaling).
     font_size: f32 = 11,
     /// Cell height multiplier.
     line_height: f32 = 1.0,
-    /// `font = retro` selects the built-in 8x8 bitmap font.
+    /// Use the built-in 8x8 bitmap font.
     font_retro: bool = false,
     /// HarfBuzz ligatures (calt/liga/dlig).
     font_ligatures: bool = true,
+    /// Bundled theme name (see themes.zig).
+    theme: []const u8 = "default",
+    colors: ColorOverrides = .{},
+    cursor_shape: CursorShape = .block,
     /// Mouse selections also go to CLIPBOARD (PRIMARY is always set).
     copy_on_select: bool = false,
     /// Confirm multi-line pastes when the app hasn't enabled bracketed paste.
@@ -33,12 +136,9 @@ pub const Config = struct {
     /// Lines per mouse-wheel notch in the scrollback.
     scroll_lines: u16 = 3,
     /// Extra characters treated as part of a word on double-click.
-    word_chars: []u8,
+    word_chars: []const u8 = "-_./~:@%+#?&=",
     /// Program that opens Ctrl+clicked links (receives the URL as its only argument).
-    url_open_command: []u8,
-    selection_background: u32 = 0x3B5BA5,
-    /// 0xFFFFFFFF keeps the text colour.
-    selection_foreground: u32 = 0xFFFFFFFF,
+    url_open_command: []const u8 = if (builtin.os.tag == .macos) "open" else "xdg-open",
     /// Swapchain present mode: fifo (vsync) | mailbox | immediate |
     /// fifo_relaxed. Falls back to what the surface supports.
     present_mode: []const u8 = "fifo",
@@ -48,49 +148,77 @@ pub const Config = struct {
     /// PTY bytes parsed per batch before the loop services input and
     /// draws (also capped at ~8 ms of parsing).
     read_budget_kb: u32 = 1024,
-    /// `keybind = chord=action` lines, applied in order over the defaults.
-    keybinds: std.ArrayList([]u8),
+    /// Start from the built-in bindings (false = only `keybinds`).
+    default_keybindings: bool = true,
+    /// `chord=action` entries, applied in order over the defaults.
+    keybinds: std.ArrayList([]const u8),
+    /// Shell to run ("" = $SHELL, then /bin/sh).
+    shell_program: []const u8 = "",
+    shell_args: std.ArrayList([]const u8),
+    /// Extra environment for the shell, as NAME=value.
+    shell_env: std.ArrayList([]const u8),
+    /// Starting directory ("" = inherit; "~" is expanded).
+    shell_cwd: []const u8 = "",
 
     pub const Backend = enum { auto, x11, wayland, win32 };
 
     pub fn init(allocator: std.mem.Allocator) Config {
+        const arena = allocator.create(std.heap.ArenaAllocator) catch @panic("config: out of memory");
+        arena.* = std.heap.ArenaAllocator.init(allocator);
         return Config{
             .allocator = allocator,
-            .rows = 24,
-            .cols = 80,
-            .ai_enabled = true,
-            .ai_endpoint = allocator.dupe(u8, "localhost:50051") catch @panic("config: out of memory"),
-            .scrollback_lines = 10_000,
-            .headless = true,
-            .scale = 0,
-            .backend = .auto,
-            .font_family = allocator.alloc(u8, 0) catch @panic("config: out of memory"),
-            .word_chars = allocator.dupe(u8, "-_./~:@%+#?&=") catch @panic("config: out of memory"),
-            .url_open_command = allocator.dupe(u8, if (builtin.os.tag == .macos) "open" else "xdg-open") catch @panic("config: out of memory"),
-            .keybinds = std.ArrayList([]u8).init(allocator),
+            .arena = arena,
+            .keybinds = std.ArrayList([]const u8).init(allocator),
+            .shell_args = std.ArrayList([]const u8).init(allocator),
+            .shell_env = std.ArrayList([]const u8).init(allocator),
         };
     }
 
     pub fn deinit(self: *Config) void {
-        self.allocator.free(self.ai_endpoint);
-        self.allocator.free(self.font_family);
-        self.allocator.free(self.word_chars);
-        self.allocator.free(self.url_open_command);
-        for (self.keybinds.items) |k| self.allocator.free(k);
         self.keybinds.deinit();
+        self.shell_args.deinit();
+        self.shell_env.deinit();
+        self.arena.deinit();
+        self.allocator.destroy(self.arena);
     }
 
-    fn replaceString(self: *Config, slot: *[]u8, value: []const u8) !void {
-        const owned = try self.allocator.dupe(u8, value);
-        self.allocator.free(slot.*);
-        slot.* = owned;
+    /// Copy `value` into the config's arena.
+    pub fn dupe(self: *Config, value: []const u8) ![]const u8 {
+        return self.arena.allocator().dupe(u8, value);
+    }
+
+    fn replaceString(self: *Config, slot: *[]const u8, value: []const u8) !void {
+        slot.* = try self.dupe(value);
+    }
+
+    /// The effective colours: the theme with `colors` overrides on top.
+    pub fn palette(self: *const Config) color.Palette {
+        const t = themes.find(self.theme) orelse &themes.all[0];
+        var p = t.palette();
+        const o = &self.colors;
+        if (o.fg) |v| p.fg = v;
+        if (o.bg) |v| p.bg = v;
+        if (o.cursor) |v| p.cursor = v;
+        if (o.cursor_text) |v| p.cursor_text = v;
+        if (o.selection_bg) |v| p.selection_bg = v;
+        if (o.selection_fg) |v| p.selection_fg = v;
+        for (o.palette, 0..) |v, i| if (v) |c| {
+            p.colors[i] = c;
+        };
+        return p;
+    }
+
+    /// Set or replace the binding for `chord` (`action` "none" unbinds).
+    pub fn bind(self: *Config, chord: []const u8, action: []const u8) !void {
+        const entry = try std.fmt.allocPrint(self.arena.allocator(), "{s}={s}", .{ chord, action });
+        try self.keybinds.append(entry);
     }
 
     fn parseBool(value: []const u8) bool {
         return std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1") or std.mem.eql(u8, value, "yes") or std.mem.eql(u8, value, "on");
     }
 
-    fn parseColor(value: []const u8) !u32 {
+    pub fn parseColor(value: []const u8) !u32 {
         if (std.mem.eql(u8, value, "none") or std.mem.eql(u8, value, "default")) return 0xFFFFFFFF;
         const hex = if (value.len > 0 and value[0] == '#') value[1..] else value;
         if (hex.len != 6) return error.BadColor;
@@ -136,19 +264,17 @@ pub const Config = struct {
         } else if (std.mem.eql(u8, key, "url_open_command")) {
             try self.replaceString(&self.url_open_command, value);
         } else if (std.mem.eql(u8, key, "selection_background")) {
-            self.selection_background = try parseColor(value);
+            self.colors.selection_bg = try parseColor(value);
         } else if (std.mem.eql(u8, key, "selection_foreground")) {
-            self.selection_foreground = try parseColor(value);
+            self.colors.selection_fg = try parseColor(value);
         } else if (std.mem.eql(u8, key, "keybind")) {
-            try self.keybinds.append(try self.allocator.dupe(u8, value));
+            try self.keybinds.append(try self.dupe(value));
         } else return false;
         return true;
     }
 
     fn setFontFamily(self: *Config, name: []const u8) !void {
-        const owned = try self.allocator.dupe(u8, name);
-        self.allocator.free(self.font_family);
-        self.font_family = owned;
+        self.font_family = try self.dupe(name);
     }
 
     fn setFontMode(self: *Config, value: []const u8) !void {
@@ -209,13 +335,14 @@ pub const Config = struct {
                 };
                 _ = try self.applyFontKey(flag, value);
             } else if (std.mem.eql(u8, arg, "--config")) {
+                // Loaded before the CLI flags by `load` (see main.zig).
                 if (i + 1 >= args.len) return error.MissingConfigPath;
                 i += 1;
-                try self.loadFromFile(args[i]);
             }
         }
     }
 
+    /// Legacy `key = value` config.txt.
     pub fn loadFromFile(self: *Config, path: []const u8) !void {
         const file = try std.fs.cwd().openFile(path, .{});
         defer file.close();
@@ -245,24 +372,37 @@ pub const Config = struct {
                 self.ai_enabled = std.mem.indexOf(u8, trimmed, "true") != null;
             } else if (std.mem.startsWith(u8, trimmed, "ai_endpoint =")) {
                 const value = try parseString(trimmed["ai_endpoint =".len..]);
-                self.allocator.free(self.ai_endpoint);
-                self.ai_endpoint = try self.allocator.dupe(u8, value);
+                self.ai_endpoint = try self.dupe(value);
             } else if (std.mem.startsWith(u8, trimmed, "scrollback_lines =")) {
                 self.scrollback_lines = try parseUsize(trimmed["scrollback_lines =".len..]);
             }
         }
     }
 
-    pub fn defaultConfigPath(self: *Config, buffer: []u8) ![]const u8 {
-        _ = self;
-        const home = std.posix.getenv("HOME") orelse return error.HomeNotSet;
-        return try std.fmt.bufPrint(buffer, "{s}/.config/death-terminal/config.txt", .{home});
+    /// Load `src` (Lua or legacy) into this config. Problems are reported
+    /// through `diags`; the caller decides whether to keep the result.
+    pub fn loadSource(self: *Config, src: Source, opts: LoadOptions, diags: *Diagnostics) void {
+        switch (src.kind) {
+            .lua => lua_config.loadFile(self, src.path, opts, diags),
+            .legacy => {
+                self.loadFromFile(src.path) catch |err| {
+                    diags.add(.err, "{s}: {s}", .{ src.path, @errorName(err) });
+                    return;
+                };
+                if (!std.mem.endsWith(u8, src.path, ".txt")) return;
+                diags.add(.warning, "{s} uses the deprecated key = value format; " ++
+                    "run `deathterminal --print-default-config > {s}.lua` and move your settings there", .{ src.path, src.path[0 .. src.path.len - 4] });
+            },
+        }
     }
 
     pub fn tryLoadDefault(self: *Config) void {
-        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-        const path = self.defaultConfigPath(&path_buf) catch return;
-        self.loadFromFile(path) catch {};
+        var diags = Diagnostics.init(self.allocator);
+        defer diags.deinit();
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const src = locate(&buf, null) orelse return;
+        self.loadSource(src, .{}, &diags);
+        diags.print();
     }
 
     fn fontFlag(arg: []const u8) ?[]const u8 {
@@ -302,6 +442,77 @@ pub const Config = struct {
         return trimmed;
     }
 };
+
+/// Find the config file: `explicit` (from --config) if given, else
+/// $XDG_CONFIG_HOME/death-terminal/config.lua (default ~/.config), then each
+/// $XDG_CONFIG_DIRS entry (default /etc/xdg), then the legacy
+/// ~/.config/death-terminal/config.txt. The path is written into `buf`.
+pub fn locate(buf: []u8, explicit: ?[]const u8) ?Source {
+    if (explicit) |p| {
+        if (p.len > buf.len) return null;
+        @memcpy(buf[0..p.len], p);
+        return Source.fromPath(buf[0..p.len]);
+    }
+    const env = std.posix.getenv;
+    const rel = "death-terminal/config.lua";
+    if (env("XDG_CONFIG_HOME")) |x| if (x.len > 0) {
+        if (exists(buf, "{s}/{s}", .{ x, rel })) |p| return .{ .path = p, .kind = .lua };
+    };
+    const home = env("HOME") orelse "";
+    if (home.len > 0) {
+        if (exists(buf, "{s}/.config/{s}", .{ home, rel })) |p| return .{ .path = p, .kind = .lua };
+    }
+    var dirs = std.mem.tokenizeScalar(u8, env("XDG_CONFIG_DIRS") orelse "/etc/xdg", ':');
+    while (dirs.next()) |d| {
+        if (exists(buf, "{s}/{s}", .{ d, rel })) |p| return .{ .path = p, .kind = .lua };
+    }
+    if (home.len > 0) {
+        if (exists(buf, "{s}/.config/death-terminal/config.txt", .{home})) |p| return .{ .path = p, .kind = .legacy };
+    }
+    return null;
+}
+
+/// Where a new config.lua would go (for messages and the file watcher).
+pub fn userConfigPath(buf: []u8) ?[]const u8 {
+    const env = std.posix.getenv;
+    if (env("XDG_CONFIG_HOME")) |x| if (x.len > 0) {
+        return std.fmt.bufPrint(buf, "{s}/death-terminal/config.lua", .{x}) catch null;
+    };
+    const home = env("HOME") orelse return null;
+    return std.fmt.bufPrint(buf, "{s}/.config/death-terminal/config.lua", .{home}) catch null;
+}
+
+fn exists(buf: []u8, comptime fmt: []const u8, args: anytype) ?[]const u8 {
+    const p = std.fmt.bufPrint(buf, fmt, args) catch return null;
+    std.fs.cwd().access(p, .{}) catch return null;
+    return p;
+}
+
+/// Build a complete config: defaults, then the file, then CLI flags. If the
+/// file has errors the returned config holds the defaults (plus flags) and
+/// `diags` explains why.
+pub fn load(allocator: std.mem.Allocator, src: ?Source, args: []const []const u8, opts: LoadOptions, diags: *Diagnostics) !Config {
+    var cfg = Config.init(allocator);
+    errdefer cfg.deinit();
+    if (src) |s| {
+        cfg.loadSource(s, opts, diags);
+        if (diags.hasErrors()) {
+            cfg.deinit();
+            cfg = Config.init(allocator);
+        }
+    }
+    try cfg.loadFromArgs(args);
+    return cfg;
+}
+
+/// The value after `--config` in `args`, if any.
+pub fn configArg(args: []const []const u8) ?[]const u8 {
+    for (args, 0..) |a, i| {
+        if (std.mem.eql(u8, a, "--config") and i + 1 < args.len) return args[i + 1];
+        if (std.mem.startsWith(u8, a, "--config=")) return a["--config=".len..];
+    }
+    return null;
+}
 
 test "Config defaults" {
     const testing = std.testing;
@@ -381,7 +592,8 @@ test "Config selection, clipboard and keybind keys" {
     try testing.expectEqual(@as(u16, 5), config.scroll_lines);
     try testing.expectEqualStrings("-_", config.word_chars);
     try testing.expectEqualStrings("firefox", config.url_open_command);
-    try testing.expectEqual(@as(u32, 0x112233), config.selection_background);
+    try testing.expectEqual(@as(u32, 0x112233), config.colors.selection_bg.?);
+    try testing.expectEqual(@as(u32, 0x112233), config.palette().selection_bg);
     try testing.expectEqual(@as(usize, 2), config.keybinds.items.len);
     try testing.expectEqualStrings("alt+c=copy", config.keybinds.items[1]);
 }
@@ -410,4 +622,32 @@ test "Config performance keys" {
     defer testing.allocator.free(vpath);
     try config.loadFromFile(vpath);
     try testing.expectEqualStrings("mailbox", config.present_mode);
+}
+
+test "Config legacy file through loadSource warns about deprecation" {
+    const testing = std.testing;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "config.txt", .data = "font_size = 14\nmax_fps = 60\n" });
+    const path = try tmp.dir.realpathAlloc(testing.allocator, "config.txt");
+    defer testing.allocator.free(path);
+    var diags = Diagnostics.init(testing.allocator);
+    defer diags.deinit();
+    const args = [_][]const u8{ "dt", "--config", path, "--font-size", "9" };
+    var cfg = try load(testing.allocator, Source.fromPath(path), &args, .{}, &diags);
+    defer cfg.deinit();
+    try testing.expectEqual(@as(u16, 60), cfg.max_fps);
+    // CLI flags win over the file.
+    try testing.expectEqual(@as(f32, 9), cfg.font_size);
+    try testing.expect(!diags.hasErrors());
+    try testing.expect(diags.contains("deprecated"));
+    try testing.expectEqualStrings(path, configArg(&args).?);
+}
+
+test "Config locate prefers XDG config.lua" {
+    const testing = std.testing;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const s = locate(&buf, "/tmp/x.lua").?;
+    try testing.expectEqual(Source.Kind.lua, s.kind);
+    try testing.expectEqual(Source.Kind.legacy, Source.fromPath("/tmp/x.txt").kind);
 }

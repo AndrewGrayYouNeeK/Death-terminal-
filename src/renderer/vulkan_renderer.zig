@@ -411,7 +411,10 @@ pub const VulkanRenderer = struct {
     /// Set the preferred present mode; applied on the next swapchain
     /// (re)creation. Call before attaching for it to take effect at start.
     pub fn setPresentMode(self: *VulkanRenderer, mode: gpu_present.PresentMode) void {
+        if (self.gpu.present_pref == mode) return;
         self.gpu.present_pref = mode;
+        // Takes effect when the swapchain is rebuilt.
+        self.gpu.needs_recreate = true;
     }
 
     pub const PresentResult = enum { presented, skipped, unavailable };

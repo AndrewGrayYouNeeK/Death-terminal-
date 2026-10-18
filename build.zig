@@ -30,6 +30,34 @@ fn addPlatform(b: *std.Build, step: *std.Build.Step.Compile, target: std.Build.R
     }
 }
 
+/// Vendored Lua 5.4 (vendor/lua-5.4.7), compiled into the binary so there is
+/// no system Lua dependency. lua.c/luac.c (the standalone tools) are not
+/// vendored.
+fn addLua(b: *std.Build, step: *std.Build.Step.Compile, target: std.Build.ResolvedTarget) void {
+    const srcs = [_][]const u8{
+        "lapi.c",     "lcode.c",    "lctype.c",   "ldebug.c",  "ldo.c",      "ldump.c",   "lfunc.c",
+        "lgc.c",      "llex.c",     "lmem.c",     "lobject.c", "lopcodes.c", "lparser.c", "lstate.c",
+        "lstring.c",  "ltable.c",   "ltm.c",      "lundump.c", "lvm.c",      "lzio.c",    "lauxlib.c",
+        "lbaselib.c", "lcorolib.c", "ldblib.c",   "liolib.c",  "lmathlib.c", "loadlib.c", "loslib.c",
+        "lstrlib.c",  "ltablib.c",  "lutf8lib.c", "linit.c",
+    };
+    const posix = target.result.os.tag == .linux or target.result.os.tag == .macos;
+    const flags: []const []const u8 = if (posix)
+        &.{ "-std=gnu99", "-DLUA_USE_POSIX", "-fno-sanitize=undefined" }
+    else
+        &.{ "-std=gnu99", "-fno-sanitize=undefined" };
+    step.addIncludePath(b.path("vendor/lua-5.4.7/src"));
+    step.addCSourceFiles(.{ .root = b.path("vendor/lua-5.4.7/src"), .files = &srcs, .flags = flags });
+}
+
+/// The documented default config, printed by --print-default-config.
+fn addDefaultConfig(b: *std.Build, step: *std.Build.Step.Compile) void {
+    const wf = b.addWriteFiles();
+    _ = wf.addCopyFile(b.path("config.example.lua"), "config.example.lua");
+    const mod = wf.add("default_config.zig", "pub const text = @embedFile(\"config.example.lua\");\n");
+    step.root_module.addAnonymousImport("default_config", .{ .root_source_file = mod });
+}
+
 /// Bundled default font (JetBrains Mono, SIL OFL 1.1), embedded with
 /// `@embedFile("jbm_regular")` etc.
 fn addFonts(b: *std.Build, step: *std.Build.Step.Compile) void {
@@ -54,6 +82,8 @@ pub fn build(b: *std.Build) void {
     });
     addPlatform(b, exe, target);
     addFonts(b, exe);
+    addLua(b, exe, target);
+    addDefaultConfig(b, exe);
 
     b.installArtifact(exe);
 
@@ -71,6 +101,8 @@ pub fn build(b: *std.Build) void {
     });
     addPlatform(b, unit_tests, target);
     addFonts(b, unit_tests);
+    addLua(b, unit_tests, target);
+    addDefaultConfig(b, unit_tests);
 
     // `zig build bench`: throughput benchmark, always optimised.
     const bench_exe = b.addExecutable(.{
@@ -81,6 +113,8 @@ pub fn build(b: *std.Build) void {
     });
     addPlatform(b, bench_exe, target);
     addFonts(b, bench_exe);
+    addLua(b, bench_exe, target);
+    addDefaultConfig(b, bench_exe);
     const run_bench = b.addRunArtifact(bench_exe);
     if (b.args) |args| run_bench.addArgs(args);
     const bench_step = b.step("bench", "Run the throughput benchmark (ReleaseFast)");

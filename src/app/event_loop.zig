@@ -16,6 +16,14 @@ const fonts_mod = @import("../font/fonts.zig");
 const frame_mod = @import("../renderer/frame.zig");
 const events = @import("../platform/events.zig");
 const ui_mod = @import("ui.zig");
+const color = @import("../terminal/color.zig");
+const config_watch = @import("config_watch.zig");
+
+/// Wait this long after the last change event before reloading, so an
+/// editor's write+rename save triggers one reload.
+const RELOAD_DEBOUNCE_MS: i64 = 100;
+/// How long the "config reloaded" notice stays up.
+const RELOADED_NOTICE_MS: i64 = 3000;
 
 /// Headless mode polls with this timeout so Ctrl+C / SIGTERM are noticed.
 const HEADLESS_POLL_MS: i32 = 250;
@@ -33,7 +41,17 @@ fn handleSignal(sig: i32) callconv(.C) void {
 /// Main application event loop: PTY I/O, rendering, and subsystem ticks.
 pub const EventLoop = struct {
     allocator: std.mem.Allocator,
-    cfg: *const config.Config,
+    /// Replaced in place when config.lua is reloaded.
+    cfg: *config.Config,
+    /// Command line, re-applied over the file on every reload.
+    args: []const []const u8 = &.{},
+    /// `--config` value, if given.
+    config_arg: ?[]const u8 = null,
+    load_opts: config.LoadOptions = .{},
+    /// File to watch for live reload (may not exist yet).
+    watch_path: ?[]const u8 = null,
+    /// Problems from loading the config at startup, shown in the window.
+    startup_diags: ?*const config.Diagnostics = null,
 
     pub fn run(
         self: *EventLoop,
@@ -73,14 +91,7 @@ pub const EventLoop = struct {
         else
             dpi.detectEnvScale();
 
-        var fonts = try fonts_mod.Fonts.init(self.allocator, .{
-            .family = self.cfg.font_family,
-            .size_pt = self.cfg.font_size,
-            .line_height = self.cfg.line_height,
-            .scale = scale,
-            .retro = self.cfg.font_retro,
-            .ligatures = self.cfg.font_ligatures,
-        });
+        var fonts = try fonts_mod.Fonts.init(self.allocator, fontOptions(self.cfg, scale));
         defer fonts.deinit();
         var frame = frame_mod.Frame.init(self.allocator);
         defer frame.deinit();
@@ -115,20 +126,23 @@ pub const EventLoop = struct {
         defer self.allocator.free(read_buf);
         var mouse = MouseState{};
         var pace = Pacer{
-            .frame_ns = if (self.cfg.max_fps == 0) 0 else std.time.ns_per_s / @as(u64, self.cfg.max_fps),
+            .frame_ns = frameNs(self.cfg.max_fps),
             .read_budget = @as(usize, self.cfg.read_budget_kb) * 1024,
         };
 
         installBindings(self.cfg);
-        var ui = ui_mod.Ui.init(self.allocator, .{
-            .copy_on_select = self.cfg.copy_on_select,
-            .paste_confirm = self.cfg.paste_confirm,
-            .osc52 = ui_mod.Osc52.parse(self.cfg.osc52) orelse .write,
-            .scrollbar = self.cfg.scrollbar,
-            .scroll_lines = self.cfg.scroll_lines,
-            .word_chars = self.cfg.word_chars,
-        });
+        var ui = ui_mod.Ui.init(self.allocator, uiOptions(self.cfg));
         defer ui.deinit();
+        var palette = self.cfg.palette();
+        term.palette = palette;
+        applyCursorShape(term, self.cfg.cursor_shape);
+        var watcher: ?config_watch.Watcher = if (self.watch_path) |p| config_watch.Watcher.init(p) else null;
+        defer if (watcher) |*w| w.deinit();
+        // Pending debounced reload (ms timestamp).
+        var reload_at: ?i64 = null;
+        if (self.startup_diags) |d| if (d.items.items.len > 0) {
+            try showDiagnostics(&ui, d, self.watch_path orelse "config", if (d.hasErrors()) "using the defaults" else null);
+        };
         var view = ViewBuffers.init(self.allocator);
         defer view.deinit();
         const gui = Gui{
@@ -141,6 +155,9 @@ pub const EventLoop = struct {
             .ui = &ui,
             .view = &view,
             .cfg = self.cfg,
+            .palette = &palette,
+            .pace = &pace,
+            .autocomplete = autocomplete,
         };
         std.debug.print("GUI terminal active ({s}, scale={d:.2}). Close the window or exit the shell to quit.\n", .{
             @tagName(window.backend),
@@ -160,19 +177,36 @@ pub const EventLoop = struct {
         while (!shutdown_requested.load(.seq_cst)) {
             var poll_fds = [_]posix.pollfd{
                 .{ .fd = pty_fd, .events = posix.POLL.IN, .revents = 0 },
+                // A negative fd is ignored by poll.
                 .{ .fd = window.connectionFd() orelse -1, .events = posix.POLL.IN, .revents = 0 },
+                .{ .fd = if (watcher) |w| w.fd else -1, .events = posix.POLL.IN, .revents = 0 },
             };
-            const nfd: usize = if (window.connectionFd() != null) 2 else 1;
             // Sleep until input, output or the next frame slot; with nothing
             // to do the timeout is infinite (no wakeups when idle).
-            const timeout: i32 = if (window.hasPending() or pty_backlog)
+            var timeout: i32 = if (window.hasPending() or pty_backlog)
                 0
             else if (need_present or force_present)
                 pace.msUntilNext(nowNs())
             else
                 -1;
-            _ = posix.poll(poll_fds[0..nfd], timeout) catch 0;
+            const now_ms = std.time.milliTimestamp();
+            if (reload_at) |t| timeout = minTimeout(timeout, t - now_ms);
+            if (ui.noticeTimeout(now_ms)) |t| timeout = minTimeout(timeout, t);
+            _ = posix.poll(&poll_fds, timeout) catch 0;
             pace.wakeups += 1;
+
+            if (poll_fds[2].revents & posix.POLL.IN != 0) {
+                if (watcher) |*w| {
+                    if (w.drain()) reload_at = std.time.milliTimestamp() + RELOAD_DEBOUNCE_MS;
+                }
+            }
+            if (reload_at) |t| if (std.time.milliTimestamp() >= t) {
+                reload_at = null;
+                try gui.reloadConfig(self);
+                need_present = true;
+                force_present = true;
+            };
+            if (ui.tickNotice(std.time.milliTimestamp())) need_present = true;
 
             while (true) {
                 switch (window.poll()) {
@@ -197,7 +231,11 @@ pub const EventLoop = struct {
                             .zoom_reset => 0,
                             else => null,
                         };
-                        if (step) |z| {
+                        if (a.action == .reload_config) {
+                            reload_at = null;
+                            try gui.reloadConfig(self);
+                            force_present = true;
+                        } else if (step) |z| {
                             if (try fonts.zoom(z)) {
                                 try regrid(term, &fonts, &soft, window.width, window.height);
                                 std.debug.print("  → zoom: {d:.1}pt, cell {d}x{d}, grid {d}x{d}\n", .{ fonts.size_pt, fonts.metrics.cell_w, fonts.metrics.cell_h, term.cols, term.rows });
@@ -572,7 +610,11 @@ const Gui = struct {
     frame: *frame_mod.Frame,
     ui: *ui_mod.Ui,
     view: *ViewBuffers,
-    cfg: *const config.Config,
+    cfg: *config.Config,
+    /// Effective colours (theme + overrides) of `cfg`.
+    palette: *color.Palette,
+    pace: *Pacer,
+    autocomplete: *ai.Autocomplete,
 
     /// Build the frame and draw it. Unchanged frames are not drawn unless
     /// `force` (expose/resize). Returns whether anything was presented.
@@ -583,8 +625,9 @@ const Gui = struct {
         v.focused = focused;
         v.cursor_visible = composed.cursor_visible;
         v.marks = self.view.marks.items;
-        v.selection_bg = self.cfg.selection_background;
-        v.selection_fg = self.cfg.selection_foreground;
+        v.palette = self.palette;
+        v.selection_bg = self.palette.selection_bg;
+        v.selection_fg = self.palette.selection_fg;
         if (composed.scrollbar) |sb| v.scrollbar = .{ .top = sb.top, .height = sb.height };
         try self.frame.build(self.fonts, self.view.cells.items, self.term.rows, self.term.cols, composed.cursor_row, composed.cursor_col, v);
         if (!self.frame.changed and !force) return false;
@@ -602,6 +645,85 @@ const Gui = struct {
         }
         self.soft.dirty = false;
         return true;
+    }
+
+    /// Re-read the config file and apply what can change live. A file with
+    /// errors leaves the running config untouched and shows why.
+    fn reloadConfig(self: Gui, loop: *const EventLoop) !void {
+        const allocator = self.cfg.allocator;
+        var diags = config.Diagnostics.init(allocator);
+        defer diags.deinit();
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const src = config.locate(&buf, loop.config_arg);
+        const shown_path = if (src) |sv| sv.path else loop.watch_path orelse "config";
+        var next = config.Config.init(allocator);
+        var adopted = false;
+        defer if (!adopted) next.deinit();
+        if (src) |sv| next.loadSource(sv, loop.load_opts, &diags);
+        diags.print();
+        if (diags.hasErrors()) {
+            std.debug.print("config: reload failed, keeping the previous settings\n", .{});
+            try showDiagnostics(self.ui, &diags, shown_path, "kept the previous settings");
+            return;
+        }
+        next.loadFromArgs(loop.args) catch {};
+
+        var restart = std.ArrayList(u8).init(allocator);
+        defer restart.deinit();
+        try restartOnlyChanges(self.cfg, &next, &restart);
+        try self.applyConfig(&next);
+        self.cfg.deinit();
+        self.cfg.* = next;
+        adopted = true;
+        // Slices into the old config's arena were re-pointed by applyConfig.
+        self.ui.opts = uiOptions(self.cfg);
+        self.fonts.opts.family = self.cfg.font_family;
+        self.autocomplete.setEndpoint(self.cfg.ai_endpoint);
+
+        std.debug.print("config: reloaded {s}\n", .{shown_path});
+        var lines = std.ArrayList([]const u8).init(allocator);
+        defer lines.deinit();
+        for (diags.items.items) |it| try lines.append(it.text);
+        var restart_line: []u8 = &.{};
+        defer allocator.free(restart_line);
+        if (restart.items.len > 0) {
+            restart_line = try std.fmt.allocPrint(allocator, "restart DeathTerminal to apply: {s}", .{restart.items});
+            try lines.append(restart_line);
+        }
+        var head_buf: [512]u8 = undefined;
+        const head = std.fmt.bufPrint(&head_buf, "config reloaded: {s}", .{shown_path}) catch "config reloaded";
+        const now = std.time.milliTimestamp();
+        if (lines.items.len > 0) {
+            try self.ui.setNotice(.warning, head, lines.items, 10 * RELOADED_NOTICE_MS, now);
+        } else try self.ui.setNotice(.info, head, &.{}, RELOADED_NOTICE_MS, now);
+    }
+
+    /// Push `next`'s live settings into the running terminal.
+    fn applyConfig(self: Gui, next: *const config.Config) !void {
+        const old = self.cfg;
+        self.palette.* = next.palette();
+        self.term.palette = self.palette.*;
+        applyCursorShape(self.term, next.cursor_shape);
+        if (fontsChanged(old, next)) {
+            if (fonts_mod.Fonts.init(self.cfg.allocator, fontOptions(next, self.fonts.scale))) |f_new| {
+                var f = f_new;
+                // New atlas contents: make sure no cache or GPU copy matches.
+                f.atlas.generation = self.fonts.atlas.generation +% 1;
+                f.atlas.epoch = self.fonts.atlas.epoch +% 1;
+                self.fonts.deinit();
+                self.fonts.* = f;
+                self.frame.invalidate();
+                try regrid(self.term, self.fonts, self.soft, self.window.width, self.window.height);
+                self.ui.sync(self.term);
+                std.debug.print("  → Font: {s} {d:.1}pt, cell {d}x{d}px\n", .{ self.fonts.familyName(), self.fonts.size_pt, self.fonts.metrics.cell_w, self.fonts.metrics.cell_h });
+            } else |err| {
+                std.debug.print("config: cannot load the new font ({s}); keeping the current one\n", .{@errorName(err)});
+            }
+        }
+        self.vk.setPresentMode(renderer.PresentMode.parse(next.present_mode) orelse .fifo);
+        self.pace.frame_ns = frameNs(next.max_fps);
+        self.pace.read_budget = @as(usize, next.read_budget_kb) * 1024;
+        installBindings(next);
     }
 
     /// Execute what the UI queued: PTY writes, clipboard, link opening.
@@ -665,8 +787,108 @@ test "pacer waits for the next frame slot" {
     try std.testing.expect(u.due(0));
 }
 
+fn frameNs(max_fps: u16) u64 {
+    return if (max_fps == 0) 0 else std.time.ns_per_s / @as(u64, max_fps);
+}
+
+/// Combine a poll timeout (-1 = infinite) with another wait in ms.
+fn minTimeout(timeout: i32, ms: i64) i32 {
+    const m: i32 = @intCast(std.math.clamp(ms, 0, std.math.maxInt(i32)));
+    return if (timeout < 0) m else @min(timeout, m);
+}
+
+fn fontOptions(cfg: *const config.Config, scale: f32) fonts_mod.Options {
+    return .{
+        .family = cfg.font_family,
+        .size_pt = cfg.font_size,
+        .line_height = cfg.line_height,
+        .scale = scale,
+        .retro = cfg.font_retro,
+        .ligatures = cfg.font_ligatures,
+    };
+}
+
+fn fontsChanged(a: *const config.Config, b: *const config.Config) bool {
+    return !std.mem.eql(u8, a.font_family, b.font_family) or a.font_size != b.font_size or
+        a.line_height != b.line_height or a.font_retro != b.font_retro or a.font_ligatures != b.font_ligatures;
+}
+
+fn uiOptions(cfg: *const config.Config) ui_mod.Options {
+    return .{
+        .copy_on_select = cfg.copy_on_select,
+        .paste_confirm = cfg.paste_confirm,
+        .osc52 = ui_mod.Osc52.parse(cfg.osc52) orelse .write,
+        .scrollbar = cfg.scrollbar,
+        .scroll_lines = cfg.scroll_lines,
+        .word_chars = cfg.word_chars,
+    };
+}
+
+/// New default cursor shape; also applied now unless an app chose one.
+fn applyCursorShape(term: *terminal.Terminal, shape: config.CursorShape) void {
+    const s: terminal.CursorShape = switch (shape) {
+        .block => .block,
+        .underline => .underline,
+        .bar => .bar,
+    };
+    if (term.cursor_shape == term.default_cursor_shape) term.cursor_shape = s;
+    term.default_cursor_shape = s;
+}
+
+/// Names of changed options that only apply to new terminals.
+fn restartOnlyChanges(a: *const config.Config, b: *const config.Config, out: *std.ArrayList(u8)) !void {
+    const w = out.writer();
+    var first = true;
+    const names = [_]struct { []const u8, bool }{
+        .{ "window.rows/cols", a.rows != b.rows or a.cols != b.cols },
+        .{ "window.scale", a.scale != b.scale },
+        .{ "window.backend", a.backend != b.backend },
+        .{ "scrollback.lines", a.scrollback_lines != b.scrollback_lines },
+        .{ "shell.program", !std.mem.eql(u8, a.shell_program, b.shell_program) },
+        .{ "shell.args", !eqlList(a.shell_args.items, b.shell_args.items) },
+        .{ "shell.env", !eqlList(a.shell_env.items, b.shell_env.items) },
+        .{ "shell.cwd", !std.mem.eql(u8, a.shell_cwd, b.shell_cwd) },
+    };
+    for (names) |n| if (n[1]) {
+        if (!first) try w.writeAll(", ");
+        try w.writeAll(n[0]);
+        first = false;
+    };
+}
+
+fn eqlList(a: []const []const u8, b: []const []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |x, y| if (!std.mem.eql(u8, x, y)) return false;
+    return true;
+}
+
+/// "/a/b/config.lua:3: msg" -> "config.lua:3: msg".
+fn shortenPath(text: []const u8) []const u8 {
+    const colon = std.mem.indexOf(u8, text, ": ") orelse return text;
+    const slash = std.mem.lastIndexOfScalar(u8, text[0..colon], '/') orelse return text;
+    return text[slash + 1 ..];
+}
+
+/// Put config diagnostics in the notice bar.
+fn showDiagnostics(ui: *ui_mod.Ui, diags: *const config.Diagnostics, path: []const u8, consequence: ?[]const u8) !void {
+    var lines = std.ArrayList([]const u8).init(ui.allocator);
+    defer lines.deinit();
+    // Errors first; the headline names the file, so lines start at its
+    // basename ("config.lua:3: ...").
+    for ([_]config.Diagnostics.Severity{ .err, .warning }) |sev| {
+        for (diags.items.items) |it| if (it.severity == sev) try lines.append(shortenPath(it.text));
+    }
+    var head_buf: [512]u8 = undefined;
+    const n = diags.errorCount();
+    const head = if (n > 0)
+        std.fmt.bufPrint(&head_buf, "config: {d} error{s} in {s}; {s}", .{ n, if (n == 1) "" else "s", path, consequence orelse "" }) catch "config errors"
+    else
+        std.fmt.bufPrint(&head_buf, "config: {s}", .{path}) catch "config warnings";
+    try ui.setNotice(if (n > 0) .err else .warning, head, lines.items, null, std.time.milliTimestamp());
+}
+
 fn installBindings(cfg: *const config.Config) void {
-    events.bindings = events.Bindings.defaults();
+    events.bindings = if (cfg.default_keybindings) events.Bindings.defaults() else .{};
     for (cfg.keybinds.items) |spec| {
         events.bindings.apply(spec) catch |err| std.debug.print("config: keybind {s}: {s}\n", .{ spec, @errorName(err) });
     }
@@ -738,6 +960,40 @@ test "headless frame keeps blank columns" {
 
     try std.testing.expect(std.mem.indexOf(u8, out.items, "echo HELLO_D") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "echoHELLO") == null);
+}
+
+test "restart-only changes are listed" {
+    var a = config.Config.init(std.testing.allocator);
+    defer a.deinit();
+    var b = config.Config.init(std.testing.allocator);
+    defer b.deinit();
+    var out = std.ArrayList(u8).init(std.testing.allocator);
+    defer out.deinit();
+    b.font_size = 20; // live
+    try restartOnlyChanges(&a, &b, &out);
+    try std.testing.expectEqualStrings("", out.items);
+    b.scrollback_lines = 5;
+    b.shell_program = "/bin/zsh";
+    try restartOnlyChanges(&a, &b, &out);
+    try std.testing.expectEqualStrings("scrollback.lines, shell.program", out.items);
+    try std.testing.expect(fontsChanged(&a, &b));
+    try std.testing.expectEqual(@as(i32, 5), minTimeout(-1, 5));
+    try std.testing.expectEqual(@as(i32, 3), minTimeout(3, 5));
+    try std.testing.expectEqual(@as(i32, 0), minTimeout(-1, -7));
+    try std.testing.expectEqualStrings("config.lua:3: x: y", shortenPath("~/.config/dt/config.lua:3: x: y"));
+    try std.testing.expectEqualStrings("plain message", shortenPath("plain message"));
+}
+
+test "cursor shape default follows config unless an app changed it" {
+    var term = try terminal.Terminal.initBuffer(std.testing.allocator, 2, 10, 0);
+    defer term.deinit();
+    applyCursorShape(&term, .bar);
+    try std.testing.expectEqual(terminal.CursorShape.bar, term.cursor_shape);
+    try term.processOutput("\x1b[4 q"); // app: underline
+    applyCursorShape(&term, .block);
+    try std.testing.expectEqual(terminal.CursorShape.underline, term.cursor_shape);
+    try term.processOutput("\x1b[0 q"); // app: back to default
+    try std.testing.expectEqual(terminal.CursorShape.block, term.cursor_shape);
 }
 
 test "EventLoop exists" {

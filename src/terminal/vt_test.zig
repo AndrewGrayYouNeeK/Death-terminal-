@@ -275,10 +275,10 @@ test "ED/EL use the current background (bce)" {
     defer term.deinit();
     try term.processOutput("abcd\x1b[44m\x1b[1;3H\x1b[K");
     try t.expectEqual(@as(u21, 'b'), ch(&term, 0, 1));
-    try t.expectEqual(color.ansi16[4], term.getCell(0, 2).?.bg_color);
-    try t.expectEqual(color.ansi16[4], term.getCell(0, 3).?.bg_color);
+    try t.expectEqual(color.indexed(4), term.getCell(0, 2).?.bg_color);
+    try t.expectEqual(color.indexed(4), term.getCell(0, 3).?.bg_color);
     try term.processOutput("\x1b[2J");
-    try t.expectEqual(color.ansi16[4], term.getCell(1, 0).?.bg_color);
+    try t.expectEqual(color.indexed(4), term.getCell(1, 0).?.bg_color);
     try expectCursor(&term, 0, 2); // ED 2 does not move the cursor
 }
 
@@ -328,7 +328,7 @@ test "DECSC/DECRC and CSI s/u save position and attributes" {
     try term.processOutput("\x1b[2;3H\x1b[1;31m\x1b7\x1b[0m\x1b[4;1H\x1b8X");
     try t.expectEqual(@as(u21, 'X'), ch(&term, 1, 2));
     try t.expect(term.getCell(1, 2).?.bold);
-    try t.expectEqual(color.ansi16[1], term.getCell(1, 2).?.fg_color);
+    try t.expectEqual(color.indexed(1), term.getCell(1, 2).?.fg_color);
     try term.processOutput("\x1b[3;5H\x1b[s\x1b[H\x1b[uY");
     try t.expectEqual(@as(u21, 'Y'), ch(&term, 2, 4));
 }
@@ -458,17 +458,17 @@ test "SGR 16, 256 and truecolor (semicolon and colon forms)" {
     defer term.deinit();
     try term.processOutput("\x1b[31;42mA\x1b[91;102mB\x1b[38;5;196;48;5;21mC\x1b[38;2;1;2;3;48;2;4;5;6mD");
     try term.processOutput("\x1b[38:2::7:8:9mE\x1b[38:2:10:11:12mF\x1b[38:5:46mG\x1b[39;49mH");
-    try t.expectEqual(color.ansi16[1], term.getCell(0, 0).?.fg_color);
-    try t.expectEqual(color.ansi16[2], term.getCell(0, 0).?.bg_color);
-    try t.expectEqual(color.ansi16[9], term.getCell(0, 1).?.fg_color);
-    try t.expectEqual(color.ansi16[10], term.getCell(0, 1).?.bg_color);
-    try t.expectEqual(@as(u32, 0xFF0000), term.getCell(0, 2).?.fg_color);
-    try t.expectEqual(@as(u32, 0x0000FF), term.getCell(0, 2).?.bg_color);
+    try t.expectEqual(color.indexed(1), term.getCell(0, 0).?.fg_color);
+    try t.expectEqual(color.indexed(2), term.getCell(0, 0).?.bg_color);
+    try t.expectEqual(color.indexed(9), term.getCell(0, 1).?.fg_color);
+    try t.expectEqual(color.indexed(10), term.getCell(0, 1).?.bg_color);
+    try t.expectEqual(color.indexed(196), term.getCell(0, 2).?.fg_color);
+    try t.expectEqual(color.indexed(21), term.getCell(0, 2).?.bg_color);
     try t.expectEqual(@as(u32, 0x010203), term.getCell(0, 3).?.fg_color);
     try t.expectEqual(@as(u32, 0x040506), term.getCell(0, 3).?.bg_color);
     try t.expectEqual(@as(u32, 0x070809), term.getCell(0, 4).?.fg_color);
     try t.expectEqual(@as(u32, 0x0A0B0C), term.getCell(0, 5).?.fg_color);
-    try t.expectEqual(@as(u32, 0x00FF00), term.getCell(0, 6).?.fg_color);
+    try t.expectEqual(color.indexed(46), term.getCell(0, 6).?.fg_color);
     try t.expectEqual(color.default_fg, term.getCell(0, 7).?.fg_color);
     try t.expectEqual(color.default_bg, term.getCell(0, 7).?.bg_color);
 }

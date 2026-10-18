@@ -110,10 +110,11 @@ See [QUICKSTART.md](QUICKSTART.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for deta
 - Frame pacing with 2 frames in flight, vsync/mailbox/immediate present modes, zero idle CPU, damage-tracked rows and instanced cell draws, coalesced PTY reads so `cat bigfile`/`yes` don't stall input; `zig build bench` (see [docs/PERFORMANCE.md](docs/PERFORMANCE.md))
 - Real fonts: FreeType/HarfBuzz/fontconfig, bold/italic faces, CJK + colour emoji fallback, procedural box drawing, underline styles/colours, runtime zoom, optional retro 8×8 font (see [docs/FONTS.md](docs/FONTS.md))
 - X11 / Wayland / Win32 windows, resize, HiDPI scaling
+- Lua 5.4 config (`~/.config/death-terminal/config.lua`, vendored Lua, sandboxed): typed options with file:line errors shown in the window, bundled themes, key bindings, shell/env/cwd, live reload on save or Ctrl+Shift+R; `deathterminal --print-default-config` (see [docs/CONFIG.md](docs/CONFIG.md))
 - CI (build + unit tests)
 
 **Not done yet** (tracked in [ISSUES.md](ISSUES.md))
-- AI suggestions, SSH, Lua, tabs/splits, packaging, macOS
+- AI suggestions, SSH, Lua plugins/hooks, tabs/splits, packaging, macOS
 
 ## 🧩 Architecture (Simplified)
 

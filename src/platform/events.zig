@@ -60,6 +60,8 @@ pub const Action = enum {
     zoom_reset,
     select_all,
     clear_selection,
+    /// Re-read config.lua now (it also reloads on save).
+    reload_config,
 
     pub fn parse(name: []const u8) ?Action {
         inline for (@typeInfo(Action).Enum.fields) |f| {
@@ -223,6 +225,7 @@ pub const Bindings = struct {
         "ctrl+kp_subtract=zoom_out",
         "ctrl+0=zoom_reset",
         "ctrl+kp_0=zoom_reset",
+        "ctrl+shift+r=reload_config",
     };
 
     pub fn defaults() Bindings {
