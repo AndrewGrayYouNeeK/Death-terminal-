@@ -329,3 +329,60 @@ test "--ssh applies the profile's theme and opens a window" {
     try cfg.loadFromArgs(&.{ "dt", "--headless", "--ssh", "prod" });
     try t.expect(cfg.headless);
 }
+
+test "lua config: plugins and status_bar" {
+    var d = config.Diagnostics.init(t.allocator);
+    defer d.deinit();
+    var cfg = loadStr(
+        \\config.status_bar.enabled = true
+        \\config.plugins_dir = "~/dt-plugins"
+        \\config.plugins.git_branch = { allow = { "exec" }, exec = { "git" } }
+        \\config.plugins["long-command"] = {
+        \\  allow = { "screen", "network" }, hosts = { "*.example.com", "ntfy.sh:443" },
+        \\  memory_mb = 8, cpu_ms = 50, settings = { threshold_s = 10, tags = { "a", "b" } },
+        \\}
+        \\config.plugins.off = { enabled = false }
+    , &d);
+    defer cfg.deinit();
+    d.print();
+    try t.expectEqual(@as(usize, 0), d.items.items.len);
+    try t.expect(cfg.status_bar);
+    try t.expectEqualStrings("~/dt-plugins", cfg.plugins_dir);
+    try t.expectEqual(@as(usize, 3), cfg.plugins.items.len);
+    const g = cfg.plugins.items[0];
+    try t.expectEqualStrings("git_branch", g.name);
+    try t.expect(g.allow.contains(.exec) and !g.allow.contains(.screen));
+    try t.expectEqualStrings("git", g.exec[0]);
+    try t.expectEqual(@as(?bool, null), g.enabled);
+    const l = cfg.plugins.items[1];
+    try t.expect(l.allow.contains(.screen) and l.allow.contains(.network));
+    try t.expectEqual(@as(usize, 2), l.hosts.len);
+    try t.expectEqual(@as(u16, 8), l.memory_mb);
+    try t.expectEqual(@as(u16, 50), l.cpu_ms);
+    try t.expect(l.settings.? == .map);
+    try t.expectEqual(@as(?bool, false), cfg.plugins.items[2].enabled);
+}
+
+test "lua config: plugin mistakes are reported" {
+    var d = config.Diagnostics.init(t.allocator);
+    defer d.deinit();
+    var cfg = loadStr(
+        \\config.plugins.a = { allow = { "root" } }
+        \\config.plugins.b = { exec = { "../bin/sh" } }
+        \\config.plugins.c = { hosts = { "http://x" } }
+        \\config.plugins.d = { memory_mb = 0 }
+        \\config.plugins.e = { alow = {} }
+        \\config.plugins.f = { settings = { f = function() end } }
+        \\config.plugins.Bad = {}
+        \\config.plugins.ok = {}
+    , &d);
+    defer cfg.deinit();
+    try t.expectEqual(@as(usize, 7), d.errorCount());
+    try t.expect(d.contains("plugins.a.allow"));
+    try t.expect(d.contains("plugins.b.exec"));
+    try t.expect(d.contains("plugins.c.hosts"));
+    try t.expect(d.contains("plugins.d.memory_mb"));
+    try t.expect(d.contains("plugins.e: unknown option 'alow'"));
+    try t.expect(d.contains("plugins.f.settings"));
+    try t.expectEqual(@as(usize, 1), cfg.plugins.items.len);
+}

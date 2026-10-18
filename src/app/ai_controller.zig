@@ -68,6 +68,21 @@ pub const Controller = struct {
     explain_gen: u64 = 0,
     explain_title: std.ArrayList(u8),
     shown_status: ?engine_mod.Status = null,
+    /// Plugins' `ai_suggestion` hook (set by the event loop).
+    filter: ?Filter = null,
+
+    pub const FilterResult = union(enum) {
+        keep,
+        drop,
+        /// Replacement full command line (owned by the controller's allocator).
+        replace: []u8,
+    };
+    pub const Filter = struct {
+        ctx: *anyopaque,
+        /// `text` = the whole suggested command line, `input` = what was typed.
+        run: *const fn (ctx: *anyopaque, text: []const u8, input: []const u8) FilterResult,
+        active: *const fn (ctx: *anyopaque) bool,
+    };
 
     pub fn init(allocator: std.mem.Allocator, settings: Settings) Controller {
         var self = Controller{
@@ -306,9 +321,14 @@ pub const Controller = struct {
         }
         // Still exactly where we asked?
         if (!std.meta.eql(anchor, term.cursorMark())) return false;
+        const filtering = if (self.filter) |f| f.active(f.ctx) else false;
+        // Plugins see each suggestion once, complete.
+        if (filtering and !u.done) return false;
         // While streaming, only complete lines count.
         const text = if (u.done) u.text else u.text[0 .. (std.mem.lastIndexOfScalar(u8, u.text, '\n') orelse return false) + 1];
-        const list = try context.parseSuggestions(self.allocator, self.suggest_input.items, text, context.max_alternatives);
+        var list = try context.parseSuggestions(self.allocator, self.suggest_input.items, text, context.max_alternatives);
+        if (filtering) list = try self.applyFilter(list);
+        if (u.done and list.len == 0) self.suggest_anchor = null;
         if (list.len == 0) {
             context.freeSuggestions(self.allocator, list);
             return false;
@@ -319,6 +339,49 @@ pub const Controller = struct {
         if (ui.ghost) |*g| g.index = @min(keep, g.alternatives.items.len - 1);
         if (u.done) self.suggest_anchor = null;
         return true;
+    }
+
+    /// Run each alternative through the plugin filter: keep, drop, or
+    /// replace it (a replacement must still start with the typed input).
+    fn applyFilter(self: *Controller, list: [][]u8) ![][]u8 {
+        const f = self.filter.?;
+        const input = self.suggest_input.items;
+        var kept: usize = 0;
+        var i: usize = 0;
+        errdefer {
+            for (list[0..kept]) |x| self.allocator.free(x);
+            for (list[i..]) |x| self.allocator.free(x);
+            self.allocator.free(list);
+        }
+        while (i < list.len) : (i += 1) {
+            const suffix = list[i];
+            const full = try std.mem.concat(self.allocator, u8, &.{ input, suffix });
+            defer self.allocator.free(full);
+            switch (f.run(f.ctx, full, input)) {
+                .keep => {
+                    list[kept] = suffix;
+                    kept += 1;
+                },
+                .drop => self.allocator.free(suffix),
+                .replace => |r| {
+                    defer self.allocator.free(r);
+                    const line = std.mem.trimRight(u8, r, " \t\r\n");
+                    var ok = line.len > input.len and std.mem.startsWith(u8, line, input) and std.mem.indexOfAny(u8, line, "\r\n\x1b") == null;
+                    if (ok) for (list[0..kept]) |x| if (std.mem.eql(u8, x, line[input.len..])) {
+                        ok = false;
+                    };
+                    if (ok) {
+                        const d = try self.allocator.dupe(u8, line[input.len..]);
+                        self.allocator.free(suffix);
+                        list[kept] = d;
+                        kept += 1;
+                    } else self.allocator.free(suffix);
+                },
+            }
+        }
+        if (kept == list.len) return list;
+        const out = try self.allocator.realloc(list, kept);
+        return out;
     }
 
     fn syncStatus(self: *Controller, ui: *Ui) bool {
@@ -384,6 +447,49 @@ test "controller: typing at a prompt yields ghost text, Tab-accept writes it" {
     try t.expect(ui.ghost == null);
     // Nothing showing: Tab is not consumed (the shell completes).
     try t.expect(!try ui.handleAction(&term, .ai_accept));
+}
+
+const TestFilter = struct {
+    calls: usize = 0,
+    fn run(ctx: *anyopaque, text: []const u8, input: []const u8) Controller.FilterResult {
+        const self: *TestFilter = @ptrCast(@alignCast(ctx));
+        self.calls += 1;
+        std.debug.assert(std.mem.eql(u8, input, "git pu"));
+        if (std.mem.eql(u8, text, "git pull")) return .drop;
+        if (std.mem.eql(u8, text, "git push origin main")) return .{ .replace = t.allocator.dupe(u8, "git push --force-with-lease") catch return .keep };
+        if (std.mem.eql(u8, text, "git pushd")) return .{ .replace = t.allocator.dupe(u8, "rm -rf /") catch return .keep };
+        return .keep;
+    }
+    fn active(_: *anyopaque) bool {
+        return true;
+    }
+};
+
+fn hasGhost(ui: *Ui) bool {
+    return ui.ghost != null;
+}
+
+test "controller: plugin filter drops, replaces and rejects bad replacements" {
+    const replies = [_]mock.Reply{.{ .chunks = mock.sse(&.{ "git push origin main\\n", "git pull\\n", "git pushd\\n", "git pu\\n" }) }};
+    const srv = try mock.MockServer.start(t.allocator, &replies);
+    defer srv.deinit();
+    var url_buf: [64]u8 = undefined;
+    var term = try Terminal.initBuffer(t.allocator, 6, 60, 16);
+    defer term.deinit();
+    var ui = Ui.init(t.allocator, .{});
+    defer ui.deinit();
+    var c = Controller.init(t.allocator, .{ .endpoint = srv.url(&url_buf), .model = "m", .debounce_ms = 0 });
+    defer c.deinit();
+    var tf = TestFilter{};
+    c.filter = .{ .ctx = &tf, .run = TestFilter.run, .active = TestFilter.active };
+    try term.processOutput("\x1b]133;A\x07$ \x1b]133;B\x07git pu");
+    c.onTyped(&ui, &term, "u", 0);
+    c.tick(&term, 0);
+    try waitFor(&c, &ui, &term, hasGhost);
+    const g = ui.ghost.?;
+    try t.expectEqual(@as(usize, 1), g.alternatives.items.len);
+    try t.expectEqualStrings("sh --force-with-lease", g.alternatives.items[0]);
+    try t.expect(tf.calls >= 3);
 }
 
 test "controller: the ghost follows typed characters and hides when the cursor moves" {

@@ -11,6 +11,9 @@ pub const Reply = struct {
     delay_ms: u32 = 0,
     /// Accept, read the request, then never answer (until the client gives up).
     hang: bool = false,
+    /// Status line + headers sent verbatim instead of the default
+    /// HTTP/1.1 head (must end with "\r\n\r\n"), for odd servers.
+    head: ?[]const u8 = null,
 };
 
 pub const MockServer = struct {
@@ -128,7 +131,7 @@ pub const MockServer = struct {
             return;
         }
         var w = stream.writer();
-        try w.print("HTTP/1.1 {d} X\r\ncontent-type: {s}\r\nconnection: close\r\n\r\n", .{ reply.status, reply.content_type });
+        if (reply.head) |h| try w.writeAll(h) else try w.print("HTTP/1.1 {d} X\r\ncontent-type: {s}\r\nconnection: close\r\n\r\n", .{ reply.status, reply.content_type });
         for (reply.chunks) |ch| {
             if (reply.delay_ms > 0) {
                 // Sleep in slices so a closed client or deinit ends it early.

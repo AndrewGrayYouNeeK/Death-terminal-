@@ -25,11 +25,20 @@ pub const Limits = struct {
 
 const hook_every: c_int = 10_000;
 
-const AllocState = struct {
+pub const AllocState = struct {
     used: usize = 0,
     limit: usize,
     instructions: u64 = 0,
     instruction_limit: u64,
+    /// Wall-clock deadline for the current call (std.time.nanoTimestamp,
+    /// 0 = none). Checked by the count hook, so it bounds Lua code but not
+    /// a single long-running C function.
+    deadline_ns: i128 = 0,
+    /// Set once a budget ran out; the hook keeps raising until the next
+    /// `startBudget`, so `pcall` inside the script can't swallow it.
+    killed: bool = false,
+    /// An allocation was refused by the memory cap since `startBudget`.
+    memory_hit: bool = false,
 };
 
 fn luaAlloc(ud: ?*anyopaque, ptr: ?*anyopaque, osize: usize, nsize: usize) callconv(.C) ?*anyopaque {
@@ -40,7 +49,10 @@ fn luaAlloc(ud: ?*anyopaque, ptr: ?*anyopaque, osize: usize, nsize: usize) callc
         st.used -|= old;
         return null;
     }
-    if (nsize > old and st.used + (nsize - old) > st.limit) return null;
+    if (nsize > old and st.used + (nsize - old) > st.limit) {
+        st.memory_hit = true;
+        return null;
+    }
     const p = std.c.realloc(ptr, nsize) orelse return null;
     st.used = st.used - old + nsize;
     return p;
@@ -51,10 +63,34 @@ fn countHook(L: ?*State, ar: ?*c.lua_Debug) callconv(.C) void {
     var ud: ?*anyopaque = null;
     _ = c.lua_getallocf(L, &ud);
     const st: *AllocState = @ptrCast(@alignCast(ud.?));
+    if (st.killed) {
+        _ = c.luaL_error(L, "script took too long (stopped)");
+    }
+    // A coroutine that was stopped earlier still has the every-instruction
+    // hook; put it back to the normal rate now that a new budget runs.
+    if (c.lua_gethookcount(L) != hook_every) {
+        c.lua_sethook(L, countHook, c.LUA_MASKCOUNT, hook_every);
+        st.instructions += 1;
+        return;
+    }
     st.instructions += @intCast(hook_every);
     if (st.instruction_limit != 0 and st.instructions > st.instruction_limit) {
-        _ = c.luaL_error(L, "script took too long (more than %d million instructions)", @as(c_int, @intCast(st.instruction_limit / 1_000_000)));
+        kill(L, st);
+        _ = c.luaL_error(L, "script took too long (more than %d million instructions)", @as(c_int, @intCast(@max(st.instruction_limit / 1_000_000, 1))));
     }
+    if (st.deadline_ns != 0 and std.time.nanoTimestamp() > st.deadline_ns) {
+        kill(L, st);
+        _ = c.luaL_error(L, "script took too long (time limit)");
+    }
+}
+
+/// Mark the state as stopped and make the hook fire on every instruction, so
+/// a script that catches the error with `pcall` is stopped again at its very
+/// next instruction instead of 10k instructions later (which could always
+/// land back inside the protected call). `startBudget` restores the rate.
+fn kill(L: ?*State, st: *AllocState) void {
+    st.killed = true;
+    c.lua_sethook(L, countHook, c.LUA_MASKCOUNT, 1);
 }
 
 pub const Vm = struct {
@@ -80,6 +116,22 @@ pub const Vm = struct {
 
     pub fn memoryUsed(self: *const Vm) usize {
         return self.alloc_state.used;
+    }
+
+    /// Fresh budget for the next call: `instructions` VM instructions
+    /// (0 = unlimited) and `ms` of wall-clock time (0 = no deadline).
+    pub fn startBudget(self: *Vm, instructions: u64, ms: u32) void {
+        const st = self.alloc_state;
+        st.instructions = 0;
+        st.instruction_limit = instructions;
+        st.deadline_ns = if (ms == 0) 0 else std.time.nanoTimestamp() + @as(i128, ms) * std.time.ns_per_ms;
+        if (st.killed) c.lua_sethook(self.L, countHook, c.LUA_MASKCOUNT, hook_every);
+        st.killed = false;
+        st.memory_hit = false;
+    }
+
+    pub fn killed(self: *const Vm) bool {
+        return self.alloc_state.killed;
     }
 };
 
@@ -144,9 +196,34 @@ test "vm runs code and enforces limits" {
     try std.testing.expect(std.mem.indexOf(u8, toString(L, -1).?, "took too long") != null);
     pop(L, 1);
 
-    vm.alloc_state.instructions = 0;
+    vm.startBudget(1_000_000, 0);
     try loadText(L, "local t = {} for i = 1, 1e7 do t[i] = ('x'):rep(100) .. i end", "=mem");
     try std.testing.expectError(error.LuaRuntime, pcall(L, 0, 0));
     try std.testing.expect(std.mem.indexOf(u8, toString(L, -1).?, "memory") != null);
+    pop(L, 1);
+}
+
+test "kill flag survives pcall and the deadline stops loops" {
+    var vm = try Vm.init(.{ .memory = 4 * 1024 * 1024, .instructions = 0 });
+    defer vm.deinit();
+    const L = vm.L;
+    // A script that tries to swallow the abort with pcall still ends.
+    vm.startBudget(2_000_000, 0);
+    try loadText(L, "local n = 0 while true do pcall(function() while true do end end) n = n + 1 end", "=swallow");
+    try std.testing.expectError(error.LuaRuntime, pcall(L, 0, 0));
+    try std.testing.expect(vm.killed());
+    pop(L, 1);
+    // Wall-clock budget without an instruction cap.
+    vm.startBudget(0, 30);
+    const t0 = std.time.milliTimestamp();
+    try loadText(L, "while true do end", "=spin");
+    try std.testing.expectError(error.LuaRuntime, pcall(L, 0, 0));
+    try std.testing.expect(std.mem.indexOf(u8, toString(L, -1).?, "time limit") != null);
+    try std.testing.expect(std.time.milliTimestamp() - t0 < 2000);
+    pop(L, 1);
+    // A fresh budget runs normally again.
+    vm.startBudget(1_000_000, 100);
+    try loadText(L, "return 1", "=ok");
+    try pcall(L, 0, 1);
     pop(L, 1);
 }

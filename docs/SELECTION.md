@@ -47,6 +47,8 @@ CLIPBOARD.
 | Ctrl+= / Ctrl+- / Ctrl+0 | `zoom_in` / `zoom_out` / `zoom_reset` |
 | Ctrl+Shift+R | `reload_config` (see [CONFIG.md](CONFIG.md)) |
 | Ctrl+Shift+S | `ssh_palette`: SSH forwards and profiles (see [SSH.md](SSH.md)) |
+| Ctrl+Shift+P | `command_palette`: built-in actions and plugin commands (see [PLUGINS.md](PLUGINS.md)) |
+| Ctrl+Shift+B | `toggle_status_bar` |
 
 Scroll bindings act on the normal screen only; in the alternate screen
 (less, vim) the key is passed through to the application, e.g. Shift+PgUp sends

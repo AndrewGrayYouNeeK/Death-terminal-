@@ -15,7 +15,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Deprecated
 - `config.txt` (`key = value`): still read when no config.lua exists, with a warning
 
+### Fixed
+- AI "offline" with endpoints that answer HTTP/1.0 or `Connection: close` and label an SSE stream as `application/json` (or send no Content-Type): the body is now sniffed (`data:` vs `{`), so these replies are parsed instead of failing as bad JSON. Close-delimited and Content-Length bodies are covered by tests
+
 ### Added
+- Lua plugins (`~/.config/death-terminal/plugins/<name>/{manifest.lua,init.lua}`): each runs in its own sandboxed Lua state with memory and per-callback CPU limits (enforced even through `pcall`), and gets only the permissions granted in `config.plugins.<name>.allow` (`screen`, `input`, `pty`, `clipboard`, `network` + `hosts`, `exec` + `exec` allowlist, `fs` in its data dir, `ai`)
+- Hooks: startup, config_reload, shutdown, key (can consume), command_start / command_finish with exit code and duration (OSC 133), output_line, cwd, title, bell, focus, ssh_connect / ssh_disconnect (built-in client, OSC 7799 with a per-window nonce), ai_suggestion (filter / rewrite)
+- Plugin API: palette commands, keybindings, status-bar segments, toasts (+ desktop notifications), timers, custom themes, built-in actions, async HTTP and exec, scoped files, `require` within the plugin
+- Errors are contained: logged with tracebacks to `plugins.log`, shown as toasts, and a plugin with 5 errors in 60 s is disabled for the session
+- Command palette (Ctrl+Shift+P, `command_palette`): plugin commands and every built-in action with its chord. The SSH palette shares the same widget
+- Optional status bar (`config.status_bar.enabled`, Ctrl+Shift+B `toggle_status_bar`)
+- `deathterminal --plugins list|enable|disable`, `--no-plugins`, `config.plugins_enabled`, `config.plugins_dir`
+- Example plugins: `git_branch`, `long_command`, `theme_cycle`; docs/PLUGINS.md
 - Built-in SSH via libssh2 1.11.1 (vendored, built by `zig build`, links system libcrypto): `deathterminal --ssh <profile|~/.ssh/config Host|user@host[:port]>` opens a window running the client; `--ssh-session` runs it in any terminal
 - `config.ssh.profiles` (host, port, user, identity_file, jump/ProxyJump, env, command, theme, forwards, keepalive_s, reconnect) with validation, and `config.ssh.known_hosts`; `~/.ssh/config` parsing (Host patterns, HostName, User, Port, IdentityFile, ProxyJump, Include)
 - Auth: ssh-agent, public keys incl. encrypted (passphrase prompt), keyboard-interactive, password, all drawn in-terminal; secrets are wiped from memory and never logged or stored

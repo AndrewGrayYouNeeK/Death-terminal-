@@ -10,7 +10,7 @@ const std = @import("std");
 const terminal = @import("../terminal/terminal.zig");
 const selection = @import("../terminal/selection.zig");
 const search = @import("../terminal/search.zig");
-pub const ssh_palette = @import("ssh_palette.zig");
+pub const palette_mod = @import("palette.zig");
 const urls = @import("../terminal/urls.zig");
 const input = @import("../terminal/input.zig");
 const events = @import("../platform/events.zig");
@@ -55,11 +55,14 @@ pub const Effect = union(enum) {
     request_paste: struct { target: events.ClipTarget, purpose: events.PastePurpose },
     /// Allowlisted URL to hand to the opener (owned).
     open_url: []u8,
-    /// Something picked in the SSH palette (Ctrl+Shift+S).
-    ssh: ssh_palette.Pick,
+    /// Something picked in the SSH (Ctrl+Shift+S) or command palette
+    /// (Ctrl+Shift+P).
+    palette: palette_mod.Pick,
 };
 
 pub const Composed = struct {
+    /// Rows in `cells` (the grid, plus the status bar when shown).
+    rows: u16 = 0,
     cursor_row: u16,
     cursor_col: u16,
     cursor_visible: bool,
@@ -91,6 +94,29 @@ pub const Notice = struct {
     pub const max_rows = 6;
     pub const max_ai_rows = 14;
 };
+
+/// A short message in the top-right corner (plugin notifications).
+pub const Toast = struct {
+    text: []u8,
+    level: Level,
+    expires_ms: i64,
+
+    pub const max = 4;
+    pub const Level = enum {
+        info,
+        warn,
+        err,
+        fn colors(self: Level) [2]u32 {
+            return switch (self) {
+                .info => .{ 0x5FAFFF, 0x26303A },
+                .warn => .{ 0xFFD75F, 0x3A3420 },
+                .err => .{ 0xFF5F5F, 0x3E2222 },
+            };
+        }
+    };
+};
+
+pub const StatusPiece = struct { text: []u8, fg: ?u32 = null };
 
 /// AI suggestion shown as dim "ghost" text after the cursor. Only drawn
 /// while the cursor is still where it was when the suggestion arrived;
@@ -132,15 +158,27 @@ pub const Ui = struct {
     ghost: ?Ghost = null,
     /// Short AI status tag for the top-right corner ("AI offline"), owned.
     ai_status: ?[]u8 = null,
-    /// The SSH palette, while open (filled by the event loop).
-    ssh_palette: ?ssh_palette.Palette = null,
+    /// The SSH or command palette, while open (filled by the event loop).
+    palette: ?palette_mod.Palette = null,
+    /// Small messages stacked in the top-right corner (plugins).
+    toasts: std.ArrayList(Toast) = undefined,
+    /// The status bar: one row under the grid while shown. The event loop
+    /// reserves the row (`statusRows`) and sets the text.
+    status_visible: bool = false,
+    status_left: std.ArrayListUnmanaged(StatusPiece) = .{},
+    status_right: std.ArrayListUnmanaged(StatusPiece) = .{},
 
     pub fn init(allocator: std.mem.Allocator, opts: Options) Ui {
-        return .{ .allocator = allocator, .opts = opts, .effects = std.ArrayList(Effect).init(allocator) };
+        return .{ .allocator = allocator, .opts = opts, .effects = std.ArrayList(Effect).init(allocator), .toasts = std.ArrayList(Toast).init(allocator) };
     }
 
     pub fn deinit(self: *Ui) void {
-        self.closeSshPalette();
+        self.closePalette();
+        for (self.toasts.items) |t| self.allocator.free(t.text);
+        self.toasts.deinit();
+        self.clearStatus();
+        self.status_left.deinit(self.allocator);
+        self.status_right.deinit(self.allocator);
         self.closeSearch();
         self.clearNotice();
         self.clearGhost();
@@ -161,7 +199,7 @@ pub const Ui = struct {
             .set_clipboard => |c| self.allocator.free(c.text),
             .open_url => |u| self.allocator.free(u),
             .request_paste => {},
-            .ssh => |pk| switch (pk) {
+            .palette => |pk| switch (pk) {
                 .open => |n| self.allocator.free(n),
                 else => {},
             },
@@ -471,7 +509,7 @@ pub const Ui = struct {
                 const n = g.alternatives.items.len;
                 g.index = if (a == .ai_next) (g.index + 1) % n else (g.index + n - 1) % n;
             },
-            .none, .zoom_in, .zoom_out, .zoom_reset, .reload_config, .ai_explain, .ssh_palette => return false,
+            .none, .zoom_in, .zoom_out, .zoom_reset, .reload_config, .ai_explain, .ssh_palette, .command_palette, .toggle_status_bar, .plugin_binding => return false,
         }
         return true;
     }
@@ -481,6 +519,8 @@ pub const Ui = struct {
     /// Clipboard contents arrived (see `Effect.request_paste`).
     pub fn onPaste(self: *Ui, term: *const Terminal, data: []const u8, target: events.ClipTarget, purpose: events.PastePurpose) !void {
         switch (purpose) {
+            // Handled by the event loop before it gets here.
+            .plugin => return,
             .osc52 => {
                 if (self.opts.osc52 != .read_write) return;
                 var out = std.ArrayList(u8).init(self.allocator);
@@ -540,7 +580,7 @@ pub const Ui = struct {
     /// Text typed while an overlay (paste prompt / search) is open. Returns
     /// false when no overlay wants it (send it to the PTY).
     pub fn handleText(self: *Ui, term: *const Terminal, bytes: []const u8) !bool {
-        if (self.ssh_palette) |*p| {
+        if (self.palette) |*p| {
             try self.paletteResult(try p.handleText(bytes));
             return true;
         }
@@ -594,7 +634,7 @@ pub const Ui = struct {
 
     /// Special keys while an overlay is open; false = not consumed.
     pub fn handleKey(self: *Ui, term: *const Terminal, key: input.Key, mods: input.Mods) !bool {
-        if (self.ssh_palette) |*p| {
+        if (self.palette) |*p| {
             try self.paletteResult(try p.handleKey(key));
             return true;
         }
@@ -868,32 +908,172 @@ pub const Ui = struct {
         return self.prompt != null or self.search != null;
     }
 
-    // ------------------------------------------------------- ssh palette
+    // ------------------------------------------------------------ palette
 
-    /// Opens (or returns the open) SSH palette; the caller fills it.
-    pub fn openSshPalette(self: *Ui, title: []const u8) !*ssh_palette.Palette {
-        if (self.ssh_palette == null) {
+    /// Opens a palette in `mode` (replacing one in another mode); the
+    /// caller fills it.
+    pub fn openPalette(self: *Ui, mode: palette_mod.Mode, title: []const u8) !*palette_mod.Palette {
+        if (self.palette) |p| if (p.mode != mode) self.closePalette();
+        if (self.palette == null) {
             self.closeSearch();
-            self.ssh_palette = try ssh_palette.Palette.init(self.allocator, title);
+            self.palette = try palette_mod.Palette.init(self.allocator, mode, title);
         }
-        return &self.ssh_palette.?;
+        return &self.palette.?;
     }
 
-    pub fn closeSshPalette(self: *Ui) void {
-        if (self.ssh_palette) |*p| p.deinit();
-        self.ssh_palette = null;
+    pub fn paletteOpen(self: *const Ui, mode: palette_mod.Mode) bool {
+        return if (self.palette) |p| p.mode == mode else false;
     }
 
-    fn paletteResult(self: *Ui, r: ssh_palette.Result) !void {
+    pub fn closePalette(self: *Ui) void {
+        if (self.palette) |*p| p.deinit();
+        self.palette = null;
+    }
+
+    fn paletteResult(self: *Ui, r: palette_mod.Result) !void {
         switch (r) {
             .none => {},
-            .close => self.closeSshPalette(),
+            .close => self.closePalette(),
             .pick => |pk| {
                 errdefer if (pk == .open) self.allocator.free(pk.open);
-                try self.effects.append(.{ .ssh = pk });
-                // Toggling keeps the list open (it is refreshed); the rest close it.
-                if (pk != .toggle) self.closeSshPalette();
+                // Close first: the pick may open another overlay.
+                if (pk != .toggle) self.closePalette();
+                try self.effects.append(.{ .palette = pk });
             },
+        }
+    }
+
+    // ------------------------------------------------------------- toasts
+
+    /// Add a toast (top-right, newest at the bottom); the oldest goes when
+    /// there are more than `Toast.max`.
+    pub fn addToast(self: *Ui, text: []const u8, level: Toast.Level, ttl_ms: i64, now_ms: i64) !void {
+        var clean = std.ArrayList(u8).init(self.allocator);
+        defer clean.deinit();
+        // One line, no control characters, at most 200 bytes.
+        var it = (std.unicode.Utf8View.init(text) catch std.unicode.Utf8View.initUnchecked("(invalid UTF-8)")).iterator();
+        while (it.nextCodepointSlice()) |cs| {
+            if (clean.items.len + cs.len > 200) break;
+            if (cs.len == 1 and (cs[0] < 0x20 or cs[0] == 0x7f)) {
+                try clean.append(' ');
+            } else try clean.appendSlice(cs);
+        }
+        const owned = try clean.toOwnedSlice();
+        errdefer self.allocator.free(owned);
+        if (self.toasts.items.len >= Toast.max) {
+            self.allocator.free(self.toasts.items[0].text);
+            _ = self.toasts.orderedRemove(0);
+        }
+        try self.toasts.append(.{ .text = owned, .level = level, .expires_ms = now_ms + @max(ttl_ms, 500) });
+    }
+
+    /// Drop expired toasts; true if any went.
+    pub fn tickToasts(self: *Ui, now_ms: i64) bool {
+        var changed = false;
+        var i: usize = 0;
+        while (i < self.toasts.items.len) {
+            if (self.toasts.items[i].expires_ms <= now_ms) {
+                self.allocator.free(self.toasts.items[i].text);
+                _ = self.toasts.orderedRemove(i);
+                changed = true;
+            } else i += 1;
+        }
+        return changed;
+    }
+
+    pub fn toastTimeout(self: *const Ui, now_ms: i64) ?i64 {
+        var best: ?i64 = null;
+        for (self.toasts.items) |t| {
+            const left = @max(t.expires_ms - now_ms, 0);
+            best = if (best) |b| @min(b, left) else left;
+        }
+        return best;
+    }
+
+    fn drawToasts(self: *const Ui, cells: []Cell, rows: u16, cols: u16, first_row: usize) void {
+        if (cols < 12) return;
+        var row = first_row;
+        for (self.toasts.items) |t| {
+            if (row >= rows) break;
+            const max_w: usize = @max(@as(usize, cols) / 2, @min(@as(usize, cols) - 2, 30));
+            const tw = textCols(t.text);
+            const w = @min(tw + 4, max_w);
+            const start: usize = cols - w;
+            const line = cells[row * cols ..][start..cols];
+            const colors = t.level.colors();
+            drawText(line, " ● ", "", colors[0], colors[1]);
+            const used: usize = @min(3, line.len);
+            var text_cells = line[used..];
+            var c = Cell.init();
+            c.bg_color = colors[1];
+            c.fg_color = 0xF0F0F0;
+            @memset(text_cells, c);
+            if (tw + 1 > text_cells.len and text_cells.len > 1) {
+                // Cut with an ellipsis.
+                drawText(text_cells[0 .. text_cells.len - 1], t.text, "", 0xF0F0F0, colors[1]);
+                text_cells[text_cells.len - 2].char = '…';
+                text_cells[text_cells.len - 2].width = 1;
+            } else drawText(text_cells, t.text, "", 0xF0F0F0, colors[1]);
+            row += 1;
+        }
+    }
+
+    // --------------------------------------------------------- status bar
+
+    /// Rows the status bar takes under the grid (0 or 1).
+    pub fn statusRows(self: *const Ui) u16 {
+        return @intFromBool(self.status_visible);
+    }
+
+    pub fn clearStatus(self: *Ui) void {
+        for (self.status_left.items) |p| self.allocator.free(p.text);
+        for (self.status_right.items) |p| self.allocator.free(p.text);
+        self.status_left.clearRetainingCapacity();
+        self.status_right.clearRetainingCapacity();
+    }
+
+    /// Append a segment (copied) to the left or right group.
+    pub fn addStatus(self: *Ui, right: bool, text: []const u8, fg: ?u32) !void {
+        const owned = try self.allocator.dupe(u8, text);
+        errdefer self.allocator.free(owned);
+        for (owned) |*b| if (b.* < 0x20 or b.* == 0x7f) {
+            b.* = ' ';
+        };
+        const list = if (right) &self.status_right else &self.status_left;
+        try list.append(self.allocator, .{ .text = owned, .fg = fg });
+    }
+
+    fn drawStatus(self: *const Ui, row: []Cell) void {
+        const bg: u32 = 0x202020;
+        var base = Cell.init();
+        base.bg_color = bg;
+        base.fg_color = 0xB0B0B0;
+        @memset(row, base);
+        // Right group first (measured), then the left group fills what's left.
+        var right_w: usize = 0;
+        for (self.status_right.items) |p| right_w += textCols(p.text) + 3;
+        var right_start: usize = if (right_w < row.len) row.len - right_w else row.len;
+        var col: usize = 0;
+        for (self.status_left.items, 0..) |p, i| {
+            if (col >= right_start) break;
+            if (i > 0 and col + 1 < right_start) {
+                row[col + 1].char = '│';
+                row[col + 1].fg_color = 0x505050;
+                col += 2;
+            }
+            col += 1;
+            if (col >= right_start) break;
+            drawPlain(row[col..right_start], p.text, p.fg orelse 0xD0D0D0);
+            col += @min(textCols(p.text), right_start - col);
+        }
+        for (self.status_right.items) |p| {
+            if (right_start + 1 >= row.len) break;
+            row[right_start + 1].char = '│';
+            row[right_start + 1].fg_color = 0x505050;
+            right_start += 2;
+            if (right_start >= row.len) break;
+            drawPlain(row[right_start..], p.text, p.fg orelse 0xD0D0D0);
+            right_start += @min(textCols(p.text) + 1, row.len - right_start);
         }
     }
 
@@ -1079,7 +1259,7 @@ pub const Ui = struct {
             }
         }
 
-        if (self.ai_status) |st| if (self.notice == null and !term.alt_active and self.scroll == 0 and rows > 1) {
+        if (self.ai_status) |st| if (self.notice == null and self.toasts.items.len == 0 and !term.alt_active and self.scroll == 0 and rows > 1) {
             // A small badge in the bottom-right corner, or the top-right
             // one when the bottom row is in use.
             const w = (std.unicode.utf8CountCodepoints(st) catch st.len) + 2;
@@ -1107,7 +1287,14 @@ pub const Ui = struct {
             if (out.cursor_row < shown) out.cursor_visible = false;
         }
 
-        if (self.ssh_palette) |*p| {
+        if (self.toasts.items.len > 0) {
+            const top_rows = if (self.notice != null) self.noticeRows(rows, cols) else 0;
+            self.drawToasts(cells.items, rows, cols, top_rows);
+            const last = top_rows + self.toasts.items.len;
+            if (out.cursor_row >= top_rows and out.cursor_row < last and out.cursor_col + 30 >= cols) out.cursor_visible = false;
+        }
+
+        if (self.palette) |*p| {
             p.draw(cells.items, rows, cols);
             @memset(marks.items, .none);
             out.cursor_visible = false;
@@ -1120,6 +1307,14 @@ pub const Ui = struct {
             try self.drawBar(bar);
             if (out.cursor_row == rows - 1) out.cursor_visible = false;
         }
+        if (self.status_visible) {
+            // The extra row below the grid (the caller draws rows + 1).
+            try cells.resize(n + cols);
+            try marks.resize(n + cols);
+            @memset(marks.items[n..], .none);
+            self.drawStatus(cells.items[n..][0..cols]);
+            out.rows = rows + 1;
+        } else out.rows = rows;
         return out;
     }
 
@@ -1165,6 +1360,31 @@ fn fitWidth(text: []const u8, width: usize) usize {
         i += n;
     }
     return text.len;
+}
+
+fn textCols(text: []const u8) usize {
+    const unicode = @import("../terminal/unicode.zig");
+    var n: usize = 0;
+    var it = (std.unicode.Utf8View.init(text) catch return text.len).iterator();
+    while (it.nextCodepoint()) |cp| n += unicode.width(cp);
+    return n;
+}
+
+/// Write `text` into `cells` (clipped), keeping their background.
+fn drawPlain(cells: []Cell, text: []const u8, fg: u32) void {
+    const unicode = @import("../terminal/unicode.zig");
+    var col: usize = 0;
+    var it = (std.unicode.Utf8View.init(text) catch return).iterator();
+    while (it.nextCodepoint()) |cp| {
+        const w = unicode.width(cp);
+        if (w == 0) continue;
+        if (col + w > cells.len) return;
+        cells[col].char = cp;
+        cells[col].width = @intCast(w);
+        cells[col].fg_color = fg;
+        if (w == 2) cells[col + 1].width = 0;
+        col += w;
+    }
 }
 
 /// Fill `bar` with `text` (then `suffix`, right after) in fg/bg.

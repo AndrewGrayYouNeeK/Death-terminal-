@@ -17,11 +17,15 @@ const themes = @import("themes.zig");
 const events = @import("../platform/events.zig");
 const ssh_forward = @import("../ssh/forward.zig");
 const SshProfile = cfg_mod.SshProfile;
+const PluginConfig = cfg_mod.PluginConfig;
+const plugin_permissions = @import("../plugins/permissions.zig");
+const plugin_manifest = @import("../plugins/manifest.zig");
+const plugin_value = @import("../plugins/value.zig");
 
 const prelude_src = @embedFile("prelude.lua");
 pub const version = "0.1.0";
 
-pub const Kind = enum { section, boolean, integer, number, string, color, choice, theme, keys, string_map, string_list, palette, ssh_profiles };
+pub const Kind = enum { section, boolean, integer, number, string, color, choice, theme, keys, string_map, string_list, palette, ssh_profiles, plugins };
 
 const Ref = union(enum) {
     boolean: *bool,
@@ -176,6 +180,13 @@ pub const schema = [_]Field{
     .{ .path = "ssh.keepalive_s", .kind = .integer, .min = 0, .max = 3600, .ref = ref(.u16, "ssh_keepalive_s") },
     .{ .path = "ssh.known_hosts", .kind = .string, .ref = ref(.string, "ssh_known_hosts") },
     .{ .path = "ssh.profiles", .kind = .ssh_profiles },
+
+    .{ .path = "status_bar", .kind = .section },
+    .{ .path = "status_bar.enabled", .kind = .boolean, .ref = ref(.boolean, "status_bar") },
+
+    .{ .path = "plugins_enabled", .kind = .boolean, .ref = ref(.boolean, "plugins_enabled") },
+    .{ .path = "plugins_dir", .kind = .string, .ref = ref(.string, "plugins_dir") },
+    .{ .path = "plugins", .kind = .plugins },
 };
 
 pub fn field(path: []const u8) ?*const Field {
@@ -374,9 +385,10 @@ fn setValue(ctx: *Ctx, L: *State, path: []const u8, idx: c_int) ?[]const u8 {
             };
             f.ref.?(cfg).string.* = t.name;
         },
-        .keys, .string_map, .palette, .string_list, .ssh_profiles => {
+        .keys, .string_map, .palette, .string_list, .ssh_profiles, .plugins => {
             if (c.lua_type(L, idx) != c.LUA_TTABLE) {
                 const what = switch (f.kind) {
+                    .plugins => "a table like { git_branch = { allow = { \"exec\" }, exec = { \"git\" } } }",
                     .keys => "a table like { [\"ctrl+shift+t\"] = \"search\" }",
                     .ssh_profiles => "a table like { work = { host = \"build.example.com\", user = \"me\" } }",
                     .string_map => "a table like { NAME = \"value\" }",
@@ -400,6 +412,7 @@ fn setCollection(ctx: *Ctx, L: *State, f: *const Field, idx: c_int) ?[]const u8 
         .string_list => cfg.shell_args.clearRetainingCapacity(),
         .palette => cfg.colors.palette = [_]?u32{null} ** 256,
         .ssh_profiles => cfg.ssh_profiles.clearRetainingCapacity(),
+        .plugins => cfg.plugins.clearRetainingCapacity(),
         else => unreachable,
     }
     if (f.kind == .string_list) {
@@ -508,15 +521,111 @@ fn setItem(ctx: *Ctx, L: *State, path: []const u8, key_idx: c_int, val_idx: c_in
             };
             cfg.ssh_profiles.append(p) catch return "out of memory";
         },
+        .plugins => {
+            const name = lua.toString(L, key_idx) orelse return fail(ctx, "plugins: plugin names must be strings, got {s}", .{describe(ctx, L, key_idx)});
+            if (!plugin_manifest.validName(name)) return fail(ctx, "plugins: invalid plugin name \"{s}\" (lowercase letters, digits, _ and -)", .{truncate(name, 64)});
+            if (c.lua_type(L, val_idx) != c.LUA_TTABLE) return fail(ctx, "plugins.{s}: expected a table like {{ enabled = true, allow = {{ \"screen\" }} }}, got {s}", .{ name, describe(ctx, L, val_idx) });
+            const pc = parsePlugin(ctx, L, name, val_idx) catch |err| return switch (err) {
+                error.Invalid => ctx.buf[0..ctx.msg_len],
+                error.OutOfMemory => "out of memory",
+            };
+            for (cfg.plugins.items) |*e| if (std.mem.eql(u8, e.name, pc.name)) {
+                e.* = pc;
+                return null;
+            };
+            cfg.plugins.append(pc) catch return "out of memory";
+        },
         else => return fail(ctx, "{s} is not a table option", .{path}),
     }
     return null;
 }
 
+fn pluginInt(ctx: *Ctx, L: *State, name: []const u8, key: []const u8, idx: c_int, min: f64, max: f64) !u16 {
+    const v = c.lua_tonumberx(L, idx, null);
+    if (c.lua_type(L, idx) != c.LUA_TNUMBER or v != @floor(v) or v < min or v > max)
+        return invalid(ctx, "plugins.{s}.{s}: expected a whole number from {d} to {d}, got {s}", .{ name, key, min, max, describe(ctx, L, idx) });
+    return @intFromFloat(v);
+}
+
+/// A list of strings at `idx` (each checked by `check`, which returns an
+/// error message or null).
+fn pluginStrings(ctx: *Ctx, L: *State, name: []const u8, key: []const u8, idx_in: c_int, example: []const u8, check: *const fn ([]const u8) ?[]const u8) ![]const []const u8 {
+    const idx = c.lua_absindex(L, idx_in);
+    if (c.lua_type(L, idx) != c.LUA_TTABLE) return invalid(ctx, "plugins.{s}.{s}: expected a list like {s}, got {s}", .{ name, key, example, describe(ctx, L, idx) });
+    var list = std.ArrayList([]const u8).init(ctx.cfg.arena.allocator());
+    const n = c.lua_rawlen(L, idx);
+    var i: c.lua_Integer = 1;
+    while (i <= n) : (i += 1) {
+        _ = c.lua_rawgeti(L, idx, i);
+        defer lua.pop(L, 1);
+        const v = lua.toString(L, -1) orelse return invalid(ctx, "plugins.{s}.{s}[{d}]: expected a string, got {s}", .{ name, key, i, describe(ctx, L, -1) });
+        if (check(v)) |msg| return invalid(ctx, "plugins.{s}.{s}[{d}]: \"{s}\": {s}", .{ name, key, i, truncate(v, 80), msg });
+        try list.append(try ctx.cfg.dupe(v));
+    }
+    return list.items;
+}
+
+fn checkPermissionName(s: []const u8) ?[]const u8 {
+    if (plugin_permissions.Permission.parse(s) == null) return "unknown permission (known: screen, input, pty, clipboard, network, exec, fs, ai)";
+    return null;
+}
+
+fn checkProgram(s: []const u8) ?[]const u8 {
+    if (s.len == 0 or std.mem.indexOfAny(u8, s, " \t\x00") != null) return "expected a program name like \"git\" or an absolute path";
+    if (std.mem.indexOfScalar(u8, s, '/') != null and s[0] != '/') return "use a bare name (looked up in $PATH) or an absolute path";
+    return null;
+}
+
+fn checkHost(s: []const u8) ?[]const u8 {
+    if (s.len == 0 or s.len > 253 or std.mem.indexOfAny(u8, s, "/ @?#") != null) return "expected a host like \"api.example.com\", \"*.example.com\" or \"localhost:8080\"";
+    return null;
+}
+
+/// One `plugins.<name> = { ... }` table at `idx`.
+fn parsePlugin(ctx: *Ctx, L: *State, name_in: []const u8, idx_in: c_int) error{ Invalid, OutOfMemory }!PluginConfig {
+    const cfg = ctx.cfg;
+    const idx = c.lua_absindex(L, idx_in);
+    var p = PluginConfig{ .name = try cfg.dupe(name_in) };
+    const name = p.name;
+    c.lua_pushnil(L);
+    while (c.lua_next(L, idx) != 0) {
+        defer lua.pop(L, 1);
+        const key = lua.toString(L, -2) orelse return invalid(ctx, "plugins.{s}: option names must be strings", .{name});
+        if (std.mem.eql(u8, key, "enabled")) {
+            if (c.lua_type(L, -1) != c.LUA_TBOOLEAN) return invalid(ctx, "plugins.{s}.enabled: expected true or false, got {s}", .{ name, describe(ctx, L, -1) });
+            p.enabled = c.lua_toboolean(L, -1) != 0;
+        } else if (std.mem.eql(u8, key, "allow")) {
+            const names = try pluginStrings(ctx, L, name, key, -1, "{ \"screen\", \"exec\" }", checkPermissionName);
+            for (names) |n| p.allow.insert(plugin_permissions.Permission.parse(n).?);
+        } else if (std.mem.eql(u8, key, "exec")) {
+            p.exec = try pluginStrings(ctx, L, name, key, -1, "{ \"git\" }", checkProgram);
+        } else if (std.mem.eql(u8, key, "hosts")) {
+            p.hosts = try pluginStrings(ctx, L, name, key, -1, "{ \"api.example.com\" }", checkHost);
+        } else if (std.mem.eql(u8, key, "memory_mb")) {
+            p.memory_mb = try pluginInt(ctx, L, name, key, -1, 1, 1024);
+        } else if (std.mem.eql(u8, key, "cpu_ms")) {
+            p.cpu_ms = try pluginInt(ctx, L, name, key, -1, 5, 10_000);
+        } else if (std.mem.eql(u8, key, "settings")) {
+            if (c.lua_type(L, -1) != c.LUA_TTABLE) return invalid(ctx, "plugins.{s}.settings: expected a table, got {s}", .{ name, describe(ctx, L, -1) });
+            p.settings = plugin_value.fromLua(cfg.arena.allocator(), L, -1) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return invalid(ctx, "plugins.{s}.settings: {s}", .{ name, plugin_value.errorText(err) }),
+            };
+        } else {
+            return invalid(ctx, "plugins.{s}: unknown option '{s}' (plugins have: {s})", .{ name, key, PluginConfig.fields });
+        }
+    }
+    return p;
+}
+
 const profile_fields = "host, port, user, identity_file, jump, env, command, theme, forwards, keepalive_s, reconnect";
 
 fn invalid(ctx: *Ctx, comptime fmt: []const u8, args: anytype) error{Invalid} {
-    ctx.msg_len = (std.fmt.bufPrint(&ctx.buf, fmt, args) catch "ssh.profiles: invalid value").len;
+    ctx.msg_len = (std.fmt.bufPrint(&ctx.buf, fmt, args) catch blk: {
+        const m = "invalid value (message too long)";
+        @memcpy(ctx.buf[0..m.len], m);
+        break :blk ctx.buf[0..m.len];
+    }).len;
     return error.Invalid;
 }
 

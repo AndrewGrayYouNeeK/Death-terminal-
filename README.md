@@ -53,9 +53,9 @@ Context-aware, not just history-based.
 - known_hosts verification: accept/once/reject for new hosts, hard block on changed keys
 - `-L` / `-R` / `-D` (SOCKS) forwards per profile, toggled live from the Ctrl+Shift+S palette; keepalives and reconnect (see [docs/SSH.md](docs/SSH.md))
 
-### 🔧 Lua Scripting Engine *(planned)*
-- Lua 5.4 for config, hooks, and automation
-- Plugin system
+### 🔧 Lua Config + Plugins
+- Lua 5.4 config with live reload (see [docs/CONFIG.md](docs/CONFIG.md))
+- Sandboxed Lua plugins, each in its own state with memory/CPU limits and only the permissions you grant: hooks for commands (OSC 133), output, cwd, title, bell, focus, keys, SSH and AI suggestions; command palette (Ctrl+Shift+P), keybindings, status bar, toasts, timers, themes; `deathterminal --plugins list|enable|disable` (see [docs/PLUGINS.md](docs/PLUGINS.md))
 
 ### 🎯 Brutalist Design
 - No animations
@@ -115,10 +115,11 @@ See [QUICKSTART.md](QUICKSTART.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for deta
 - X11 / Wayland / Win32 windows, resize, HiDPI scaling
 - Lua 5.4 config (`~/.config/death-terminal/config.lua`, vendored Lua, sandboxed): typed options with file:line errors shown in the window, bundled themes, key bindings, shell/env/cwd, live reload on save or Ctrl+Shift+R; `deathterminal --print-default-config` (see [docs/CONFIG.md](docs/CONFIG.md))
 - Built-in SSH (libssh2): profiles + `~/.ssh/config`, ProxyJump, agent/key/keyboard-interactive/password auth, known_hosts checks, remote PTY with resize, `-L/-R/-D` forwards togglable at runtime (Ctrl+Shift+S), keepalive/reconnect; `zig build test-ssh` against a local sshd (see [docs/SSH.md](docs/SSH.md))
+- Lua plugins: sandboxed per-plugin states, permission grants in config.lua, hooks, command palette (Ctrl+Shift+P), optional status bar, toasts, timers, themes, three example plugins (see [docs/PLUGINS.md](docs/PLUGINS.md))
 - CI (build + unit tests)
 
 **Not done yet** (tracked in [ISSUES.md](ISSUES.md))
-- Lua plugins/hooks, tabs/splits, packaging, macOS (SSH is Linux-only for now)
+- Tabs/splits, packaging, macOS (SSH is Linux-only for now)
 
 ## 🧩 Architecture (Simplified)
 

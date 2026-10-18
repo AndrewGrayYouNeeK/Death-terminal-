@@ -57,6 +57,8 @@ pub const State = struct {
     history: std.ArrayListUnmanaged(Command) = .{},
     /// Bumped whenever a command finishes.
     finished: u64 = 0,
+    /// Bumped whenever a command starts (OSC 133 C).
+    started: u64 = 0,
 
     pub fn init(allocator: std.mem.Allocator) State {
         return .{ .allocator = allocator };

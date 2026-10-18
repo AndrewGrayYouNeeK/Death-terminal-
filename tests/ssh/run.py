@@ -288,10 +288,13 @@ config.ssh.profiles = {{
     s.close()
     check("[127.0.0.1]:2222 ssh-ed25519 " in kh_text(), "accept: key appended to known_hosts")
 
-    s = Session(env, "plain")
+    nenv = dict(env, DT_SSH_NONCE="0123abcd")
+    s = Session(nenv, "plain")
     check(s.shell_ready() and b"authenticity" not in s.out, "known host: no prompt")
+    check(b"\x1b]7799;0123abcd;connect;" in s.out, "plugin hook: connect report (OSC 7799) with the nonce")
     s.send("exit\r")
     check(s.wait() == 0, "exit 0")
+    check(b"\x1b]7799;0123abcd;disconnect;" in s.out, "plugin hook: disconnect report")
     s.close()
 
     # A server presenting a different key on a known name.

@@ -11,6 +11,7 @@ const color = @import("../terminal/color.zig");
 pub const themes = @import("themes.zig");
 pub const lua_config = @import("lua_config.zig");
 pub const SshProfile = @import("../ssh/target.zig").Profile;
+pub const PluginConfig = @import("../plugins/plugin_config.zig").PluginConfig;
 
 pub const CursorShape = enum { block, underline, bar };
 
@@ -129,6 +130,14 @@ pub const Config = struct {
     ssh_known_hosts: []const u8 = "~/.ssh/known_hosts",
     /// `config.ssh.profiles`, in definition order.
     ssh_profiles: std.ArrayList(SshProfile),
+    /// Plugin system on/off (docs/PLUGINS.md).
+    plugins_enabled: bool = true,
+    /// Where plugins live ("" = $XDG_CONFIG_HOME/death-terminal/plugins).
+    plugins_dir: []const u8 = "",
+    /// `config.plugins.<name>` grants and settings.
+    plugins: std.ArrayList(PluginConfig),
+    /// One-row status bar at the bottom (plugin segments; off by default).
+    status_bar: bool = false,
     scrollback_lines: usize = 10_000,
     headless: bool = true,
     scale: f32 = 0,
@@ -194,6 +203,7 @@ pub const Config = struct {
             .shell_args = std.ArrayList([]const u8).init(allocator),
             .shell_env = std.ArrayList([]const u8).init(allocator),
             .ssh_profiles = std.ArrayList(SshProfile).init(allocator),
+            .plugins = std.ArrayList(PluginConfig).init(allocator),
         };
     }
 
@@ -202,6 +212,7 @@ pub const Config = struct {
         self.shell_args.deinit();
         self.shell_env.deinit();
         self.ssh_profiles.deinit();
+        self.plugins.deinit();
         self.arena.deinit();
         self.allocator.destroy(self.arena);
     }
@@ -335,6 +346,8 @@ pub const Config = struct {
             const arg = args[i];
             if (std.mem.eql(u8, arg, "--no-ai")) {
                 self.ai_enabled = false;
+            } else if (std.mem.eql(u8, arg, "--no-plugins")) {
+                self.plugins_enabled = false;
             } else if (std.mem.eql(u8, arg, "--headless")) {
                 self.headless = true;
             } else if (std.mem.eql(u8, arg, "--gui")) {

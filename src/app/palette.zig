@@ -1,7 +1,8 @@
-//! The SSH palette (Ctrl+Shift+S): a filterable list of this session's
-//! port forwards (toggle), "Reconnect", and the SSH profiles / Host
-//! aliases (open one in a new window). The event loop fills the items;
-//! picks come back as `Pick`s.
+//! The filterable palette overlay, in two modes:
+//!  * `.commands` (Ctrl+Shift+P): built-in actions and plugin commands;
+//!  * `.ssh` (Ctrl+Shift+S): this session's port forwards (toggle),
+//!    "Reconnect", and SSH profiles / Host aliases (open in a new window).
+//! The event loop fills the items; picks come back as `Pick`s.
 
 const std = @import("std");
 const terminal = @import("../terminal/terminal.zig");
@@ -15,24 +16,32 @@ pub const Item = struct {
     name: []u8,
     /// Grey text after the name (owned).
     detail: []u8,
-    /// Forward number for the control socket (1-based).
-    forward: usize = 0,
+    /// Forward number for the control socket (1-based), the action's enum
+    /// value, or the plugin command's index.
+    arg: usize = 0,
     on: bool = false,
 
-    pub const Kind = enum { forward, reconnect, profile, alias };
+    pub const Kind = enum { forward, reconnect, profile, alias, action, command };
 };
+
+pub const Mode = enum { ssh, commands };
 
 pub const Pick = union(enum) {
     /// Open this profile / alias in a new window (owned).
     open: []u8,
     toggle: usize,
     reconnect,
+    /// A built-in action (`events.Action` value).
+    action: usize,
+    /// A plugin command (index into the host's command list).
+    command: usize,
 };
 
 pub const Result = union(enum) { none, close, pick: Pick };
 
 pub const Palette = struct {
     allocator: std.mem.Allocator,
+    mode: Mode,
     items: std.ArrayList(Item),
     query: std.ArrayList(u8),
     /// Index into the filtered list.
@@ -43,9 +52,10 @@ pub const Palette = struct {
     /// Shown under the list (e.g. the result of a toggle), owned.
     status: []u8,
 
-    pub fn init(allocator: std.mem.Allocator, title: []const u8) !Palette {
+    pub fn init(allocator: std.mem.Allocator, mode: Mode, title: []const u8) !Palette {
         return .{
             .allocator = allocator,
+            .mode = mode,
             .items = std.ArrayList(Item).init(allocator),
             .query = std.ArrayList(u8).init(allocator),
             .title = try allocator.dupe(u8, title),
@@ -75,15 +85,15 @@ pub const Palette = struct {
         for (items) |it| {
             const name = try self.allocator.dupe(u8, it.name);
             errdefer self.allocator.free(name);
-            try self.items.append(.{ .kind = it.kind, .name = name, .detail = try self.allocator.dupe(u8, it.detail), .forward = it.forward, .on = it.on });
+            try self.items.append(.{ .kind = it.kind, .name = name, .detail = try self.allocator.dupe(u8, it.detail), .arg = it.arg, .on = it.on });
         }
         self.clamp();
     }
 
-    pub fn addItem(self: *Palette, kind: Item.Kind, name: []const u8, detail: []const u8, forward: usize, on: bool) !void {
+    pub fn addItem(self: *Palette, kind: Item.Kind, name: []const u8, detail: []const u8, arg: usize, on: bool) !void {
         const n = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(n);
-        try self.items.append(.{ .kind = kind, .name = n, .detail = try self.allocator.dupe(u8, detail), .forward = forward, .on = on });
+        try self.items.append(.{ .kind = kind, .name = n, .detail = try self.allocator.dupe(u8, detail), .arg = arg, .on = on });
         self.clamp();
     }
 
@@ -135,7 +145,9 @@ pub const Palette = struct {
     fn pick(self: *Palette) !Result {
         const it = self.visible(self.sel) orelse return .none;
         return switch (it.kind) {
-            .forward => .{ .pick = .{ .toggle = it.forward } },
+            .forward => .{ .pick = .{ .toggle = it.arg } },
+            .action => .{ .pick = .{ .action = it.arg } },
+            .command => .{ .pick = .{ .command = it.arg } },
             .reconnect => .{ .pick = .reconnect },
             .profile, .alias => .{ .pick = .{ .open = try self.allocator.dupe(u8, it.name) } },
         };
@@ -229,13 +241,20 @@ pub const Palette = struct {
         const top = cells[y0 * cols ..][x0 .. x0 + w];
         hline(top, '┌', '─', '┐');
         var tb: [160]u8 = undefined;
-        const ttl = std.fmt.bufPrint(&tb, " SSH  {s} ", .{self.title}) catch " SSH ";
+        const head: []const u8 = switch (self.mode) {
+            .ssh => "SSH",
+            .commands => "Commands",
+        };
+        const ttl = std.fmt.bufPrint(&tb, " {s}  {s} ", .{ head, self.title }) catch " ";
         _ = put(top[2..], ttl, accent, bg);
         const sep = cells[(y0 + 2) * cols ..][x0 .. x0 + w];
         hline(sep, '├', '─', '┤');
         const bottom = cells[(y0 + h - 1) * cols ..][x0 .. x0 + w];
         hline(bottom, '└', '─', '┘');
-        _ = put(bottom[2..], " Enter open/toggle  ↑↓ move  type to filter  Esc close ", dim_fg, bg);
+        _ = put(bottom[2..], switch (self.mode) {
+            .ssh => " Enter open/toggle  ↑↓ move  type to filter  Esc close ",
+            .commands => " Enter run  ↑↓ move  type to filter  Esc close ",
+        }, dim_fg, bg);
 
         // Query line.
         const ql = cells[(y0 + 1) * cols ..][x0 + 2 .. x0 + w - 1];
@@ -249,7 +268,10 @@ pub const Palette = struct {
             const idx = self.scroll + k;
             const line = cells[(y0 + 3 + k) * cols ..][x0 + 1 .. x0 + w - 1];
             const it = self.visible(idx) orelse {
-                if (k == 0 and n == 0) _ = put(line[2..], if (self.items.items.len == 0) "no SSH profiles: add config.ssh.profiles or Host entries in ~/.ssh/config" else "no match", dim_fg, bg);
+                if (k == 0 and n == 0) _ = put(line[2..], if (self.items.items.len > 0) "no match" else switch (self.mode) {
+                    .ssh => "no SSH profiles: add config.ssh.profiles or Host entries in ~/.ssh/config",
+                    .commands => "no commands",
+                }, dim_fg, bg);
                 continue;
             };
             const selected = idx == self.sel;
@@ -264,10 +286,19 @@ pub const Palette = struct {
                 .reconnect => col += put(line[col..], "⟳ ", lfg, lbg),
                 .profile => col += put(line[col..], "▸ ", lfg, lbg),
                 .alias => col += put(line[col..], "· ", lfg, lbg),
+                .action => col += put(line[col..], "› ", lfg, lbg),
+                .command => col += put(line[col..], "◆ ", if (selected) sel_fg else accent, lbg),
             }
             col += put(line[col..], it.name, lfg, lbg);
             col += 2;
-            if (col < line.len) _ = put(line[col..], it.detail, if (selected) 0x404040 else dim_fg, lbg);
+            const dfg: u32 = if (selected) 0x404040 else dim_fg;
+            if (self.mode == .commands) {
+                // Commands: chord / plugin name right-aligned.
+                const dw = textWidth(it.detail);
+                if (dw + 1 < line.len and col + dw + 1 <= line.len) {
+                    _ = put(line[line.len - dw - 1 ..], it.detail, dfg, lbg);
+                } else if (col < line.len) _ = put(line[col..], it.detail, dfg, lbg);
+            } else if (col < line.len) _ = put(line[col..], it.detail, dfg, lbg);
         }
         // Status in the separator.
         if (self.status.len > 0) _ = put(sep[2..], self.status, on_fg, bg);
@@ -310,6 +341,13 @@ fn put(cells: []Cell, text: []const u8, f: u32, b: u32) usize {
     return col;
 }
 
+fn textWidth(text: []const u8) usize {
+    var n: usize = 0;
+    var it = (std.unicode.Utf8View.init(text) catch return text.len).iterator();
+    while (it.nextCodepoint()) |cp| n += unicode.width(cp);
+    return n;
+}
+
 fn deleteLast(buf: *std.ArrayList(u8)) void {
     var n = buf.items.len;
     if (n == 0) return;
@@ -323,7 +361,7 @@ fn deleteLast(buf: *std.ArrayList(u8)) void {
 const t = std.testing;
 
 test "palette filters, moves and picks" {
-    var p = try Palette.init(t.allocator, "andrew@box");
+    var p = try Palette.init(t.allocator, .ssh, "andrew@box");
     defer p.deinit();
     try p.addItem(.forward, "L 8080:localhost:80", "listening on 127.0.0.1:8080", 1, true);
     try p.addItem(.reconnect, "Reconnect", "andrew@box", 0, false);
@@ -350,16 +388,34 @@ test "palette filters, moves and picks" {
 }
 
 test "palette draws inside small and large grids" {
-    var p = try Palette.init(t.allocator, "x");
+    var p = try Palette.init(t.allocator, .ssh, "x");
     defer p.deinit();
     var i: usize = 0;
-    while (i < 40) : (i += 1) try p.addItem(.profile, "host-with-a-long-name", "detail detail detail detail detail detail detail detail", 0, false);
+    while (i < 40) : (i += 1) try p.addItem(if (i % 2 == 0) .profile else .command, "host-with-a-long-name", "detail detail detail detail detail detail detail detail", 0, false);
     p.sel = 39;
-    for ([_][2]u16{ .{ 4, 20 }, .{ 6, 24 }, .{ 24, 80 }, .{ 10, 200 } }) |d| {
-        const cells = try t.allocator.alloc(Cell, @as(usize, d[0]) * d[1]);
-        defer t.allocator.free(cells);
-        @memset(cells, Cell.init());
-        p.draw(cells, d[0], d[1]);
+    for (0..2) |m| {
+        p.mode = if (m == 0) .ssh else .commands;
+        for ([_][2]u16{ .{ 4, 20 }, .{ 6, 24 }, .{ 24, 80 }, .{ 10, 200 } }) |d| {
+            const cells = try t.allocator.alloc(Cell, @as(usize, d[0]) * d[1]);
+            defer t.allocator.free(cells);
+            @memset(cells, Cell.init());
+            p.draw(cells, d[0], d[1]);
+        }
     }
     try t.expect(p.scroll > 0);
+}
+
+test "command palette picks actions and plugin commands" {
+    var p = try Palette.init(t.allocator, .commands, "");
+    defer p.deinit();
+    try p.addItem(.action, "Copy selection", "Ctrl+Shift+C", 1, false);
+    try p.addItem(.command, "Git: show branch", "git_branch", 3, false);
+    _ = try p.handleText("git");
+    try t.expectEqual(@as(usize, 3), (try p.handleText("\r")).pick.command);
+    _ = try p.handleText("\x15");
+    try t.expectEqual(@as(usize, 1), (try p.handleKey(.enter)).pick.action);
+    const cells = try t.allocator.alloc(Cell, 24 * 80);
+    defer t.allocator.free(cells);
+    @memset(cells, Cell.init());
+    p.draw(cells, 24, 80);
 }
