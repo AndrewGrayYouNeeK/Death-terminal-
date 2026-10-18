@@ -26,6 +26,8 @@ pub const Event = union(enum) {
     key: KeyPress,
     mouse: MouseInput,
     focus: bool,
+    /// Font zoom: +1 / -1, 0 = reset.
+    zoom: i8,
 };
 
 pub const EventQueue = struct {
@@ -38,6 +40,7 @@ pub const EventQueue = struct {
         key: KeyPress,
         mouse: MouseInput,
         focus: bool,
+        zoom: i8,
     };
 
     items: [cap]Item = undefined,
@@ -79,6 +82,10 @@ pub const EventQueue = struct {
         self.push(.{ .mouse = m });
     }
 
+    pub fn pushZoom(self: *EventQueue, step: i8) void {
+        self.push(.{ .zoom = step });
+    }
+
     pub fn pushFocus(self: *EventQueue, focused: bool) void {
         self.push(.{ .focus = focused });
     }
@@ -114,9 +121,21 @@ pub const EventQueue = struct {
             .key => |k| .{ .key = k },
             .mouse => |m| .{ .mouse = m },
             .focus => |f| .{ .focus = f },
+            .zoom => |z| .{ .zoom = z },
         };
     }
 };
+
+/// Ctrl+= / Ctrl++ zoom in, Ctrl+- zoom out, Ctrl+0 reset (X11/XKB keysyms).
+pub fn zoomForKeysym(sym: u32, ctrl: bool) ?i8 {
+    if (!ctrl) return null;
+    return switch (sym) {
+        0x3d, 0x2b, 0xffab => 1, // equal, plus, KP_Add
+        0x2d, 0x5f, 0xffad => -1, // minus, underscore, KP_Subtract
+        0x30, 0x29, 0xffb0 => 0, // 0, parenright (shift+0), KP_0
+        else => null,
+    };
+}
 
 /// Map an X11 / XKB keysym (same numbering) to a terminal key.
 pub fn keysymToKey(sym: u32) ?input.Key {
@@ -186,4 +205,14 @@ test "keysym mapping" {
     try std.testing.expectEqual(input.Key.up, keysymToKey(0xff52).?);
     try std.testing.expectEqual(input.Key.kp_5, keysymToKey(0xffb5).?);
     try std.testing.expect(keysymToKey('a') == null);
+}
+
+test "zoom keysyms need ctrl" {
+    try std.testing.expectEqual(@as(?i8, 1), zoomForKeysym(0x3d, true));
+    try std.testing.expectEqual(@as(?i8, -1), zoomForKeysym(0x2d, true));
+    try std.testing.expectEqual(@as(?i8, 0), zoomForKeysym(0x30, true));
+    try std.testing.expectEqual(@as(?i8, null), zoomForKeysym(0x3d, false));
+    var q = EventQueue{};
+    q.pushZoom(-1);
+    try std.testing.expectEqual(@as(i8, -1), q.pop().zoom);
 }

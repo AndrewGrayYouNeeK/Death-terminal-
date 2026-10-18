@@ -7,6 +7,10 @@ fn addPlatform(b: *std.Build, step: *std.Build.Step.Compile, target: std.Build.R
         step.linkSystemLibrary("X11");
         step.linkSystemLibrary("wayland-client");
         step.linkSystemLibrary("xkbcommon");
+        // Fonts: FreeType rasterizer, HarfBuzz shaping, fontconfig lookup.
+        step.linkSystemLibrary("freetype2");
+        step.linkSystemLibrary("harfbuzz");
+        step.linkSystemLibrary("fontconfig");
         step.addIncludePath(b.path("src/platform/wayland"));
         step.addCSourceFile(.{
             .file = b.path("src/platform/wayland/xdg-shell-protocol.c"),
@@ -22,6 +26,18 @@ fn addPlatform(b: *std.Build, step: *std.Build.Step.Compile, target: std.Build.R
     }
 }
 
+/// Bundled default font (JetBrains Mono, SIL OFL 1.1), embedded with
+/// `@embedFile("jbm_regular")` etc.
+fn addFonts(b: *std.Build, step: *std.Build.Step.Compile) void {
+    const files = [_][2][]const u8{
+        .{ "jbm_regular", "assets/fonts/JetBrainsMono/JetBrainsMono-Regular.ttf" },
+        .{ "jbm_bold", "assets/fonts/JetBrainsMono/JetBrainsMono-Bold.ttf" },
+        .{ "jbm_italic", "assets/fonts/JetBrainsMono/JetBrainsMono-Italic.ttf" },
+        .{ "jbm_bold_italic", "assets/fonts/JetBrainsMono/JetBrainsMono-BoldItalic.ttf" },
+    };
+    for (files) |f| step.root_module.addAnonymousImport(f[0], .{ .root_source_file = b.path(f[1]) });
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -33,6 +49,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     addPlatform(b, exe, target);
+    addFonts(b, exe);
 
     b.installArtifact(exe);
 
@@ -49,6 +66,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     addPlatform(b, unit_tests, target);
+    addFonts(b, unit_tests);
 
     const test_step = b.step("test", "Run unit tests");
     const run_unit_tests = b.addRunArtifact(unit_tests);

@@ -49,7 +49,7 @@
 - [x] UTF-8 decoding with U+FFFD for malformed input
 - [x] Wide characters (East Asian wide/fullwidth, emoji) as 2-column cells
 - [x] Combining marks stored on the base cell (up to 2; shaping waits for real fonts)
-- [ ] Non-ASCII glyphs (renderer draws a replacement box until real fonts land)
+- [x] Non-ASCII glyphs (FreeType + fontconfig fallback chain; see docs/FONTS.md)
 - [x] Scroll regions (DECSTBM, SU/SD, IND/RI/NEL), insert/delete line/char, erase/repeat char, insert mode
 - [x] Tab stops (HTS/TBC/CHT/CBT), origin mode, DECAWM, DECSC/DECRC + CSI s/u, DEC special graphics
 - [x] Alternate screen (?1049/?1047/?47), bracketed paste (?2004), mouse reporting (?1000/?1002/?1003/?1006), focus events (?1004)
@@ -68,7 +68,7 @@
 - [x] Swapchain setup (X11/Wayland/Win32 surface + graphics present)
 - [x] Graphics pipeline creation (SPIR-V vertex/fragment text shaders)
 - [x] Text rendering pipeline (glyph atlas + instanced quads)
-- [x] Glyph atlas generation and caching (embedded 8x8 ASCII atlas)
+- [x] Glyph atlas generation and caching (dynamic RGBA atlas, rasterised on demand, grows to 2048², resets when full)
 - [x] GPU buffer management (structure in place)
 - [x] Window creation and management
 - [x] High-DPI display support
@@ -139,7 +139,9 @@
 - [x] Configuration file loading (from ~/.config/death-terminal/; reads `config.txt` with flat `key = value` lines; `config.example.lua` is not read yet)
 - [ ] Theme system implementation
 - [ ] Keybinding customization
-- [ ] Font selection and management (real fonts + optional retro 8x8 bitmap font)
+- [x] Font selection and management (real fonts + optional retro 8x8 bitmap font)
+- [ ] Fonts on macOS/Windows (FreeType is Linux-only for now; other platforms use the retro font)
+- [ ] Emoji ZWJ sequences / flags composed into one glyph
 - [ ] Color scheme support
 - [ ] Terminal size configuration
 - [ ] Preferences persistence

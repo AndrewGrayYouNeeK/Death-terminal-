@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Real font rendering (Linux): FreeType rasterisation, HarfBuzz shaping with ligatures, fontconfig family lookup and per-codepoint fallback (CJK, colour emoji via Noto Color Emoji, monochrome symbols)
+- Bundled JetBrains Mono (OFL 1.1) Regular/Bold/Italic/BoldItalic; synthetic bold/oblique when a family lacks a face
+- Dynamic glyph atlas shared by the Vulkan and software renderers: rasterised on demand, shelf-packed, grows 512→2048, reset + frame rebuild when full; dirty-rect GPU uploads
+- Procedural box drawing, block elements, braille and powerline glyphs that line up across cells
+- Underline styles (SGR 4:1–4:5, 21) and underline colour (SGR 58/59); hollow cursor when unfocused
+- Config keys `font = retro|default`, `font_family`, `font_size`, `line_height`, `font_ligatures`, and matching `--font`, `--font-family`, `--font-size`, `--line-height` flags
+- Runtime zoom with Ctrl+= / Ctrl+- / Ctrl+0 (grid and PTY resize); HiDPI scale applied to font size
+- `docs/FONTS.md`
 - xterm-compatible VT emulation for full-screen apps: DECSTBM scroll regions with SU/SD/IND/RI/NEL, IL/DL/ICH/DCH/ECH/REP, insert mode, tab stops (HTS/TBC/CHT/CBT), origin mode, DECAWM, DECSC/DECRC and `CSI s`/`u`, alternate screens (?47/?1047/?1049), DEC special graphics (`ESC ( 0`, SO/SI), DECALN, RIS/DECSTR
 - 256-colour and true-colour SGR (semicolon and colon forms), faint, inverse, strikethrough, hidden; erase uses the current background
 - Replies: DA1, DA2, DSR/CPR (incl. DECXCPR), DECRQM, XTVERSION, OSC 10/11 colour queries

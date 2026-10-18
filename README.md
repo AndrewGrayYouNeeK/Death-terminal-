@@ -40,6 +40,8 @@ Context-aware, not just history-based.
 
 ### ⚡ GPU Rendering (Vulkan)
 - Vulkan swapchain + SPIR-V glyph pipeline, with a software fallback
+- FreeType + HarfBuzz text (ligatures), fontconfig fallback for CJK and colour emoji, dynamic glyph atlas
+- Bundled JetBrains Mono, so it works without any system fonts; Ctrl+= / Ctrl+- / Ctrl+0 zoom
 - Smooth under extreme output (logs, builds, streaming data)
 - Designed for future effects + massive scrollback
 
@@ -91,7 +93,8 @@ zig build test                # unit tests
 
 - Zig 0.13.x
 - Vulkan loader + headers (`libvulkan-dev`; `mesa-vulkan-drivers` for a software GPU)
-- Linux: `libx11-dev`, `libwayland-dev`, `wayland-protocols`, `libxkbcommon-dev`
+- Linux: `libx11-dev`, `libwayland-dev`, `wayland-protocols`, `libxkbcommon-dev`, `libfreetype-dev`, `libharfbuzz-dev`, `libfontconfig-dev`
+- Optional fallback fonts: `fonts-noto-cjk`, `fonts-noto-color-emoji`
 
 See [QUICKSTART.md](QUICKSTART.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for details.
 
@@ -104,11 +107,12 @@ See [QUICKSTART.md](QUICKSTART.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for deta
 - Scrollback storage
 - Event loop with headless and native GUI modes, signal handling, clean exit when the shell exits
 - Vulkan loader, instance/device, swapchain present, SPIR-V glyph pipeline, software fallback
+- Real fonts: FreeType/HarfBuzz/fontconfig, bold/italic faces, CJK + colour emoji fallback, procedural box drawing, underline styles/colours, runtime zoom, optional retro 8×8 font (see [docs/FONTS.md](docs/FONTS.md))
 - X11 / Wayland / Win32 windows, resize, HiDPI scaling
 - CI (build + unit tests)
 
 **Not done yet** (tracked in [ISSUES.md](ISSUES.md))
-- Real fonts (non-ASCII currently draws a replacement box), selection + copy/paste (so bracketed paste has no GUI trigger yet), scrollback navigation
+- Selection + copy/paste (so bracketed paste has no GUI trigger yet), scrollback navigation
 - AI suggestions, SSH, Lua, tabs/splits, packaging, macOS
 
 ## 🧩 Architecture (Simplified)

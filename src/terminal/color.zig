@@ -1,6 +1,8 @@
 //! xterm color palette.
 
 pub const default_fg: u32 = 0xFFFFFF;
+/// Sentinel for "no explicit colour" (e.g. underline uses the foreground).
+pub const none: u32 = 0xFFFFFFFF;
 pub const default_bg: u32 = 0x000000;
 
 pub const ansi16 = [16]u32{

@@ -12,6 +12,8 @@ const config = @import("../config/config.zig");
 const window_mod = @import("../platform/window.zig");
 const dpi = @import("../platform/dpi.zig");
 const input = @import("../terminal/input.zig");
+const fonts_mod = @import("../font/fonts.zig");
+const frame_mod = @import("../renderer/frame.zig");
 
 const POLL_TIMEOUT_MS: i32 = 16;
 const READ_BUFFER_SIZE: usize = 4096;
@@ -66,7 +68,20 @@ pub const EventLoop = struct {
         else
             dpi.detectEnvScale();
 
-        var soft = try software.SoftwareRenderer.init(self.allocator, term.cols, term.rows, scale);
+        var fonts = try fonts_mod.Fonts.init(self.allocator, .{
+            .family = self.cfg.font_family,
+            .size_pt = self.cfg.font_size,
+            .line_height = self.cfg.line_height,
+            .scale = scale,
+            .retro = self.cfg.font_retro,
+            .ligatures = self.cfg.font_ligatures,
+        });
+        defer fonts.deinit();
+        var frame = frame_mod.Frame.init(self.allocator);
+        defer frame.deinit();
+        std.debug.print("  → Font: {s} {d:.1}pt, cell {d}x{d}px\n", .{ fonts.familyName(), fonts.size_pt, fonts.metrics.cell_w, fonts.metrics.cell_h });
+
+        var soft = try software.SoftwareRenderer.init(self.allocator, term.cols, term.rows, .{ .w = fonts.metrics.cell_w, .h = fonts.metrics.cell_h });
         defer soft.deinit();
 
         var window = try window_mod.Window.open(self.allocator, .{
@@ -80,7 +95,8 @@ pub const EventLoop = struct {
         if (!window.isLive()) return error.NoWindowBackend;
         if (window.scale != scale) {
             scale = window.scale;
-            try soft.resize(term.cols, term.rows, scale);
+            _ = try fonts.setScale(scale);
+            try regrid(term, &fonts, &soft, window.width, window.height);
         }
         defer vulkan_renderer.detachPresent();
         attachPresent(vulkan_renderer, &window);
@@ -95,7 +111,8 @@ pub const EventLoop = struct {
             @tagName(window.backend),
             window.scale,
         });
-        try presentGui(term, vulkan_renderer, &soft, &window);
+        var focused = true;
+        try presentGui(term, vulkan_renderer, &soft, &window, &fonts, &frame, focused);
 
         while (!shutdown_requested.load(.seq_cst)) {
             var poll_fds = [_]posix.pollfd{
@@ -114,14 +131,17 @@ pub const EventLoop = struct {
                         break;
                     },
                     .resize => |sz| {
-                        const cell = software.cellPx(window.scale);
-                        const cols: u16 = @intCast(@max(@as(u32, 1), sz.width / cell.w));
-                        const rows: u16 = @intCast(@max(@as(u32, 1), sz.height / cell.h));
-                        if (cols != term.cols or rows != term.rows) {
-                            try term.resize(rows, cols);
-                            try soft.resize(cols, rows, window.scale);
-                        }
+                        // HiDPI: the compositor may change the scale with the size.
+                        if (window.scale != fonts.scale) _ = try fonts.setScale(window.scale);
+                        try regrid(term, &fonts, &soft, sz.width, sz.height);
                         try vulkan_renderer.resize(sz.width, sz.height);
+                        need_present = true;
+                    },
+                    .zoom => |step| {
+                        if (try fonts.zoom(step)) {
+                            try regrid(term, &fonts, &soft, window.width, window.height);
+                            std.debug.print("  → zoom: {d:.1}pt, cell {d}x{d}, grid {d}x{d}\n", .{ fonts.size_pt, fonts.metrics.cell_w, fonts.metrics.cell_h, term.cols, term.rows });
+                        }
                         need_present = true;
                     },
                     .redraw => need_present = true,
@@ -136,9 +156,11 @@ pub const EventLoop = struct {
                         const seq = input.encodeKey(k.key, k.mods, term.modes);
                         _ = try term.write(seq.constSlice());
                     },
-                    .mouse => |m| try handleMouse(term, &mouse, m, software.cellPx(window.scale)),
-                    .focus => |focused| {
-                        if (input.encodeFocus(focused, term.modes)) |seq| _ = try term.write(seq);
+                    .mouse => |m| try handleMouse(term, &mouse, m, .{ .w = fonts.metrics.cell_w, .h = fonts.metrics.cell_h }),
+                    .focus => |f| {
+                        focused = f;
+                        need_present = true;
+                        if (input.encodeFocus(f, term.modes)) |seq| _ = try term.write(seq);
                     },
                 }
             }
@@ -174,7 +196,7 @@ pub const EventLoop = struct {
             }
 
             if (need_present) {
-                try presentGui(term, vulkan_renderer, &soft, &window);
+                try presentGui(term, vulkan_renderer, &soft, &window, &fonts, &frame, focused);
             }
         }
     }
@@ -378,26 +400,34 @@ fn handleMouse(term: *terminal.Terminal, st: *MouseState, m: window_mod.MouseInp
     }
 }
 
+/// Fit the grid to a window of `width`×`height` px with the current cell
+/// size; resizes the terminal (and so the PTY) when it changes.
+fn regrid(term: *terminal.Terminal, fonts: *fonts_mod.Fonts, soft: *software.SoftwareRenderer, width: u32, height: u32) !void {
+    const cell = fonts.cellSize();
+    const cols: u16 = @intCast(std.math.clamp(width / cell.w, 1, 1000));
+    const rows: u16 = @intCast(std.math.clamp(height / cell.h, 1, 500));
+    if (cols != term.cols or rows != term.rows) try term.resize(rows, cols);
+    try soft.resizePixels(width, height);
+}
+
 fn presentGui(
     term: *terminal.Terminal,
     vulkan_renderer: *renderer.VulkanRenderer,
     soft: *software.SoftwareRenderer,
     window: *window_mod.Window,
+    fonts: *fonts_mod.Fonts,
+    frame: *frame_mod.Frame,
+    focused: bool,
 ) !void {
     try vulkan_renderer.render();
-    if (vulkan_renderer.presentCells(
-        term.buffer,
-        term.rows,
-        term.cols,
-        term.cursor_row,
-        term.cursor_col,
-        software.View.fromTerminal(term),
-        window.scale,
-    )) {
+    var view = frame_mod.View.fromTerminal(term);
+    view.focused = focused;
+    try frame.build(fonts, term.buffer, term.rows, term.cols, term.cursor_row, term.cursor_col, view);
+    if (vulkan_renderer.presentFrame(frame, &fonts.atlas)) {
         soft.dirty = false;
         return;
     }
-    soft.renderGrid(term.buffer, term.rows, term.cols, term.cursor_row, term.cursor_col, software.View.fromTerminal(term));
+    soft.render(frame, &fonts.atlas);
     if (!vulkan_renderer.presentPixels(soft.pixels, soft.width, soft.height)) {
         window.presentRgba(soft.pixels, soft.width, soft.height);
     }

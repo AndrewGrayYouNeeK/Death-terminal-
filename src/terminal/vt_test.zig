@@ -691,3 +691,15 @@ test "DECCOLM clears, homes and resets margins without resizing" {
     try t.expectEqual(@as(u21, ' '), term.buffer[0].char);
     try t.expectEqual(@as(u16, 10), term.cols);
 }
+
+test "SGR 58 sets underline colour and 4:3 selects curly" {
+    var term = try mk(2, 10);
+    defer term.deinit();
+    try term.processOutput("\x1b[4:3;58:2::10:20:30mA\x1b[59;21mB\x1b[24mC");
+    try t.expect(term.buffer[0].underline);
+    try t.expectEqual(terminal.UnderlineStyle.curly, term.buffer[0].underline_style);
+    try t.expectEqual(color.rgb(10, 20, 30), term.buffer[0].underline_color);
+    try t.expectEqual(terminal.UnderlineStyle.double, term.buffer[1].underline_style);
+    try t.expectEqual(color.none, term.buffer[1].underline_color);
+    try t.expect(!term.buffer[2].underline);
+}

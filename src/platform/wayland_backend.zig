@@ -391,6 +391,10 @@ const Linux = if (builtin.os.tag == .linux) struct {
         const xkb_key = key + 8;
         const xs = st.xkb_state orelse return;
         const sym = c.xkb_state_key_get_one_sym(xs, xkb_key);
+        if (events.zoomForKeysym(sym, st.mods.ctrl)) |z| {
+            st.queue.pushZoom(z);
+            return;
+        }
         if (events.keysymToKey(sym)) |k| {
             var m = st.mods;
             if (sym == c.XKB_KEY_ISO_Left_Tab) m.shift = true;

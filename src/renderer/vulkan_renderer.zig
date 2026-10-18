@@ -3,7 +3,8 @@ const vk = @import("vulkan_c.zig");
 const loader_mod = @import("loader.zig");
 const gpu_present = @import("gpu_present.zig");
 const text_pipeline = @import("text_pipeline.zig");
-const software = @import("software.zig");
+const frame_mod = @import("frame.zig");
+const Atlas = @import("../font/atlas.zig").Atlas;
 const Cell = @import("../terminal/terminal.zig").Cell;
 
 const Loader = loader_mod.Loader;
@@ -401,33 +402,16 @@ pub const VulkanRenderer = struct {
         return self.gpu.present(h, pixels, width, height);
     }
 
-    pub fn presentCells(
-        self: *VulkanRenderer,
-        cells: []const Cell,
-        rows: u16,
-        cols: u16,
-        cursor_row: u16,
-        cursor_col: u16,
-        view: software.View,
-        scale: f32,
-    ) bool {
+    /// Draw a built frame through the GPU text pipeline. Returns false if
+    /// the pipeline is unavailable (caller falls back to the CPU path).
+    pub fn presentFrame(self: *VulkanRenderer, fr: *const frame_mod.Frame, atlas: *Atlas) bool {
         if (!self.text.enabled or !self.gpu.enabled) return false;
         const h = self.presentHandles() orelse return false;
-        const cell = software.cellPx(scale);
-        const count = self.text.packAndUpload(
-            h,
-            cells,
-            rows,
-            cols,
-            cursor_row,
-            cursor_col,
-            view,
-            @floatFromInt(cell.w),
-            @floatFromInt(cell.h),
-        ) catch return false;
-        const index = self.gpu.beginPresent(h) catch return false;
         const cmd = self.gpu.command_buffer orelse return false;
-        self.text.record(cmd, index, count) catch return false;
+        self.text.syncAtlas(h, cmd, atlas) catch return false;
+        const count = self.text.packAndUpload(h, fr.quads.items) catch return false;
+        const index = self.gpu.beginPresent(h) catch return false;
+        self.text.record(cmd, index, count, fr.clear) catch return false;
         self.gpu.submitPresent(h, index) catch return false;
         return true;
     }
