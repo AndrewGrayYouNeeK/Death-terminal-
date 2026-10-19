@@ -78,7 +78,7 @@
 - [x] Performance optimization (damage tracking, one instanced draw, coalesced PTY reads; see docs/PERFORMANCE.md)
 
 ### Phase 3 - AI Integration (Medium Priority)
-- [x] OpenAI-compatible HTTP/JSON client with SSE streaming (default: local Ollama, configurable) — src/ai/openai.zig (replaces the gRPC plan)
+- [x] OpenAI-compatible HTTP/JSON client with SSE streaming (default: local Ollama, configurable) — src/ai/openai.zig (replaces the gRPC plan). `api.x.ai` / `us.api.x.ai` use the Responses API for Grok 4.7 (`ai.reasoning`, search off, store false)
 - [x] AI service connection management (worker thread, cancel on keystroke, timeouts) — src/ai/engine.zig
 - [x] Context gathering (working directory, command history + exit codes, output tail, shell, OS) via OSC 133/OSC 7 shell integration (bash/zsh/fish, auto-injected)
 - [x] Context sanitization for privacy — src/ai/redact.zig with tests
@@ -176,7 +176,7 @@
 - [ ] Video demos or GIFs
 - [ ] Community chat setup
 - [x] GitHub Actions for CI
-- [ ] Release automation (workflow ready in packaging/ci/release.yml, not installed yet)
+- [x] Release automation (`.github/workflows/release.yml`, draft release on a `v*` tag)
 - [x] Package managers: AUR PKGBUILD, winget, Homebrew cask/formula skeletons (not submitted)
 - [x] macOS window backend (Cocoa + MoltenVK; untested at runtime)
 - [ ] Runtime testing on real Windows and macOS hardware

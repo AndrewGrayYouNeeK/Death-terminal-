@@ -62,6 +62,28 @@ config.ai.model = "gpt-4o-mini"
 config.ai.api_key_env = "OPENAI_API_KEY"   -- the NAME of the variable
 ```
 
+Grok 4.7 (the model Grok Bot uses) on the xAI API. `api.x.ai` and
+`us.api.x.ai` are sent to `/v1/responses`, not `/chat/completions`:
+
+```lua
+config.ai.endpoint = "https://api.x.ai/v1"  -- or "https://us.api.x.ai/v1"
+config.ai.model = "grok-4.7"
+config.ai.api_key_env = "XAI_API_KEY"
+config.ai.reasoning = "low"                 -- low | medium | high | xhigh
+config.ai.timeout_ms = 20000
+```
+
+`reasoning` defaults to `low` on those hosts (empty in the config means
+that) and is ignored everywhere else. grok-4.7 cannot turn reasoning off;
+`high` is the server default and is too slow for ghost text. Live search
+is forced off, and the response is not stored. Reasoning text is dropped;
+only the visible answer becomes ghost text or the explain overlay.
+`ai.max_tokens` is sent as `max_output_tokens`, which caps that visible
+answer; reasoning tokens are not counted against it. xAI hosts wait at
+least 15 seconds even when `timeout_ms` is lower, because the model
+thinks before the first token. A higher `timeout_ms` (up to 600000) is
+used as-is.
+
 The API key is read from that environment variable when a request is made.
 It is never stored in the config; a value that looks like a key (e.g.
 `sk-...`) in `api_key_env` is rejected with an error. The key is sent only as
@@ -73,12 +95,13 @@ All options (see also [CONFIG.md](CONFIG.md)):
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `ai.enabled` | `true` | Master switch (`--no-ai` overrides) |
-| `ai.endpoint` | `http://localhost:11434/v1` | Base URL; requests go to `{endpoint}/chat/completions` (http or https) |
-| `ai.model` | `qwen2.5-coder:0.5b` | Model name sent to the server |
-| `ai.api_key_env` | `""` | Name of the env var holding the key (`""` = no auth) |
-| `ai.timeout_ms` | `5000` | Give up on a request after this long |
+| `ai.endpoint` | `http://localhost:11434/v1` | Base URL (http or https). `{endpoint}/chat/completions`, or `{endpoint}/responses` on api.x.ai and us.api.x.ai |
+| `ai.model` | `qwen2.5-coder:0.5b` | Model name sent to the server (`grok-4.7` on xAI) |
+| `ai.reasoning` | `""` | `""` = `low` on api.x.ai, ignored elsewhere; or `low`, `medium`, `high`, `xhigh` |
+| `ai.api_key_env` | `""` | Name of the env var holding the key (`""` = no auth; `XAI_API_KEY` for Grok) |
+| `ai.timeout_ms` | `5000` | Give up after this long (200–600000). x.ai waits at least 15s |
 | `ai.debounce_ms` | `300` | Typing pause before asking |
-| `ai.max_tokens` | `64` | Tokens per suggestion request |
+| `ai.max_tokens` | `64` | Visible tokens per suggestion. On xAI this is `max_output_tokens` |
 | `ai.explain_max_tokens` | `400` | Tokens per explain answer |
 | `ai.history` | `5` | Previous commands (with exit codes) sent as context |
 | `ai.output_lines` | `20` | Lines of recent output sent as context |
@@ -148,9 +171,10 @@ screen is used as context. Explain then describes the visible output.
 
 ## How it works
 
-- `src/ai/openai.zig`: blocking chat/completions client (`stream: true`,
-  SSE parser, plain-JSON fallback), cancellable from another thread by
-  shutting the socket down, per-request receive timeout.
+- `src/ai/openai.zig`: blocking client (`stream: true`, SSE parser,
+  plain-JSON fallback). `api.x.ai` / `us.api.x.ai` use the Responses API;
+  every other host uses chat/completions. Cancellable from another thread
+  by shutting the socket down, per-request receive timeout.
 - `src/ai/engine.zig`: one background worker thread. The UI submits a job;
   a new keystroke cancels the running request. Streamed text comes back
   through a mutex-guarded buffer and a wake pipe in the event loop's
@@ -172,7 +196,8 @@ screen is used as context. Explain then describes the visible output.
   (`qwen2.5-coder:1.5b`/`7b`, or a hosted one) is noticeably better.
 - `ai.timeout_ms` covers the whole request, including name resolution and
   `connect()` (`src/net/dial.zig`), so an unroutable endpoint gives up on
-  time and shows "AI offline".
+  time and shows "AI offline". Requests to `api.x.ai` and `us.api.x.ai`
+  wait at least 15s so grok-4.7 can finish its reasoning trace.
 - In an SSH window (`--ssh`) the context says the session is remote
   ("over SSH to user@host") and leaves out the local OS and shell; the
   usual redaction applies. Without OSC 133 on the remote shell, the prompt

@@ -1,22 +1,22 @@
-# Workflow files to drop in
+# GitHub Actions workflows
 
-These are GitHub Actions workflows for `.github/workflows/`. They live here
-because this PR was not allowed to edit `.github/workflows` directly.
-
-| File | Copy to | What it does |
-|------|---------|--------------|
-| `ci.yml` | `.github/workflows/ci.yml` (replaces the current one) | Linux build + tests with the full dependency list, plus compile-only checks for Windows and macOS |
-| `release.yml` | `.github/workflows/release.yml` (new) | On a `v*` tag: Linux tarball, AppImage, .deb and .rpm; Windows zip; macOS tarballs and `.app` zips; SHA256SUMS; a draft GitHub release |
+These files are installed at `.github/workflows/`. This directory is the
+copy to edit; keep the installed files identical:
 
 ```sh
 cp packaging/ci/ci.yml packaging/ci/release.yml .github/workflows/
 ```
 
-## CI dependency changes (compared with the current ci.yml)
+| File | Installed at | What it does |
+|------|--------------|--------------|
+| `ci.yml` | `.github/workflows/ci.yml` | Linux build + tests with the full dependency list, plus compile-only checks for Windows and macOS |
+| `release.yml` | `.github/workflows/release.yml` | On a `v*` tag: Linux tarball, AppImage, .deb and .rpm; Windows zip; macOS tarballs and `.app` zips; SHA256SUMS; a draft GitHub release |
 
-- `libfreetype-dev libharfbuzz-dev libfontconfig-dev`: needed since the font
-  work in #26. The current ci.yml doesn't install them, so `zig build` there
-  can't find `freetype2` / `harfbuzz` / `fontconfig`.
+## CI dependencies
+
+- `libfreetype-dev libharfbuzz-dev libfontconfig-dev`: FreeType, HarfBuzz and
+  fontconfig. Without them `zig build` cannot find `freetype2`, `harfbuzz`
+  or `fontconfig`.
 - `libssl-dev`: libcrypto for the vendored libssh2 (built-in SSH).
 - `pkg-config`: used by `linkSystemLibrary` to find the libraries above.
 - `fonts-dejavu-core`, `vttest`: optional. Font fallback tests and VT checks

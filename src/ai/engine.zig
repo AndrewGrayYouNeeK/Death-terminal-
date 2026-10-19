@@ -32,6 +32,8 @@ pub const Options = struct {
     /// request time; the key is never copied into the config.
     api_key_env: []const u8 = "",
     timeout_ms: u32 = 5000,
+    /// "" = automatic (low on xAI, omitted elsewhere).
+    reasoning: []const u8 = "",
 };
 
 pub const Update = struct {
@@ -130,6 +132,7 @@ pub const Engine = struct {
             .model = try a.dupe(u8, o.model),
             .api_key_env = try a.dupe(u8, o.api_key_env),
             .timeout_ms = o.timeout_ms,
+            .reasoning = try a.dupe(u8, o.reasoning),
         };
     }
 
@@ -287,6 +290,7 @@ pub const Engine = struct {
                     .messages = job.messages,
                     .max_tokens = job.max_tokens,
                     .timeout_ms = opts.timeout_ms,
+                    .reasoning = opts.reasoning,
                 }, &self.cancel, Sink{ .engine = self, .gen = job.gen, .max_lines = job.max_lines }) catch |e| {
                     err = e;
                 };

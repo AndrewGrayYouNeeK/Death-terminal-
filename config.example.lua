@@ -95,8 +95,15 @@ config.shell.integration = true      -- OSC 133 prompt marks for bash/zsh/fish (
 config.ai.enabled = true             -- --no-ai overrides
 config.ai.endpoint = "http://localhost:11434/v1"  -- any OpenAI-compatible API (Ollama by default)
 config.ai.model = "qwen2.5-coder:0.5b"
-config.ai.api_key_env = ""           -- NAME of an env var holding the key, e.g. "OPENAI_API_KEY"
-config.ai.timeout_ms = 5000          -- give up on a request after this long
+config.ai.reasoning = ""             -- "" = low on api.x.ai, ignored elsewhere; or low | medium | high | xhigh
+config.ai.api_key_env = ""           -- NAME of an env var holding the key, e.g. "OPENAI_API_KEY" or "XAI_API_KEY"
+config.ai.timeout_ms = 5000          -- give up on a request after this long (x.ai waits at least 15s)
+-- Grok 4.7, the model Grok Bot uses. The key stays in the environment:
+-- config.ai.endpoint = "https://api.x.ai/v1"   -- or "https://us.api.x.ai/v1"
+-- config.ai.model = "grok-4.7"
+-- config.ai.api_key_env = "XAI_API_KEY"
+-- config.ai.reasoning = "low"        -- ghost text; "high" or "xhigh" thinks longer
+-- config.ai.timeout_ms = 20000
 config.ai.debounce_ms = 300          -- typing pause before asking
 config.ai.max_tokens = 64            -- per suggestion request
 config.ai.explain_max_tokens = 400   -- per "explain last error" answer

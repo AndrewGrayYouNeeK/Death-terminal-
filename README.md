@@ -34,7 +34,7 @@ Context-aware, not just history-based.
 
 ### 🤖 AI-Native Autocomplete
 - Context-aware command suggestions: typed input, working directory, recent commands with exit codes, recent output, shell and OS
-- OpenAI-compatible HTTP/JSON endpoint with SSE streaming — local Ollama (`qwen2.5-coder:0.5b`) by default, any compatible server configurable; the API key comes from an env var you name
+- OpenAI-compatible HTTP/JSON endpoint with SSE streaming — local Ollama (`qwen2.5-coder:0.5b`) by default, any compatible server configurable; Grok 4.7 (`https://api.x.ai/v1`, model `grok-4.7`) uses the Responses API; the API key comes from an env var you name
 - Dim ghost text after the cursor: Tab accepts, Esc dismisses, Alt+] / Alt+[ cycle alternatives; nothing is inserted unless you accept
 - Ctrl+Shift+A explains the last failed command and suggests a fix
 - Secrets (tokens, keys, passwords, env assignments) are redacted before anything is sent; offline endpoints just show a small "AI offline" badge
@@ -82,7 +82,7 @@ Context-aware, not just history-based.
 | Core       | Zig 0.13                               |
 | Rendering  | Vulkan (software fallback)             |
 | Windowing  | X11, Wayland, Win32                    |
-| AI Backend | OpenAI-compatible HTTP/JSON (Ollama)   |
+| AI Backend | OpenAI-compatible HTTP/JSON (Ollama); xAI Responses API (Grok 4.7) |
 | SSH        | libssh2                                |
 | Scripting  | Lua 5.4                                |
 
