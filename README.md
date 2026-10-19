@@ -24,8 +24,8 @@ $ docker run -
 # → AI suggests (ghost text, Tab to accept):
 docker run -it --rm ubuntu:latest /bin/bash
 
-$ ssh prod
-# → Auto-expands with config + port forwarding
+$ deathterminal --ssh prod
+# → Linux: profile from config.lua or ~/.ssh/config, forwards included
 ```
 
 Context-aware, not just history-based.
@@ -34,7 +34,8 @@ Context-aware, not just history-based.
 
 ### 🤖 AI-Native Autocomplete
 - Context-aware command suggestions: typed input, working directory, recent commands with exit codes, recent output, shell and OS
-- OpenAI-compatible HTTP/JSON endpoint with SSE streaming — local Ollama (`qwen2.5-coder:0.5b`) by default, any compatible server configurable; Grok 4.7 (`https://api.x.ai/v1`, model `grok-4.7`) uses the Responses API; the API key comes from an env var you name
+- OpenAI-compatible HTTP/JSON with SSE streaming — local Ollama (`qwen2.5-coder:0.5b`) by default, any other chat/completions server configurable. The API key comes from an env var you name
+- `api.x.ai` and `us.api.x.ai` (model `grok-4.7`) use the Responses API: `config.ai.reasoning` is `low` / `medium` / `high` / `xhigh` (empty means `low`; it cannot be turned off), live search is off, responses are not stored, and the wait is at least 15s
 - Dim ghost text after the cursor: Tab accepts, Esc dismisses, Alt+] / Alt+[ cycle alternatives; nothing is inserted unless you accept
 - Ctrl+Shift+A explains the last failed command and suggests a fix
 - Secrets (tokens, keys, passwords, env assignments) are redacted before anything is sent; offline endpoints just show a small "AI offline" badge
@@ -42,15 +43,15 @@ Context-aware, not just history-based.
 
 ### ⚡ GPU Rendering (Vulkan)
 - Vulkan swapchain + SPIR-V glyph pipeline, with a software fallback
-- FreeType + HarfBuzz text (ligatures), fontconfig fallback for CJK and colour emoji, dynamic glyph atlas
+- FreeType + HarfBuzz text (ligatures), dynamic glyph atlas. CJK and colour emoji come from fontconfig on Linux; Windows and macOS scan font folders (COLR emoji — bitmap emoji fonts are not loaded yet)
 - Bundled JetBrains Mono, so it works without any system fonts; Ctrl+= / Ctrl+- / Ctrl+0 zoom
 - Smooth under extreme output (logs, builds, streaming data)
 - Designed for future effects + massive scrollback
 
 ### 🔐 Built-in SSH + Tunneling
-- `deathterminal --ssh <profile|user@host>`: libssh2 (vendored) with Lua profiles (`config.ssh.profiles`) and your existing `~/.ssh/config` (Host/HostName/User/Port/IdentityFile/ProxyJump/Include)
+- `deathterminal --ssh <profile|user@host>` (Linux only): libssh2 1.11.1 (vendored) with Lua profiles (`config.ssh.profiles`) and your existing `~/.ssh/config` (Host/HostName/User/Port/IdentityFile/ProxyJump/Include; `Match` is skipped)
 - ssh-agent, keys (incl. encrypted), keyboard-interactive and password, all prompted in-terminal; secrets never logged or stored
-- known_hosts verification: accept/once/reject for new hosts, hard block on changed keys
+- known_hosts verification: accept/once/reject for new hosts, hard block on changed or revoked keys
 - `-L` / `-R` / `-D` (SOCKS) forwards per profile, toggled live from the Ctrl+Shift+S palette; keepalives and reconnect (see [docs/SSH.md](docs/SSH.md))
 
 ### 🔧 Lua Config + Plugins
@@ -60,7 +61,7 @@ Context-aware, not just history-based.
 ### 🗂 Tabs + Split Panes
 - Tabs and horizontal/vertical splits, each pane with its own shell, scrollback, selection, search and AI context
 - Themed tab bar with cwd, activity, bell and exit-status markers; drag to reorder, double-click to rename; drag dividers to resize; zoom, equalize, optional dimming of inactive panes
-- New tabs/panes inherit the cwd (OSC 7); SSH profiles open in a tab or split; startup layouts in Lua (see [docs/TABS.md](docs/TABS.md))
+- New tabs/panes inherit the cwd (OSC 7); the SSH palette opens a profile in a tab, a split, or a new window; startup layouts in Lua (see [docs/TABS.md](docs/TABS.md))
 
 ### 🎯 Brutalist Design
 - No animations
@@ -81,9 +82,9 @@ Context-aware, not just history-based.
 |------------|----------------------------------------|
 | Core       | Zig 0.13                               |
 | Rendering  | Vulkan (software fallback)             |
-| Windowing  | X11, Wayland, Win32                    |
-| AI Backend | OpenAI-compatible HTTP/JSON (Ollama); xAI Responses API (Grok 4.7) |
-| SSH        | libssh2                                |
+| Windowing  | X11, Wayland, Win32, Cocoa             |
+| AI Backend | OpenAI-compatible HTTP/JSON (Ollama); xAI Responses API (`api.x.ai`, `us.api.x.ai`) |
+| SSH        | libssh2 1.11.1 (Linux)                 |
 | Scripting  | Lua 5.4                                |
 
 ## ⚡ Quick Start
@@ -100,8 +101,8 @@ zig build test                # unit tests
 ### Requirements
 
 - Zig 0.13.x (Vulkan headers are vendored; the loader is loaded at run time)
-- Linux: `libx11-dev`, `libwayland-dev`, `wayland-protocols`, `libxkbcommon-dev`, `libfreetype-dev`, `libharfbuzz-dev`, `libfontconfig-dev`, `libssl-dev`; a Vulkan loader + driver (`libvulkan1`, `mesa-vulkan-drivers`) at run time, or the software renderer is used
-- Windows / macOS: nothing extra to build. `zig build -Dtarget=x86_64-windows` / `-Dtarget=aarch64-macos` cross-compiles from Linux; FreeType and HarfBuzz are fetched and built from source. See [docs/PLATFORMS.md](docs/PLATFORMS.md)
+- Linux: `pkg-config`, `libx11-dev`, `libwayland-dev`, `libxkbcommon-dev`, `libfreetype-dev`, `libharfbuzz-dev`, `libfontconfig-dev`, `libssl-dev` (libcrypto). A Vulkan loader + driver (`libvulkan1`, `mesa-vulkan-drivers`) at run time, or the software renderer is used
+- Windows / macOS: nothing extra to build. `zig build -Dtarget=x86_64-windows`, `-Dtarget=aarch64-macos` or `-Dtarget=x86_64-macos` cross-compiles from Linux; FreeType 2.13.3 and HarfBuzz 10.1.0 are fetched and built from source. See [docs/PLATFORMS.md](docs/PLATFORMS.md)
 - Optional fallback fonts: `fonts-noto-cjk`, `fonts-noto-color-emoji`
 
 See [QUICKSTART.md](QUICKSTART.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for details.
@@ -123,14 +124,15 @@ Package skeletons for AUR, winget/MSI and Homebrew (cask and formula) are in
 - Event loop with headless and native GUI modes, signal handling, clean exit when the shell exits
 - Vulkan loader, instance/device, swapchain present, SPIR-V glyph pipeline, software fallback
 - Frame pacing with 2 frames in flight, vsync/mailbox/immediate present modes, zero idle CPU, damage-tracked rows and instanced cell draws, coalesced PTY reads so `cat bigfile`/`yes` don't stall input; `zig build bench` (see [docs/PERFORMANCE.md](docs/PERFORMANCE.md))
-- Real fonts: FreeType/HarfBuzz/fontconfig, bold/italic faces, CJK + colour emoji fallback, procedural box drawing, underline styles/colours, runtime zoom, optional retro 8×8 font (see [docs/FONTS.md](docs/FONTS.md))
-- X11 / Wayland / Win32 / Cocoa windows, resize, HiDPI scaling; ConPTY on Windows (see [docs/PLATFORMS.md](docs/PLATFORMS.md))
-- Lua 5.4 config (`~/.config/death-terminal/config.lua`, vendored Lua, sandboxed): typed options with file:line errors shown in the window, bundled themes, key bindings, shell/env/cwd, live reload on save or Ctrl+Shift+R; `deathterminal --print-default-config` (see [docs/CONFIG.md](docs/CONFIG.md))
-- Built-in SSH (libssh2): profiles + `~/.ssh/config`, ProxyJump, agent/key/keyboard-interactive/password auth, known_hosts checks, remote PTY with resize, `-L/-R/-D` forwards togglable at runtime (Ctrl+Shift+S), keepalive/reconnect; `zig build test-ssh` against a local sshd (see [docs/SSH.md](docs/SSH.md))
+- Real fonts: FreeType/HarfBuzz, bold/italic faces, CJK and colour-emoji fallback (fontconfig on Linux; font folders on Windows/macOS, COLR only), procedural box drawing, underline styles/colours, runtime zoom, optional retro 8×8 font (see [docs/FONTS.md](docs/FONTS.md))
+- X11 / Wayland / Win32 / Cocoa windows, resize, HiDPI scaling; on macOS, Cmd mirrors the Ctrl and Ctrl+Shift chords. ConPTY on Windows (see [docs/PLATFORMS.md](docs/PLATFORMS.md))
+- Lua 5.4 config (`~/.config/death-terminal/config.lua`, or `%APPDATA%\death-terminal\config.lua` on Windows; vendored Lua, sandboxed): typed options with file:line errors shown in the window, bundled themes, key bindings, shell/env/cwd, live reload on save or Ctrl+Shift+R; `deathterminal --print-default-config` (see [docs/CONFIG.md](docs/CONFIG.md))
+- Built-in SSH (libssh2, Linux only): profiles + `~/.ssh/config`, ProxyJump, agent/key/keyboard-interactive/password auth, known_hosts checks, remote PTY with resize, `-L/-R/-D` forwards togglable at runtime (Ctrl+Shift+S), keepalive/reconnect; `zig build test-ssh` against a local sshd (see [docs/SSH.md](docs/SSH.md))
 - Lua plugins: sandboxed per-plugin states, permission grants in config.lua, hooks, command palette (Ctrl+Shift+P), optional status bar, toasts, timers, themes, three example plugins (see [docs/PLUGINS.md](docs/PLUGINS.md))
 - Tabs and split panes: layout tree, keyboard/mouse resize and focus, zoom, equalize, tab bar, confirm-close for running programs, startup layouts, plugin tab/pane events and actions (see [docs/TABS.md](docs/TABS.md))
-- CI (build + unit tests)
-- Packaging: `zig build release`, AppImage / .deb / .rpm, AUR, Windows zip (+ winget/MSI skeletons), macOS .app + Homebrew skeletons; 80/132-column DECCOLM
+- CI: Linux build + unit tests, Windows and macOS cross-compiles; a `v*` tag opens a draft GitHub release
+- Packaging: `zig build release`, AppImage / .deb / .rpm, AUR, Windows zip (+ winget/MSI skeletons), macOS .app + Homebrew skeletons
+- 80/132-column DECCOLM: headless grids resize; GUI panes keep their width and only clear, home, and reset margins
 
 **Not done yet** (tracked in [ISSUES.md](ISSUES.md))
 - Runtime testing on real Windows and macOS (Windows was checked under Wine; macOS only cross-compiles). The built-in SSH client is Linux-only
@@ -157,7 +159,8 @@ Unlike traditional autocomplete, suggestions understand:
 - working directory
 - partial input
 
-Works with local models (offline, e.g. Ollama) or remote OpenAI-compatible inference servers.
+Works with local models (offline, e.g. Ollama) or remote OpenAI-compatible servers.
+`api.x.ai` and `us.api.x.ai` use the Responses API; every other host stays on chat/completions.
 The client is plain HTTP/JSON (it replaces the gRPC service planned originally); see [docs/AI.md](docs/AI.md).
 
 ## 🔐 Security
@@ -168,18 +171,12 @@ The client is plain HTTP/JSON (it replaces the gRPC service planned originally);
 
 ## 🛣 Roadmap
 
-1. **Cleanup** — headless redraw fix, stale code/docs removed
-2. **UTF-8** — codepoint cells, wide chars, replacement glyphs
-3. **Full-screen apps** — scroll regions, alt screen, insert/delete, 256/true color, mouse, bracketed paste
-4. **Fonts** — real font rendering + optional retro 8×8 bitmap font
-5. **Selection & scrollback** — copy/paste, scrollback navigation, search
-6. **Performance** — frame sync, damage tracking, benchmarks
-7. **Lua config** — real Lua 5.4 for colors, keybindings, fonts
-8. **AI** — ghost-text suggestions via OpenAI-compatible HTTP/JSON
-9. **SSH** — libssh2 connections, profiles, port forwarding
-10. **Plugins** — sandboxed Lua plugins, hooks, palette, status bar
-11. **Tabs + splits** — tabs, split panes, layouts
-12. **Packaging** — Linux packages, Windows, macOS
+Milestones 1–12 shipped in 0.1.0 (cleanup through packaging). See **Done** above.
+
+1. **Windows and macOS for real** — runtime testing beyond Wine and cross-compiles; SSH on those builds
+2. **SSH** — certificates, `Match`, agent and X11 forwarding, SFTP, recursive ProxyJump
+3. **Tabs** — profile themes in tabs and splits, detach a pane, restore a layout on restart
+4. **Still open** — multi-line suggestions, blinking text, left/right margins, image protocol, bitmap emoji (needs libpng)
 
 ## 🤝 Contributing
 
