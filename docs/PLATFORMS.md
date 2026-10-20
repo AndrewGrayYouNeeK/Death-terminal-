@@ -21,9 +21,13 @@ is needed to build for any target.
 ## Windows
 
 ```sh
-zig build -Dtarget=x86_64-windows                # Debug
-zig build release -Dtarget=x86_64-windows        # zig-out/release/*.zip
+zig build -Dtarget=x86_64-windows                              # Debug
+zig build release -Dtarget=x86_64-windows -Dpackages=true  # zip + NSIS setup exe
 ```
+
+The setup exe is `deathterminal-<ver>-x86_64-setup.exe` (per-user, Start Menu
+shortcut runs `--gui`, same icon as the exe). It is unsigned
+(`packaging/SIGNING.md`). WiX remains an optional skeleton and is not built.
 
 - **Config:** `%APPDATA%\death-terminal\config.lua`.
 - **Shell:** pick it with `config.shell.program` (for example `"cmd.exe"` or `"pwsh.exe"`) and `config.shell.args`.
@@ -71,9 +75,15 @@ What was failing, and why:
 
 ```sh
 zig build -Dtarget=aarch64-macos           # or x86_64-macos
-zig build release -Dtarget=aarch64-macos
-bash packaging/macos/make-app.sh zig-out/release/deathterminal-0.1.0-aarch64-macos zig-out/release
+zig build release -Dtarget=aarch64-macos -Dpackages=true
+# writes zig-out/release/DeathTerminal.app, DeathTerminal-<ver>-<arch>.zip
+# and DeathTerminal-<ver>-<arch>.dmg
 ```
+
+The `.dmg` is an `hdiutil` UDZO image when built on a Mac, and an HFS hybrid
+wrapped as UDIF when built on Linux. Neither is notarized
+(`packaging/SIGNING.md`). `make-app.sh` still ad-hoc signs with `codesign -`
+when that tool exists.
 
 The Cocoa backend (`src/platform/cocoa_backend.zig`) loads libobjc, AppKit, QuartzCore, CoreGraphics and CoreFoundation with `dlopen`. That is why it cross-compiles without an SDK. It uses no delegate and no NSView subclass:
 

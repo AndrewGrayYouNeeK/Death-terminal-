@@ -5,9 +5,15 @@ Version **0.1.0**. `build.zig` (`default_version`) is the single source; `-Dvers
 ```sh
 zig build release                                # host target, ReleaseFast, stripped
 zig build release -Dpackages=true                # Linux: + AppImage, .deb, .rpm
-zig build release -Dtarget=x86_64-windows        # .zip
-zig build release -Dtarget=aarch64-macos         # .tar.gz (then macos/make-app.sh)
+zig build release -Dtarget=x86_64-windows -Dpackages=true   # .zip + NSIS setup exe
+zig build release -Dtarget=aarch64-macos -Dpackages=true    # .tar.gz + .app + .dmg
 ```
+
+`-Dpackages` on macOS runs `macos/make-app.sh` (bundle, zip, and dmg). On
+Windows it runs `windows/build-installer.sh` (`makensis`). Building the DMG
+on Linux needs `genisoimage`, `zlib1g-dev`, and a C compiler. The Windows
+installer needs `nsis`. Nothing is code-signed
+([SIGNING.md](SIGNING.md)).
 
 Output goes to `zig-out/release/`:
 
@@ -20,13 +26,15 @@ Output goes to `zig-out/release/`:
 | `archive.py` | tar.gz / zip + SHA256SUMS (used by `zig build release`) |
 | `icons/` | `deathterminal.svg` and PNGs 16–512 (regenerate the PNGs with ImageMagick, see below) |
 | `linux/deathterminal.desktop`, `linux/deathterminal.1` | desktop entry, man page |
-| `linux/nfpm.yaml`, `linux/build-packages.sh` | .deb / .rpm via nfpm, AppImage via appimagetool (both downloaded into `packaging/.cache`) |
+| `linux/nfpm.yaml`, `linux/build-packages.sh` | .deb / .rpm via nfpm, AppImage via appimagetool (both downloaded into `packaging/.cache`). The .deb installs `deathterminal.desktop` |
 | `appimage/AppRun` | AppImage entry point (bundled libcrypto + libxkbcommon; no args and no tty means `--gui`) |
 | `aur/PKGBUILD` | Arch package from the source tag (skeleton: `sha256sums=SKIP`) |
-| `windows/deathterminal.rc`, `.ico` | icon + version resource compiled into the exe |
-| `windows/winget/` | winget manifests (portable zip; fill in the SHA256) |
-| `windows/wix/deathterminal.wxs` | optional WiX v4 MSI (build on Windows) |
-| `macos/Info.plist`, `macos/make-app.sh` | `.app` bundle + zip (iconutil/codesign when run on a Mac; MoltenVK via `MOLTENVK_DIR`) |
+| `windows/deathterminal.rc`, `.ico` | icon + version resource. `build.zig` generates the compiled rc so `-Dversion` is applied; this file stays the 0.1.0 reading copy |
+| `windows/nsis/deathterminal.nsi`, `windows/build-installer.sh` | per-user NSIS setup exe (Start Menu shortcut runs `--gui`). Built on Linux with `makensis` |
+| `windows/winget/` | winget manifests (portable zip; fill in the SHA256). The NSIS exe is a separate release asset |
+| `windows/wix/deathterminal.wxs` | optional WiX v4 MSI (not built by CI) |
+| `macos/Info.plist`, `macos/make-app.sh`, `macos/make-dmg.sh` | `.app` bundle, zip, and `.dmg`. `hdiutil` on a Mac; on Linux an HFS hybrid wrapped as UDIF. Ad-hoc `codesign` only when the tool exists |
+| `SIGNING.md` | Authenticode, Developer ID, notarization: documented TODOs, no secrets |
 | `macos/deathterminal-cask.rb`, `macos/deathterminal.rb` | Homebrew cask (the .app) and formula (from source) skeletons |
 | `ci/` | GitHub workflows to copy into `.github/workflows` (see `ci/README.md`) |
 
