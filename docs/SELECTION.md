@@ -46,6 +46,7 @@ CLIPBOARD.
 | Ctrl+Shift+Up / Down | `scroll_line_up` / `scroll_line_down` |
 | Ctrl+Shift+Alt+A | `select_all` (was Ctrl+Shift+A before the AI milestone, which now explains the last error) |
 | Ctrl+Shift+Q | `ai_ask`: ask about the selection, the last command's output, or the screen (Cmd+Shift+Q on macOS; Cmd+Q still quits). See [AI.md](AI.md) |
+| Ctrl+Shift+H | `share_pane` (macOS: Cmd+Shift+H; Cmd+H is Hide). See [SHARING.md](SHARING.md) |
 | Ctrl+= / Ctrl+- / Ctrl+0 | `zoom_in` / `zoom_out` / `zoom_reset` |
 | Ctrl+Shift+R | `reload_config` (see [CONFIG.md](CONFIG.md)) |
 | Ctrl+Shift+S | `ssh_palette`: SSH forwards and profiles (see [SSH.md](SSH.md)) |

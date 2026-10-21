@@ -6,6 +6,7 @@
 //! terminal grid, so they are not part of the bytes sent to the guest.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const config = @import("../config/config.zig");
 const frame_mod = @import("../renderer/frame.zig");
 const input = @import("../terminal/input.zig");
@@ -608,10 +609,7 @@ pub const Controller = struct {
             if (g.access == .control) break :blk " WATCHING | you have CONTROL | keys go to the host";
             break :blk " WATCHING | read-only | arrows move your cursor";
         } else if (self.host) |h| blk: {
-            if (h.phase == .open and h.access == .control) break :blk " BEING WATCHED | guest has CONTROL | F12 kick | Ctrl+Shift+G revoke";
-            if (h.phase == .open) break :blk " BEING WATCHED | read-only | F12 kick | Ctrl+Shift+G grant";
-            if (h.phase == .closed) break :blk " share stopped";
-            break :blk " SHARING | waiting for a guest | F12 stop";
+            break :blk hostBanner(builtin.os.tag == .macos, h.phase, h.access);
         } else "";
         self.banner_len = @min(text.len, self.banner.len);
         @memcpy(self.banner[0..self.banner_len], text[0..self.banner_len]);
@@ -623,6 +621,20 @@ pub const Controller = struct {
         self.err_pending = true;
     }
 };
+
+/// Host banner. `mac` selects the chord that reaches a Mac (Cmd+Shift+G).
+/// Ctrl+Shift+G is the binding everywhere else.
+fn hostBanner(mac: bool, phase: session.Phase, access: session.Access) []const u8 {
+    switch (phase) {
+        .closed => return " share stopped",
+        .waiting => return " SHARING | waiting for a guest | F12 stop",
+        .open => {},
+    }
+    if (mac and access == .control) return " BEING WATCHED | guest has CONTROL | F12 kick | Cmd+Shift+G revoke";
+    if (mac) return " BEING WATCHED | read-only | F12 kick | Cmd+Shift+G grant";
+    if (access == .control) return " BEING WATCHED | guest has CONTROL | F12 kick | Ctrl+Shift+G revoke";
+    return " BEING WATCHED | read-only | F12 kick | Ctrl+Shift+G grant";
+}
 
 fn cellSig(cell: Cell) u64 {
     const colors = cell.resolvedColors();
@@ -666,6 +678,13 @@ fn cellFromWire(w: msg.WireCell) Cell {
     if (w.flags & msg.flag_wide != 0) cell.width = 2;
     if (w.flags & msg.flag_spacer != 0) cell.width = 0;
     return cell;
+}
+
+test "host banner names the Mac grant chord" {
+    try std.testing.expectEqualStrings(" BEING WATCHED | read-only | F12 kick | Cmd+Shift+G grant", hostBanner(true, .open, .read_only));
+    try std.testing.expectEqualStrings(" BEING WATCHED | guest has CONTROL | F12 kick | Cmd+Shift+G revoke", hostBanner(true, .open, .control));
+    try std.testing.expectEqualStrings(" BEING WATCHED | read-only | F12 kick | Ctrl+Shift+G grant", hostBanner(false, .open, .read_only));
+    try std.testing.expectEqualStrings(" SHARING | waiting for a guest | F12 stop", hostBanner(true, .waiting, .read_only));
 }
 
 test "read-only guest keys move the local cursor and do not require a socket" {

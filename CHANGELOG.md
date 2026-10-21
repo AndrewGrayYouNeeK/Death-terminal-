@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Grok 4.7 on `api.x.ai` and `us.api.x.ai` (the model Grok Bot uses) goes through the Responses API: `reasoning.effort` defaults to `low` (`config.ai.reasoning`: `low` / `medium` / `high` / `xhigh`), live search is off, responses are not stored, and reasoning text is not shown as the suggestion. `ai.max_tokens` is sent as `max_output_tokens`, which caps the visible answer. Other endpoints stay on chat/completions. xAI requests wait at least 15s; `ai.timeout_ms` now allows up to 600000
 
 ### Fixed
+- macOS: Shared Haunting did not start from Ctrl+Shift+H. With Control held, Cocoa's `charactersIgnoringModifiers` is a C0 control character, so the letter never matched, and the Command fallback turned the binding into Cmd+H, which macOS reserves for Hide. Share is Cmd+Shift+H. Grant is Cmd+Shift+G, join is Cmd+Shift+J, and stop is Cmd+Shift+Option+H (Cmd+Option+H is Hide Others). Ask the Output stays Cmd+Shift+Q; Cmd+Q still quits. Time Travel stays Cmd+Option+T, and Cmd+T / Cmd+Shift+T stay New Tab. The command palette lists `Share: share this pane` with that Mac chord. The host banner shows Cmd+Shift+G on macOS
 - GitHub Actions CI matches the build: `.github/workflows/ci.yml` installs FreeType, HarfBuzz, fontconfig and libssl, and cross-compiles Windows and macOS. `.github/workflows/release.yml` publishes a draft release on a `v*` tag. The previous workflow was missing those packages, so `zig build` failed on GitHub the same way it did on `main`
 
 ## [0.1.0] - 2026-10-17

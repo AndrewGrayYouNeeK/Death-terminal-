@@ -23,7 +23,7 @@ nothing leaves your machine unless you point it somewhere else.
 | `Esc` | Dismiss it |
 | `Alt+]` / `Alt+[` | Next / previous alternative (the `(1/3)` counter shows when there are several) |
 | `Ctrl+Shift+A` | **Explain / fix the last error**: an overlay at the top with the cause and a corrected command (`Esc` closes it) |
-| `Ctrl+Shift+Q` | **Ask the Output**: a prompt bar. The question goes to the model with the selection, else the last command's output, else the visible screen. The answer is an overlay; cited lines are highlighted and `Down` / `Enter` jump between them (`Esc` closes). On macOS this is `Cmd+Shift+Q`; `Cmd+Q` still quits |
+| `Ctrl+Shift+Q` | **Ask the Output**: a prompt bar. The question goes to the model with the selection, else the last command's output, else the visible screen. The answer is an overlay; cited lines are highlighted and `Down` / `Enter` jump between them (`Esc` closes). On macOS this is `Cmd+Shift+Q`. `Cmd+Q` still quits; Shift is required so the two chords do not collide |
 
 - Nothing is ever inserted without your accept. Ghost text is drawn by the
   renderer only; the shell never sees it.

@@ -435,42 +435,35 @@ fn handleEvent(st: *State, ev: Id) void {
 fn handleKey(st: *State, ev: Id) bool {
     const flags = msg(u64, ev, "modifierFlags", .{});
     const code = msg(u16, ev, "keyCode", .{});
-    const mods = modsOf(flags);
+    const mac = macFlags(flags);
+    // `charactersIgnoringModifiers` keeps Shift and, with Control held, is
+    // often the C0 control character (Ctrl+H → 0x08). Shortcuts use the
+    // virtual key code in that case; see `keysymOf`.
+    const chars = objc.utf8(msg(Id, ev, "charactersIgnoringModifiers", .{}));
 
-    if (flags & Flag.command != 0) {
-        // Cmd shortcuts reuse the Ctrl+Shift bindings (Cmd+C copy,
-        // Cmd+V paste, Cmd+T new tab, ...), then the Ctrl ones (zoom).
-        const chars = objc.utf8(msg(Id, ev, "charactersIgnoringModifiers", .{}));
-        // Cmd+Q quits. Cmd+Shift+Q is Ask the Output (the ctrl+shift binding).
+    if (keysymOf(code, chars)) |sym| {
+        const plan = macMatchPlan(sym, chars, mac);
+        if (plan.quit) {
+            st.queue.pushClose();
+            return true;
+        }
+        for (plan.mods) |slot| if (slot) |m| {
+            if (events.matchBinding(sym, m)) |a| {
+                st.queue.pushAction(a);
+                return true;
+            }
+        };
+        // Unmatched Command keys belong to AppKit (Hide, Hide Others, Minimize).
+        if (mac.command) return false;
+    } else if (mac.command) {
         if (commandQuits(chars, flags)) {
             st.queue.pushClose();
             return true;
         }
-        if (keysymOf(code, chars)) |sym| {
-            // Option is checked before the Ctrl+Shift fallback so Cmd+Option+T
-            // can bind Time Travel without taking Cmd+T / Cmd+Shift+T (New Tab).
-            if (flags & Flag.option != 0) {
-                const m: input.Mods = .{ .ctrl = true, .alt = true, .shift = mods.shift };
-                if (events.matchBinding(sym, m)) |a| {
-                    st.queue.pushAction(a);
-                    return true;
-                }
-            }
-            const alts = [_]input.Mods{ .{ .ctrl = true, .shift = true }, .{ .ctrl = true }, .{ .ctrl = true, .shift = mods.shift } };
-            for (alts) |m| if (events.matchBinding(sym, m)) |a| {
-                st.queue.pushAction(a);
-                return true;
-            };
-        }
-        return false; // let AppKit handle (Cmd+M, Cmd+H, ...)
+        return false;
     }
 
-    if (keysymOf(code, objc.utf8(msg(Id, ev, "charactersIgnoringModifiers", .{})))) |sym| {
-        if (events.matchBinding(sym, mods)) |a| {
-            st.queue.pushAction(a);
-            return true;
-        }
-    }
+    const mods = modsOf(flags);
     if (keyOf(code)) |key| {
         st.queue.pushKey(key, mods);
         return true;
@@ -575,6 +568,11 @@ fn keyOf(code: u16) ?input.Key {
 }
 
 /// X11 keysym numbering used by the bindings table.
+///
+/// Printable `chars` win, so a non-US layout still matches the character the
+/// user sees. When Control is down, AppKit's `charactersIgnoringModifiers`
+/// is a C0 byte (or empty) instead of the letter, and the binding would miss.
+/// The ANSI virtual key code is the fallback for that case.
 fn keysymOf(code: u16, chars: []const u8) ?u32 {
     const named: ?u32 = switch (code) {
         114 => 0xff63,
@@ -605,13 +603,148 @@ fn keysymOf(code: u16, chars: []const u8) ?u32 {
         else => null,
     };
     if (named) |n| return n;
-    if (chars.len != 1) return null;
-    const c = chars[0];
-    return switch (c) {
-        'A'...'Z' => c + 32,
-        'a'...'z', '0'...'9', '=', '-', ',', '.', '/', '+', '_' => c,
+    if (chars.len == 1) {
+        switch (chars[0]) {
+            'A'...'Z' => |c| return c + 32,
+            'a'...'z', '0'...'9', '=', '-', ',', '.', '/', '+', '_' => |c| return c,
+            else => {},
+        }
+    }
+    return ansiKeysym(code);
+}
+
+/// Carbon kVK_ANSI_* → the unshifted keysym. US positions; used only when
+/// the event text is not a shortcut character (Control held).
+fn ansiKeysym(code: u16) ?u32 {
+    return switch (code) {
+        0x00 => 'a',
+        0x01 => 's',
+        0x02 => 'd',
+        0x03 => 'f',
+        0x04 => 'h',
+        0x05 => 'g',
+        0x06 => 'z',
+        0x07 => 'x',
+        0x08 => 'c',
+        0x09 => 'v',
+        0x0B => 'b',
+        0x0C => 'q',
+        0x0D => 'w',
+        0x0E => 'e',
+        0x0F => 'r',
+        0x10 => 'y',
+        0x11 => 't',
+        0x12 => '1',
+        0x13 => '2',
+        0x14 => '3',
+        0x15 => '4',
+        0x16 => '6',
+        0x17 => '5',
+        0x18 => '=',
+        0x19 => '9',
+        0x1A => '7',
+        0x1B => '-',
+        0x1C => '8',
+        0x1D => '0',
+        0x1E => ']',
+        0x1F => 'o',
+        0x20 => 'u',
+        0x21 => '[',
+        0x22 => 'i',
+        0x23 => 'p',
+        0x25 => 'l',
+        0x26 => 'j',
+        0x27 => '\'',
+        0x28 => 'k',
+        0x29 => ';',
+        0x2A => '\\',
+        0x2B => ',',
+        0x2C => '/',
+        0x2D => 'n',
+        0x2E => 'm',
+        0x2F => '.',
+        0x32 => '`',
         else => null,
     };
+}
+
+const MacFlags = struct {
+    shift: bool = false,
+    control: bool = false,
+    option: bool = false,
+    command: bool = false,
+};
+
+fn macFlags(bits: u64) MacFlags {
+    return .{
+        .shift = bits & Flag.shift != 0,
+        .control = bits & Flag.control != 0,
+        .option = bits & Flag.option != 0,
+        .command = bits & Flag.command != 0,
+    };
+}
+
+fn macFlagBits(f: MacFlags) u64 {
+    var bits: u64 = 0;
+    if (f.shift) bits |= Flag.shift;
+    if (f.control) bits |= Flag.control;
+    if (f.option) bits |= Flag.option;
+    if (f.command) bits |= Flag.command;
+    return bits;
+}
+
+const MacPlan = struct {
+    quit: bool = false,
+    mods: [3]?input.Mods = .{ null, null, null },
+};
+
+/// Which binding mods a macOS keyDown should try.
+///
+/// Command is not itself a binding modifier. Without Option it tries
+/// Ctrl+Shift, then Ctrl (Cmd+C copies, Cmd+T opens a tab, Cmd+= zooms).
+/// Option is tried first as Ctrl+Alt, so Cmd+Option+T is Time Travel and
+/// does not take New Tab.
+///
+/// Bare Cmd+H is Hide and Cmd+Option+H is Hide Others: those are not
+/// translated, so Share is Cmd+Shift+H and stop is Cmd+Shift+Option+H.
+/// G, J and Q also require Shift (Cmd+Q quits; Cmd+Shift+Q asks).
+/// With no Command key, the physical Control/Option/Shift set is used.
+/// That path matches Ctrl+Shift+H when AppKit delivers the event, because
+/// `keysymOf` recovers the letter from the virtual key code.
+fn macMatchPlan(sym: u32, chars: []const u8, flags: MacFlags) MacPlan {
+    if (!flags.command) {
+        return .{ .mods = .{
+            .{ .shift = flags.shift, .alt = flags.option, .ctrl = flags.control },
+            null,
+            null,
+        } };
+    }
+    if (commandQuits(chars, macFlagBits(flags))) return .{ .quit = true };
+    // Hide / Hide Others. Shift (or Control) means it is one of our chords.
+    if (sym == 'h' and !flags.shift and !flags.control) return .{};
+    const needs_shift = events.macCommandNeedsShift(sym);
+    const command_alts = [2]?input.Mods{
+        .{ .ctrl = true, .shift = true },
+        .{ .ctrl = true, .shift = flags.shift },
+    };
+    if (flags.option) {
+        var plan = MacPlan{};
+        plan.mods[0] = .{ .ctrl = true, .alt = true, .shift = flags.shift };
+        if (!(needs_shift and !flags.shift)) {
+            plan.mods[1] = command_alts[0];
+            plan.mods[2] = .{ .ctrl = true };
+        }
+        return plan;
+    }
+    if (needs_shift and !flags.shift) {
+        // Cmd+G / Cmd+J / Cmd+Q (quit already returned). Do not invent Shift.
+        return .{ .mods = .{ .{ .ctrl = true }, null, null } };
+    }
+    return .{ .mods = .{
+        command_alts[0],
+        .{ .ctrl = true },
+        command_alts[1],
+    } };
 }
 
 /// Cmd+Q quits. Shift or Option keeps the key for bindings (Cmd+Shift+Q asks).
@@ -629,8 +762,74 @@ test "cocoa: Cmd+Q quits; Cmd+Shift+Q does not" {
     try std.testing.expect(!commandQuits("w", Flag.command));
 }
 
+const MacHit = struct { quit: bool = false, action: ?events.Action = null };
+
+fn resolveMac(b: *const events.Bindings, code: u16, chars: []const u8, flags: MacFlags) MacHit {
+    const sym = keysymOf(code, chars) orelse return .{};
+    const plan = macMatchPlan(sym, chars, flags);
+    if (plan.quit) return .{ .quit = true };
+    for (plan.mods) |slot| if (slot) |m| if (b.match(sym, m)) |a| return .{ .action = a };
+    return .{};
+}
+
 test "cocoa: key tables" {
     try std.testing.expectEqual(input.Key.up, keyOf(126).?);
     try std.testing.expectEqual(@as(?u32, 'c'), keysymOf(8, "C"));
     try std.testing.expectEqual(@as(?u32, 0xffbe), keysymOf(122, ""));
+    // Control held: charactersIgnoringModifiers is the C0 byte, not the letter.
+    try std.testing.expectEqual(@as(?u32, 'h'), keysymOf(0x04, "\x08"));
+    try std.testing.expectEqual(@as(?u32, 'h'), keysymOf(0x04, ""));
+    try std.testing.expectEqual(@as(?u32, 'g'), keysymOf(0x05, "\x07"));
+    try std.testing.expectEqual(@as(?u32, 'q'), keysymOf(0x0C, "\x11"));
+    try std.testing.expectEqual(@as(?u32, 'j'), keysymOf(0x26, "\x0a"));
+    try std.testing.expectEqual(@as(?u32, 't'), keysymOf(0x11, "\x14"));
+}
+
+test "cocoa: mac chords for share, ask, and time travel" {
+    const b = events.Bindings.defaults();
+    const cmd: MacFlags = .{ .command = true };
+    const cmd_shift: MacFlags = .{ .command = true, .shift = true };
+    const cmd_opt: MacFlags = .{ .command = true, .option = true };
+    const cmd_shift_opt: MacFlags = .{ .command = true, .shift = true, .option = true };
+
+    // Cmd+Shift+H shares. Cmd+H is Hide and Cmd+Option+H is Hide Others.
+    try std.testing.expectEqual(events.Action.share_pane, resolveMac(&b, 0x04, "H", cmd_shift).action.?);
+    try std.testing.expect(resolveMac(&b, 0x04, "h", cmd).action == null);
+    try std.testing.expect(!resolveMac(&b, 0x04, "h", cmd).quit);
+    try std.testing.expect(resolveMac(&b, 0x04, "h", cmd_opt).action == null);
+
+    // Physical Ctrl+Shift+H: the event text is BS, the key code is H.
+    const ctrl_shift: MacFlags = .{ .control = true, .shift = true };
+    try std.testing.expectEqual(events.Action.share_pane, resolveMac(&b, 0x04, "\x08", ctrl_shift).action.?);
+
+    try std.testing.expectEqual(events.Action.share_grant, resolveMac(&b, 0x05, "G", cmd_shift).action.?);
+    try std.testing.expect(resolveMac(&b, 0x05, "g", cmd).action == null);
+    try std.testing.expectEqual(events.Action.share_grant, resolveMac(&b, 0x05, "\x07", .{ .control = true, .shift = true }).action.?);
+
+    try std.testing.expectEqual(events.Action.share_join, resolveMac(&b, 0x26, "J", cmd_shift).action.?);
+    try std.testing.expect(resolveMac(&b, 0x26, "j", cmd).action == null);
+    try std.testing.expectEqual(events.Action.share_join, resolveMac(&b, 0x26, "\x0a", .{ .control = true, .shift = true }).action.?);
+
+    try std.testing.expectEqual(events.Action.share_stop, resolveMac(&b, 0x04, "H", cmd_shift_opt).action.?);
+    const ctrl_shift_opt: MacFlags = .{ .control = true, .shift = true, .option = true };
+    try std.testing.expectEqual(events.Action.share_stop, resolveMac(&b, 0x04, "\x08", ctrl_shift_opt).action.?);
+
+    // Cmd+Q quits. Cmd+Shift+Q asks. Cmd+Option+Q is neither.
+    const quit = resolveMac(&b, 0x0C, "q", cmd);
+    try std.testing.expect(quit.quit);
+    try std.testing.expect(quit.action == null);
+    const ask = resolveMac(&b, 0x0C, "Q", cmd_shift);
+    try std.testing.expect(!ask.quit);
+    try std.testing.expectEqual(events.Action.ai_ask, ask.action.?);
+    const opt_q = resolveMac(&b, 0x0C, "q", cmd_opt);
+    try std.testing.expect(!opt_q.quit);
+    try std.testing.expect(opt_q.action == null);
+    try std.testing.expectEqual(events.Action.ai_ask, resolveMac(&b, 0x0C, "\x11", .{ .control = true, .shift = true }).action.?);
+
+    // Time Travel is Cmd+Option+T. Cmd+T and Cmd+Shift+T stay New Tab.
+    try std.testing.expectEqual(events.Action.time_travel, resolveMac(&b, 0x11, "t", cmd_opt).action.?);
+    try std.testing.expectEqual(events.Action.new_tab, resolveMac(&b, 0x11, "t", cmd).action.?);
+    try std.testing.expectEqual(events.Action.new_tab, resolveMac(&b, 0x11, "T", cmd_shift).action.?);
+    try std.testing.expectEqual(events.Action.time_travel, resolveMac(&b, 0x11, "\x14", .{ .control = true, .option = true }).action.?);
+    try std.testing.expectEqual(events.Action.copy, resolveMac(&b, 0x08, "c", cmd).action.?);
 }

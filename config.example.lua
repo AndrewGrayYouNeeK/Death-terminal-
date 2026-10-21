@@ -80,8 +80,10 @@ config.links.open_command = dt.os == "macos" and "open" or dt.os == "windows" an
 -- scroll_bottom, zoom_in, zoom_out, zoom_reset, select_all,
 -- clear_selection, reload_config, ai_accept, ai_dismiss, ai_next, ai_prev,
 -- ai_explain, ai_ask (Ctrl+Shift+Q), ssh_palette (Ctrl+Shift+S),
--- share_pane (Ctrl+Shift+H), share_grant (Ctrl+Shift+G), share_kick (F12),
--- share_stop (Ctrl+Shift+Alt+H), share_join (Ctrl+Shift+J). `false` removes a binding.
+-- share_pane (Ctrl+Shift+H; macOS Cmd+Shift+H, Cmd+H is Hide),
+-- share_grant (Ctrl+Shift+G; macOS Cmd+Shift+G), share_kick (F12),
+-- share_stop (Ctrl+Shift+Alt+H; macOS Cmd+Shift+Option+H),
+-- share_join (Ctrl+Shift+J; macOS Cmd+Shift+J). `false` removes a binding.
 config.default_keybindings = true    -- false = start from an empty table
 -- config.keys["ctrl+shift+t"] = "search"
 -- config.keys["ctrl+shift+c"] = false

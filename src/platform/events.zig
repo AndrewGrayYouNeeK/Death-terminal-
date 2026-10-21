@@ -1,6 +1,7 @@
 //! Platform-neutral window events and a small FIFO the backends fill.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const input = @import("../terminal/input.zig");
 
 pub const KeyPress = struct { key: input.Key, mods: input.Mods };
@@ -368,9 +369,11 @@ pub const Bindings = struct {
         "ctrl+shift+p=command_palette",
         "ctrl+shift+b=toggle_status_bar",
         "ctrl+shift+t=new_tab",
-        // Ctrl+Shift+T is New Tab. Cmd+Shift+T is the same chord on macOS
-        // (Command is matched as Ctrl+Shift first), so Time Travel is Ctrl+Alt+T
-        // (Cmd+Option+T on macOS).
+        // Ctrl+Shift+T is New Tab. On macOS, Command without Option is tried as
+        // Ctrl+Shift first, so Cmd+T and Cmd+Shift+T are both New Tab. Time
+        // Travel is Ctrl+Alt+T (Cmd+Option+T) so it does not take that chord.
+        // Share stays Ctrl+Shift+H here; the Mac press is Cmd+Shift+H, because
+        // bare Cmd+H is Hide and is not translated (see cocoa_backend.zig).
         "ctrl+alt+t=time_travel",
         "ctrl+shift+alt+w=close_tab",
         "ctrl+page_down=next_tab",
@@ -487,13 +490,7 @@ fn normalizeSym(sym: u32) u32 {
 
 pub const Chord = struct { sym: u32, mods: input.Mods };
 
-/// "Ctrl+Shift+P", "Shift+PgUp", "F5".
-pub fn formatChord(buf: []u8, sym: u32, mods: input.Mods) []const u8 {
-    var fbs = std.io.fixedBufferStream(buf);
-    const w = fbs.writer();
-    if (mods.ctrl) w.writeAll("Ctrl+") catch {};
-    if (mods.alt) w.writeAll("Alt+") catch {};
-    if (mods.shift) w.writeAll("Shift+") catch {};
+fn writeChordKey(w: anytype, sym: u32) void {
     const pretty = [_]struct { u32, []const u8 }{
         .{ 0xff55, "PgUp" },   .{ 0xff56, "PgDn" },      .{ 0xff50, "Home" },  .{ 0xff57, "End" },
         .{ 0xff63, "Insert" }, .{ 0xffff, "Delete" },    .{ 0xff52, "Up" },    .{ 0xff54, "Down" },
@@ -503,19 +500,63 @@ pub fn formatChord(buf: []u8, sym: u32, mods: input.Mods) []const u8 {
     };
     for (pretty) |pk| if (pk[0] == sym) {
         w.writeAll(pk[1]) catch {};
-        return fbs.getWritten();
+        return;
     };
     if (sym >= 0xffbe and sym <= 0xffc9) {
         w.print("F{d}", .{sym - 0xffbe + 1}) catch {};
     } else if (sym > 0x20 and sym < 0x7f) {
         w.writeByte(std.ascii.toUpper(@intCast(sym))) catch {};
     } else w.print("0x{x}", .{sym}) catch {};
+}
+
+/// "Ctrl+Shift+P", "Shift+PgUp", "F5".
+pub fn formatChord(buf: []u8, sym: u32, mods: input.Mods) []const u8 {
+    var fbs = std.io.fixedBufferStream(buf);
+    const w = fbs.writer();
+    if (mods.ctrl) w.writeAll("Ctrl+") catch {};
+    if (mods.alt) w.writeAll("Alt+") catch {};
+    if (mods.shift) w.writeAll("Shift+") catch {};
+    writeChordKey(w, sym);
+    return fbs.getWritten();
+}
+
+/// Letters whose Ctrl+Shift binding is Command+Shift on macOS, not bare Command.
+/// Cmd+H hides the app, Cmd+Option+H hides the others, and Cmd+Q quits.
+/// G and J use the same shape so Share does not sit on Cmd+G (Find Next).
+pub fn macCommandNeedsShift(sym: u32) bool {
+    const s = if (sym >= 'A' and sym <= 'Z') sym + 32 else sym;
+    return s == 'h' or s == 'g' or s == 'j' or s == 'q';
+}
+
+/// How `mods` is pressed on macOS. Command stands in for Ctrl. Shift is kept
+/// when `macCommandNeedsShift` says bare Command is reserved or a different
+/// action (Cmd+Shift+H share, Cmd+Shift+Q ask). Other Ctrl+Shift chords show
+/// as Command alone (Cmd+C, Cmd+T), which is the press that reaches them.
+pub fn formatMacChord(buf: []u8, sym: u32, mods: input.Mods) []const u8 {
+    var fbs = std.io.fixedBufferStream(buf);
+    const w = fbs.writer();
+    var shift = mods.shift;
+    if (mods.ctrl and mods.shift and !mods.alt and !macCommandNeedsShift(sym)) shift = false;
+    if (mods.ctrl) w.writeAll("Cmd+") catch {};
+    if (shift) w.writeAll("Shift+") catch {};
+    if (mods.alt) w.writeAll("Option+") catch {};
+    writeChordKey(w, sym);
     return fbs.getWritten();
 }
 
 /// The first chord bound to `action` in `b`, formatted.
 pub fn chordFor(b: *const Bindings, action: Action, buf: []u8) ?[]const u8 {
     for (b.items[0..b.len]) |it| if (it.action == action) return formatChord(buf, it.sym, it.mods);
+    return null;
+}
+
+/// Chord shown in the palette and other on-screen hints. macOS builds use
+/// the keys that reach the app (`formatMacChord`).
+pub fn chordLabel(b: *const Bindings, action: Action, buf: []u8) ?[]const u8 {
+    for (b.items[0..b.len]) |it| if (it.action == action) {
+        if (comptime builtin.os.tag == .macos) return formatMacChord(buf, it.sym, it.mods);
+        return formatChord(buf, it.sym, it.mods);
+    };
     return null;
 }
 
@@ -650,6 +691,11 @@ test "default bindings and overrides" {
     try std.testing.expectEqual(Action.new_tab, b.match('t', .{ .ctrl = true, .shift = true }).?);
     try std.testing.expectEqual(Action.time_travel, b.match('t', .{ .ctrl = true, .alt = true }).?);
     try std.testing.expectEqual(Action.ai_ask, b.match('q', .{ .ctrl = true, .shift = true }).?);
+    try std.testing.expectEqual(Action.share_pane, b.match('h', .{ .ctrl = true, .shift = true }).?);
+    try std.testing.expectEqual(Action.share_grant, b.match('g', .{ .ctrl = true, .shift = true }).?);
+    try std.testing.expectEqual(Action.share_join, b.match('j', .{ .ctrl = true, .shift = true }).?);
+    try std.testing.expectEqual(Action.share_stop, b.match('h', .{ .ctrl = true, .shift = true, .alt = true }).?);
+    try std.testing.expectEqualStrings("Share: share this pane", Action.share_pane.title().?);
     try std.testing.expectEqual(Action.ai_ask, b.match('Q', .{ .ctrl = true, .shift = true }).?);
     try std.testing.expectEqual(Action.copy, b.match('C', .{ .ctrl = true, .shift = true }).?);
     try std.testing.expectEqual(Action.copy, b.match('c', .{ .ctrl = true, .shift = true }).?);
@@ -674,8 +720,19 @@ test "chord formatting and action titles" {
     try std.testing.expectEqualStrings("Ctrl+Shift+P", formatChord(&b, 'p', .{ .ctrl = true, .shift = true }));
     try std.testing.expectEqualStrings("Shift+PgUp", formatChord(&b, 0xff55, .{ .shift = true }));
     try std.testing.expectEqualStrings("F5", formatChord(&b, 0xffc2, .{}));
+    try std.testing.expectEqualStrings("Cmd+Shift+H", formatMacChord(&b, 'h', .{ .ctrl = true, .shift = true }));
+    try std.testing.expectEqualStrings("Cmd+Shift+G", formatMacChord(&b, 'g', .{ .ctrl = true, .shift = true }));
+    try std.testing.expectEqualStrings("Cmd+Shift+J", formatMacChord(&b, 'j', .{ .ctrl = true, .shift = true }));
+    try std.testing.expectEqualStrings("Cmd+Shift+Q", formatMacChord(&b, 'q', .{ .ctrl = true, .shift = true }));
+    try std.testing.expectEqualStrings("Cmd+Shift+Option+H", formatMacChord(&b, 'h', .{ .ctrl = true, .shift = true, .alt = true }));
+    try std.testing.expectEqualStrings("Cmd+Option+T", formatMacChord(&b, 't', .{ .ctrl = true, .alt = true }));
+    try std.testing.expectEqualStrings("Cmd+C", formatMacChord(&b, 'c', .{ .ctrl = true, .shift = true }));
+    try std.testing.expectEqualStrings("Cmd+T", formatMacChord(&b, 't', .{ .ctrl = true, .shift = true }));
+    try std.testing.expectEqualStrings("F12", formatMacChord(&b, 0xffc9, .{}));
     const d = Bindings.defaults();
     try std.testing.expectEqualStrings("Ctrl+Shift+P", chordFor(&d, .command_palette, &b).?);
+    try std.testing.expectEqualStrings("Ctrl+Shift+H", chordLabel(&d, .share_pane, &b).?);
+    try std.testing.expectEqualStrings("Share: share this pane", Action.share_pane.title().?);
     try std.testing.expect(Action.copy.title() != null);
     try std.testing.expect(Action.plugin_binding.title() == null);
     var x = Bindings{};

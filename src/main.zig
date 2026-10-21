@@ -302,11 +302,12 @@ fn printHelp() !void {
         \\
         \\FEATURES:
         \\    • AI command suggestions (OpenAI-compatible, local Ollama by default)
-        \\    • Ask the Output (Ctrl+Shift+Q): question about the last command, selection, or screen
+        \\    • Ask the Output (Ctrl+Shift+Q; macOS Cmd+Shift+Q, Cmd+Q still quits): question about the last command, selection, or screen
         \\    • Built-in SSH (libssh2): profiles, ProxyJump, -L/-R/-D forwards (Ctrl+Shift+S)
         \\    • Vulkan-accelerated rendering
         \\    • Lua plugins: hooks, command palette (Ctrl+Shift+P), status bar, themes
-        \\    • Time Travel: snapshot the working tree before each command (Ctrl+Alt+T)
+        \\    • Time Travel: snapshot the working tree before each command (Ctrl+Alt+T; macOS Cmd+Option+T)
+        \\    • Shared Haunting: share the focused pane (Ctrl+Shift+H; macOS Cmd+Shift+H, Cmd+H is Hide)
         \\    • Brutalist, high-performance design
         \\
         \\For more information, visit: https://github.com/AndrewGrayYouNeeK/Death-terminal-
