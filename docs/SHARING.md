@@ -149,6 +149,18 @@ relay, the guest dials the relay. The host is already waiting there. Both
 sockets are outbound, so a guest NAT and a host NAT do not need a forwarded
 port. IPv6 is not in the invite.
 
+When the invite's host is this machine's own LAN address, the guest tries
+`127.0.0.1` on that port first (about 400ms). macOS often drops a connection
+to the machine's own LAN IP, and that attempt used to sit in `SYN_SENT` until
+the join gave up, so the guest never reached the relay. Each address also has
+a socket send timeout, so a blackholed address returns instead of waiting on
+the TCP retry timer. `DT_SHARE_DEBUG=1` prints each step: LAN try, relay dial,
+TCP connect, TLS handshake, the HTTP status line (`101` or the edge `404`),
+relay paired, and the Noise handshake. A headless join that runs out of time
+prints `join failed: timed out during <last step>` even without that variable.
+A completed host prints `share: guest connected`. `hosted session ok` is only
+a unit-test line.
+
 The default invite names `wss://relay.youneek.xyz`
 (`https://relay.youneek.xyz/health`, and
 `https://youneek-share-relay.youneekartifacts.workers.dev/health`). A guest

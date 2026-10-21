@@ -14,6 +14,7 @@ const invite = @import("invite.zig");
 const link_mod = @import("link.zig");
 const msg = @import("msg.zig");
 const relay = @import("relay.zig");
+const trace = @import("trace.zig");
 const ws_relay = @import("ws_relay.zig");
 
 const DialMode = enum { direct, tcp, ws };
@@ -62,11 +63,29 @@ const Dial = struct {
     fn run(self: *Dial) void {
         const cancel = netdial.CancelFn{ .ctx = self, .f = cancelled };
         if (self.mode == .direct) {
+            const host = self.host[0..self.host_len];
+            if (invite.isThisMachine(host)) {
+                trace.log("lan connect 127.0.0.1:{d} (invite host {s} is this machine)", .{ self.port, host });
+                if (netdial.connect("127.0.0.1", self.port, 400, cancel)) |fd| {
+                    trace.log("lan connected 127.0.0.1:{d}", .{self.port});
+                    self.succeed(.{ .handle = fd });
+                    return;
+                } else |err| {
+                    trace.log("lan 127.0.0.1:{d} {s}", .{ self.port, @errorName(err) });
+                    if (err == error.Cancelled or cancel.check()) {
+                        self.fail(err);
+                        return;
+                    }
+                }
+            }
             const ms: u32 = if (self.fallback == .none) 8000 else invite.lan_probe_ms;
-            if (netdial.connect(self.host[0..self.host_len], self.port, ms, cancel)) |fd| {
+            trace.log("lan connect {s}:{d} timeout {d}ms", .{ host, self.port, ms });
+            if (netdial.connect(host, self.port, ms, cancel)) |fd| {
+                trace.log("lan connected {s}:{d}", .{ host, self.port });
                 self.succeed(.{ .handle = fd });
                 return;
             } else |err| {
+                trace.log("lan {s}:{d} {s}", .{ host, self.port, @errorName(err) });
                 if (self.fallback == .none or err == error.Cancelled or cancel.check()) {
                     self.fail(err);
                     return;
@@ -165,6 +184,9 @@ const Dial = struct {
         self.err_len = n;
         self.mu.unlock();
         if (!first) return;
+        // The host cancels this dial when a LAN guest connects, and --join
+        // cancels it when the wait is over. That is not a relay failure.
+        if (err == error.Cancelled) return;
         if (self.wait_peer) {
             std.debug.print("share: relay failed ({s}); hosting on the LAN only\n", .{text});
         } else {
@@ -400,6 +422,7 @@ pub const Host = struct {
                     c.stream.close();
                     return err;
                 };
+                trace.log("noise handshake", .{});
                 io.setNonBlocking(self.link.?.stream.handle) catch {};
                 link_mod.setNoDelay(self.link.?.stream);
                 if (self.dial) |d| {
@@ -427,6 +450,7 @@ pub const Host = struct {
                     stream.close();
                     return err;
                 };
+                trace.log("noise handshake", .{});
                 io.setNonBlocking(self.link.?.stream.handle) catch {};
                 link_mod.setNoDelay(self.link.?.stream);
             }
@@ -438,6 +462,8 @@ pub const Host = struct {
             return err;
         };
         if (self.phase == .waiting and l.isOpen()) {
+            trace.log("noise open", .{});
+            std.debug.print("share: guest connected\n", .{});
             var buf: [8]u8 = undefined;
             const hello = try msg.encodeWelcome(&buf, .read_only);
             l.sendApp(hello) catch {};
@@ -667,6 +693,7 @@ pub const Guest = struct {
                     stream.close();
                     return err;
                 };
+                trace.log("noise handshake", .{});
             }
         }
         const l = self.link orelse return;
@@ -677,7 +704,10 @@ pub const Guest = struct {
             if (err == error.Closed or err == error.Handshake or err == error.BadFrame) return;
             return err;
         };
-        if (self.phase == .waiting and l.isOpen()) self.phase = .open;
+        if (self.phase == .waiting and l.isOpen()) {
+            trace.log("noise open", .{});
+            self.phase = .open;
+        }
         try self.drain();
         l.flush() catch {};
     }
@@ -832,6 +862,20 @@ test "live session gates input, shares a cell, then kick sticks" {
     guest.sendInput("still") catch {};
     host.tick() catch {};
     try std.testing.expectEqual(before, host.input.items.len);
+}
+
+test "same-machine guest dials loopback when the invite names this LAN address" {
+    io.ensureSockets();
+    var buf: [64]u8 = undefined;
+    const lan = invite.detectLanHost(&buf);
+    if (std.mem.eql(u8, lan, "127.0.0.1")) return;
+    // Listener is loopback only. The LAN address in the invite is not
+    // accepting. The session opens only if the guest tries 127.0.0.1.
+    const host = try Host.listen(std.testing.allocator, "127.0.0.1", 0, lan, "", null);
+    defer host.deinit();
+    const guest = try Guest.start(std.testing.allocator, host.code);
+    defer guest.deinit();
+    try waitOpen(host, guest);
 }
 
 test "invite code: guest sees the screen and input waits for grant" {

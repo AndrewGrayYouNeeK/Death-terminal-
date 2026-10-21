@@ -138,8 +138,6 @@ pub fn resolve(host: []const u8, port: u16, deadline_ms: i64, cancel: ?CancelFn)
     return out;
 }
 
-/// Connect to one address before `deadline_ms`. The socket comes back in
-/// blocking mode.
 /// shutdown(2) that never traps. On Windows std's posix.shutdown treats
 /// WSAEINVAL/WSAENOTSOCK as unreachable, and Wine returns them for a socket
 /// another thread is blocked reading. Errors don't matter to callers here.
@@ -160,12 +158,65 @@ pub fn closeSocket(fd: posix.socket_t) void {
     } else posix.close(fd);
 }
 
+/// Bound a blocking socket read or connect. `0` clears the timer.
+/// A non-blocking connect does not use this; `SO_SNDTIMEO` still caps a
+/// Darwin connect that ignored `O_NONBLOCK` and would otherwise sit in
+/// SYN_SENT until the TCP retry timer (long enough to blow the join budget).
+pub fn setSocketTimeout(fd: posix.socket_t, ms: u32) void {
+    if (builtin.os.tag == .windows) {
+        const v: u32 = ms;
+        posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.RCVTIMEO, std.mem.asBytes(&v)) catch {};
+        posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.SNDTIMEO, std.mem.asBytes(&v)) catch {};
+        return;
+    }
+    const tv = posix.timeval{
+        .tv_sec = @intCast(ms / 1000),
+        .tv_usec = @intCast((ms % 1000) * 1000),
+    };
+    posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.RCVTIMEO, std.mem.asBytes(&tv)) catch {};
+    posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.SNDTIMEO, std.mem.asBytes(&tv)) catch {};
+}
+
+fn waitWritable(fd: posix.socket_t, timeout_ms: i32) Error!bool {
+    if (timeout_ms <= 0) return false;
+    if (comptime builtin.target.isDarwin()) {
+        const kq = posix.kqueue() catch return error.Unexpected;
+        defer posix.close(kq);
+        var change = [_]posix.Kevent{.{
+            .ident = @as(usize, @intCast(fd)),
+            .filter = std.c.EVFILT_WRITE,
+            .flags = @intCast(std.c.EV_ADD | std.c.EV_ENABLE),
+            .fflags = 0,
+            .data = 0,
+            .udata = 0,
+        }};
+        var got = [_]posix.Kevent{undefined};
+        const ts = posix.timespec{
+            .tv_sec = @intCast(@divTrunc(timeout_ms, 1000)),
+            .tv_nsec = @as(i64, @intCast(@mod(timeout_ms, 1000))) * 1_000_000,
+        };
+        const n = posix.kevent(kq, change[0..], got[0..], &ts) catch return error.Unexpected;
+        return n != 0;
+    }
+    var fds = [_]io.PollFd{io.pollFd(fd, io.POLL.OUT)};
+    return io.poll(&fds, timeout_ms) != 0;
+}
+
+/// Connect to one address before `deadline_ms`. The socket comes back in
+/// blocking mode.
 pub fn connectAddress(addr: std.net.Address, deadline_ms: i64, cancel: ?CancelFn) Error!posix.socket_t {
     const fd = posix.socket(addr.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC | posix.SOCK.NONBLOCK, posix.IPPROTO.TCP) catch return error.Unexpected;
     errdefer closeSocket(fd);
     io.armSocket(fd);
+    const remain_ms: u32 = blk: {
+        const left = deadline_ms - std.time.milliTimestamp();
+        if (left <= 0) return error.Timeout;
+        break :blk @intCast(@min(left, std.math.maxInt(u32)));
+    };
+    setSocketTimeout(fd, remain_ms);
     posix.connect(fd, &addr.any, addr.getOsSockLen()) catch |err| switch (err) {
-        error.WouldBlock => {},
+        error.WouldBlock, error.ConnectionPending => {},
+        error.ConnectionTimedOut => return error.Timeout,
         error.ConnectionRefused => return error.Refused,
         error.NetworkUnreachable, error.AddressNotAvailable => return error.Unreachable,
         else => return error.Unexpected,
@@ -174,9 +225,8 @@ pub fn connectAddress(addr: std.net.Address, deadline_ms: i64, cancel: ?CancelFn
         if (CancelFn.check(cancel)) return error.Cancelled;
         const left = deadline_ms - std.time.milliTimestamp();
         if (left <= 0) return error.Timeout;
-        var fds = [_]io.PollFd{io.pollFd(fd, io.POLL.OUT)};
-        const n = io.poll(&fds, @intCast(@min(left, 50)));
-        if (n == 0) continue;
+        const ready = waitWritable(fd, @intCast(@min(left, 50))) catch return error.Unexpected;
+        if (!ready) continue;
         if (builtin.os.tag == .windows) {
             const ws2 = std.os.windows.ws2_32;
             var so_err: i32 = 0;
@@ -201,6 +251,7 @@ pub fn connectAddress(addr: std.net.Address, deadline_ms: i64, cancel: ?CancelFn
             else => return error.Unexpected,
         }
     }
+    setSocketTimeout(fd, 0);
     if (builtin.os.tag == .windows) {
         var off: c_ulong = 0;
         if (std.os.windows.ws2_32.ioctlsocket(fd, std.os.windows.ws2_32.FIONBIO, &off) != 0) return error.Unexpected;
@@ -217,14 +268,20 @@ pub fn connect(host: []const u8, port: u16, timeout_ms: u32, cancel: ?CancelFn) 
     const deadline = std.time.milliTimestamp() + timeout_ms;
     const addrs = try resolve(host, port, deadline, cancel);
     var last: Error = error.Refused;
-    for (addrs.slice()) |a| {
-        return connectAddress(a, deadline, cancel) catch |err| switch (err) {
-            error.Refused, error.Unreachable, error.Unexpected => {
+    // A blackholed first address (often IPv6) must not spend the whole budget.
+    // The last address gets whatever time is left.
+    for (addrs.slice(), 0..) |a, i| {
+        const now = std.time.milliTimestamp();
+        if (now >= deadline) return if (last == error.Refused) error.Timeout else last;
+        const remaining = deadline - now;
+        const slice: i64 = if (i + 1 == addrs.len or remaining < 3000) remaining else 3000;
+        if (connectAddress(a, now + slice, cancel)) |fd| return fd else |err| switch (err) {
+            error.Refused, error.Unreachable, error.Unexpected, error.Timeout => {
                 last = err;
                 continue;
             },
             else => return err,
-        };
+        }
     }
     return last;
 }
