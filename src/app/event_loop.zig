@@ -336,7 +336,7 @@ pub const EventLoop = struct {
         defer ghost.deinit();
         var dirty = true;
 
-        while (!shutdown_requested.load(.seq_cst)) {
+        host: while (!shutdown_requested.load(.seq_cst)) {
             var extra = [_]io.Fd{ io.none, io.none };
             const nfd = share.fillPoll(&extra);
             var poll_fds = [_]io.PollFd{
@@ -354,18 +354,17 @@ pub const EventLoop = struct {
                 break;
             }
             if (poll_fds[0].revents & posix.POLL.IN != 0) {
-                const n = io.read(pty_fd, read_buf) catch |err| switch (err) {
-                    error.WouldBlock => 0,
+                const n = io.read(pty_fd, read_buf) catch |err| if (err == error.WouldBlock) @as(usize, 0) else {
                     // Linux reports EIO when the slave closes. Darwin often
                     // reports an unmapped errno (ENXIO) as Unexpected.
-                    error.InputOutput, error.Unexpected, error.NotOpenForReading, error.ConnectionResetByPeer => {
-                        std.debug.print("\nShell exited ({s}).\n", .{@errorName(err)});
-                        break;
-                    },
-                    else => {
-                        std.debug.print("\nshare: pty read failed ({s}); hosting continues until the shell ends\n", .{@errorName(err)});
-                        break;
-                    },
+                    // Name the error: Windows' read error set has neither.
+                    const name = @errorName(err);
+                    if (ptySlaveClosed(name)) {
+                        std.debug.print("\nShell exited ({s}).\n", .{name});
+                    } else {
+                        std.debug.print("\nshare: pty read failed ({s}); hosting continues until the shell ends\n", .{name});
+                    }
+                    break :host;
                 };
                 if (n == 0) {
                     std.debug.print("\nShell exited.\n", .{});
@@ -816,6 +815,15 @@ pub fn spawnDetached(args: []const []const u8, quiet: bool) void {
 fn renderHeadless(term: *terminal.Terminal, vulkan_renderer: *renderer.VulkanRenderer) !void {
     try vulkan_renderer.render();
     try writeHeadlessFrame(term, std.io.getStdOut().writer());
+}
+
+/// True when the pty slave has gone away. Compared by name so the Windows
+/// read error set, which has none of these, still compiles.
+fn ptySlaveClosed(name: []const u8) bool {
+    return std.mem.eql(u8, name, "InputOutput") or
+        std.mem.eql(u8, name, "Unexpected") or
+        std.mem.eql(u8, name, "NotOpenForReading") or
+        std.mem.eql(u8, name, "ConnectionResetByPeer");
 }
 
 /// Write the whole grid to `out` as UTF-8: home the cursor, emit every cell
