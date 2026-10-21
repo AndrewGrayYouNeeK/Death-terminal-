@@ -4,6 +4,8 @@
 
 Fast. Minimal. Unapologetically powerful.
 
+Download: https://andrewgrayyouneek.github.io/Death-terminal-/
+
 ## ⚡ Why YouNeeK Death Terminal?
 
 Most terminals are either:
@@ -108,6 +110,10 @@ zig build test                # unit tests
 See [QUICKSTART.md](QUICKSTART.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for details.
 
 ### Install (0.1.0)
+
+Prebuilt packages: https://andrewgrayyouneek.github.io/Death-terminal-/
+
+That page links the latest published GitHub release (macOS Apple Silicon and Intel `.dmg`, Windows setup `.exe`, Linux AppImage / `.deb` / `.rpm`, and `SHA256SUMS`). With no published release it links the [Releases](https://github.com/AndrewGrayYouNeeK/Death-terminal-/releases) page.
 
 `zig build release` writes versioned archives to `zig-out/release/`.
 `zig build release -Dpackages=true` also builds the installable packages:
