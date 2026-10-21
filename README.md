@@ -83,7 +83,7 @@ Context-aware, not just history-based.
 
 ### 👁 Shared Haunting
 - Share the focused pane live with one other terminal: Ctrl+Shift+H (macOS: Cmd+Shift+H; Cmd+H is Hide), or `deathterminal --share`, which prints the invite. The window shows the LAN address, port, and code and copies them. The guest runs `deathterminal --join <invite>` (or Ctrl+Shift+J, Cmd+Shift+J on macOS)
-- Direct TCP by default. Noise (X25519 + ChaCha20-Poly1305, keyed by the invite) — no central server. Optional `config.share.relay` is a splice, not a decryption point
+- Tries the LAN first, then a hosted relay (`wss://relay.youneek.xyz`, or `config.share.relay`). Noise (X25519 + ChaCha20-Poly1305, keyed by the invite). The relay forwards opaque frames and does not see plaintext. `"off"` keeps the share on the LAN only
 - Guest is read-only until the host presses Ctrl+Shift+G (macOS: Cmd+Shift+G). The host shows a "being watched" banner; F12 kicks. Stop is Ctrl+Shift+Alt+H (macOS: Cmd+Shift+Option+H). Other panes are never sent. AI redaction does not apply to the shared screen (see [docs/SHARING.md](docs/SHARING.md))
 
 ### 🎯 Brutalist Design
@@ -162,7 +162,7 @@ in [docs/MOBILE.md](docs/MOBILE.md) and is not built.
 - Muscle memory: local mining of repeated command sequences, project and global shortcuts in `shortcuts.lua`, palette list/rename/delete, stop on the first failing command (see [docs/MUSCLE_MEMORY.md](docs/MUSCLE_MEMORY.md))
 - Tabs and split panes: layout tree, keyboard/mouse resize and focus, zoom, equalize, tab bar, confirm-close for running programs, startup layouts, plugin tab/pane events and actions (see [docs/TABS.md](docs/TABS.md))
 - Time Travel: per-command snapshots of the working tree, a scrubbable timeline (Ctrl+Alt+T / Cmd+Option+T) and an undoable rewind (see [docs/TIME_TRAVEL.md](docs/TIME_TRAVEL.md))
-- Shared Haunting: one pane, live, Noise-encrypted, direct TCP or an optional splice relay. Guest input is off until the host grants it; F12 kicks (see [docs/SHARING.md](docs/SHARING.md)). No NAT traversal
+- Shared Haunting: one pane, live, Noise-encrypted. Same-LAN TCP, then an outbound wss relay so a guest off the network needs no port forward. Guest input is off until the host grants it; F12 kicks (see [docs/SHARING.md](docs/SHARING.md))
 - CI: Linux build + unit tests, Windows and macOS cross-compiles; a `v*` tag opens a draft GitHub release
 - Packaging: `zig build release -Dpackages=true` builds an AppImage, `.deb` (with a `.desktop` file) and `.rpm`, a Windows zip plus NSIS installer, and a macOS `.app` plus `.dmg`. A `v*` tag publishes them as a draft. macOS signing and notarization run when the Apple secrets in [packaging/SIGNING.md](packaging/SIGNING.md) are set; otherwise those artifacts stay unsigned. Windows signing is still a TODO
 - 80/132-column DECCOLM: headless grids resize; GUI panes keep their width and only clear, home, and reset margins

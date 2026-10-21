@@ -1,10 +1,12 @@
 # Shared Haunting
 
-Share the focused pane, live, with one other YouNeeK Death Terminal. There is no
-central server. The host listens on TCP, the invite carries the address and a
-secret, and the session is end-to-end encrypted with a Noise handshake
-(`std.crypto`: X25519 + ChaCha20-Poly1305). A relay is optional and only splices
-ciphertext.
+Share the focused pane, live, with one other YouNeeK Death Terminal. The host
+listens on TCP. The invite carries the address and a secret, and the session
+is end-to-end encrypted with a Noise handshake (`std.crypto`: X25519 +
+ChaCha20-Poly1305). A guest on the same LAN connects directly. A guest
+anywhere else uses the relay already in the invite: both sides dial out over
+WebSocket, so neither needs a port forward. The relay only forwards opaque
+frames. It never sees plaintext.
 
 ```sh
 # host, in the window: Ctrl+Shift+H  (macOS: Cmd+Shift+H, or the command palette)
@@ -98,12 +100,22 @@ config.share.enabled = true       -- false refuses to host
 config.share.bind = "0.0.0.0"     -- listen address (IPv4)
 config.share.port = 0             -- 0 picks a free port
 config.share.advertise = ""       -- "" = detected LAN IPv4, else the host guests dial
-config.share.relay = ""           -- "" = direct; or "host:port" / "tcp://host:port"
+config.share.relay = ""           -- "" = wss://relay.youneek.xyz; "off" = LAN only
 ```
 
-`advertise` is what goes in the invite. Set it when the detected address is
-not the one the guest can route to (a public IP, a VPN address). The guest
-does not need `share.relay` set: the relay URL is inside the invite.
+| `share.relay` | Meaning |
+| --- | --- |
+| `""` | Hosted relay `wss://relay.youneek.xyz`, and the LAN listener |
+| `"off"`, `"none"`, `"false"`, `"direct"` | LAN only. Case insensitive |
+| `wss://host` | That origin. A path in the URL is ignored; the client always uses `/v1/<id>` |
+| `ws://host[:port]` | Same, without TLS. For a local `wrangler dev`, not for guests on the internet |
+| `host:port` or `tcp://host:port` | Self-hosted TCP rendezvous (`deathterminal --share-relay`) |
+
+`advertise` is the LAN address in the invite. Set it when the detected
+address is not the one a guest on your network can route to. The guest does
+not need `share.relay` set: the relay URL is inside the invite. An empty
+relay field in an invite means LAN only. The hosted default is applied when
+the host builds the invite, not when the guest reads an empty field.
 
 ## Direct TCP
 
@@ -114,9 +126,16 @@ packet to `192.0.2.1:9`, or `127.0.0.1` when there is no route. That probe
 does not open a path through NAT.
 
 **NAT.** There is no hole punching, STUN, or UPnP. Two machines on the same
-LAN can connect with the detected address. Across the internet, either
-forward the port and set `share.advertise` to an address the guest can dial,
-or run the relay below. IPv6 is not in the invite.
+LAN connect to the address in the invite. The guest gives that address about
+one second (`lan_probe_ms`). If it does not connect, and the invite names a
+relay, the guest dials the relay. The host is already waiting there. Both
+sockets are outbound, so a guest NAT and a host NAT do not need a forwarded
+port. IPv6 is not in the invite.
+
+Until `relay.youneek.xyz` answers, a guest who is not on the LAN cannot join
+an invite that uses the default URL. The LAN path still works. Point
+`config.share.relay` at the deployed `wss://….workers.dev` URL, or at
+`"off"`. See [Deploy the hosted relay](#deploy-the-hosted-relay).
 
 ## Invite
 
@@ -132,7 +151,7 @@ Payload, version 1:
 | host | ASCII, no spaces |
 | secret | 16 bytes |
 | relay length | 1 byte |
-| relay | optional `host:port` or `tcp://host:port`, up to 120 bytes |
+| relay | optional, up to 120 bytes: a `wss://` or `ws://` origin, or `host:port` / `tcp://host:port` |
 
 The Noise PSK is HKDF-SHA256: extract with salt `deathterminal-share-v1` and
 the 16-byte secret, expand info `noise-psk` to 32 bytes. The relay id is
@@ -176,10 +195,98 @@ A cell is 13 bytes: u32le codepoint, u32le fg, u32le bg, flags
 
 ## Relay
 
-The relay never decrypts. It matches two TCP clients on an 8-byte id and
-splices the sockets. Noise then runs through that pipe.
+The relay never decrypts. Noise already seals the byte stream with the invite
+secret. The relay matches the two peers on an 8-byte id (`SHA-256(secret)`
+truncated) and copies opaque chunks both ways. It sees that id, frame sizes,
+and timing. It does not see the secret or the grid. Cloudflare terminates
+`wss`, so the Worker can see the path. The path is the id, not the secret.
 
-Run one anywhere both sides can reach:
+The host always tries to listen on the LAN as well. A guest that connects
+there cancels the relay dial. If the LAN accept is not the real guest (a
+middlebox that completes TCP and then fails the handshake), that attempt does
+not fall through to the relay.
+
+### Hosted WebSocket relay
+
+`relay/` is a Cloudflare Worker. One Durable Object (`ShareSession`) per
+session id, plus a `RelayGate` object that counts sessions. The app default
+is `wss://relay.youneek.xyz`. A `workers.dev` hostname works the same way
+once it is set in `config.share.relay`.
+
+```
+GET /v1/<16 lowercase hex id>?role=host|guest
+Upgrade: websocket
+```
+
+The first binary frame from the server is one status byte, sent only when
+both roles are connected: `0` paired, `1` busy (a second guest). Later binary
+frames are opaque slices of the Noise stream. Client frames are masked.
+Server frames are not. Ping is answered with pong. Text frames are rejected.
+The host blocks on that status byte until a guest arrives or the share stops,
+and retries the dial about once a second. A new host socket replaces the old
+one (so a kick can rejoin). A second guest is busy.
+
+Limits in `relay/wrangler.jsonc` (the test config is tighter and must not be
+deployed):
+
+| Limit | Production |
+| --- | --- |
+| Live sessions | 128 |
+| Live sessions per IP | 8 |
+| New sessions per IP per hour | 30 |
+| Session lifetime | 2 hours |
+| Idle after the peers are paired | 15 minutes |
+| Wait if nobody pairs | 30 minutes |
+| One frame | 64 KiB |
+| Bytes forwarded per session | 64 MiB |
+
+Over the cap, the socket closes with `4001` (expiry, idle, wait, or byte
+cap), `1009` (frame too big), `1008` (busy guest), or `4000` (the host was
+replaced). `GET /health` returns `{ "ok": true, "service": "youneek-share-relay" }`.
+Logs record the first 8 hex characters of the id and a reason. They do not
+record payloads. Observability redacts the query string, which is where
+`role` sits.
+
+### Deploy the hosted relay
+
+This repository does not deploy the Worker. Andrew deploys it from a machine
+that is logged into the Cloudflare account that should own `youneek.xyz`:
+
+```sh
+cd relay
+npm ci
+npx wrangler login
+npx wrangler deploy
+```
+
+`npm ci` uses `relay/.npmrc` (`legacy-peer-deps=true`). Wrangler prints a
+`https://youneek-share-relay.<account>.workers.dev` URL. Until the custom
+domain exists, set that URL in the app:
+
+```lua
+config.share.relay = "wss://youneek-share-relay.<account>.workers.dev"
+```
+
+To serve `relay.youneek.xyz`, the `youneek.xyz` zone has to be on that
+account. Uncomment the `routes` entry in `relay/wrangler.jsonc`:
+
+```jsonc
+"routes": [{ "pattern": "relay.youneek.xyz", "custom_domain": true }],
+```
+
+Redeploy. The app default is already `wss://relay.youneek.xyz`, so
+`config.share.relay = ""` then works with no further client change. Do not
+deploy `relay/wrangler.test.jsonc`. Do not put an API token in the repo.
+`npx wrangler deploy --dry-run` checks the config without publishing.
+
+`npx wrangler dev` in `relay/` speaks the same WebSocket protocol on
+localhost. The Zig tests use an in-process `ws://` mock instead of that
+process. `cd relay && npm test` runs the Worker in the Workers runtime.
+
+### Self-hosted TCP rendezvous
+
+`deathterminal --share-relay` is the older splice, for a host you run
+yourself:
 
 ```sh
 deathterminal --share-relay 9754
@@ -187,15 +294,12 @@ deathterminal --share-relay 0.0.0.0:9754
 deathterminal --share-relay relay.example:9754
 ```
 
-On the host:
-
 ```lua
 config.share.relay = "tcp://relay.example:9754"
 ```
 
-Start the share as usual. The invite contains the relay, so the guest dials it
-with `--join` and does not need the same config. The host registers as role 1
-and does not listen locally.
+The invite contains that address. The guest still tries the LAN first, then
+the TCP relay. The host listens locally and also registers as role 1.
 
 Preface, 14 bytes, then raw Noise bytes:
 
@@ -208,17 +312,15 @@ Preface, 14 bytes, then raw Noise bytes:
 
 The server writes one status byte to each side once both have registered:
 `0` ok, `1` busy (that role, or every slot, is taken), `2` bad preface. After
-`0`, bytes are copied both ways. The relay sees the id, sizes, and timing. It
-does not see the secret or the grid.
+`0`, bytes are copied both ways.
 
 Eight sessions can be waiting at once. A second guest for an id that already
 has a guest gets status `1`.
 
-To replace this with your own rendezvous, keep the preface and the splice: the
-bytes after the status byte are the Noise stream, unchanged. A future relay
-can sit at `config.share.relay` without a client change as long as it speaks
-that preface. Anything that terminates TLS or inspects the payload would stop
-being a splice and would break the handshake on purpose.
+To replace the TCP rendezvous with your own, keep the preface and the splice:
+the bytes after the status byte are the Noise stream, unchanged. Anything
+that terminates the Noise stream or inspects the payload would stop being a
+splice and would break the handshake on purpose.
 
 ## Headless guest
 

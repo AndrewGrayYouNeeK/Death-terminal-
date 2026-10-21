@@ -172,14 +172,16 @@ config.ssh.keepalive_s = 30          -- seconds; 0 = off
 -- }
 
 -- Shared Haunting (docs/SHARING.md) ----------------------------------------
--- Share the focused pane with another Death Terminal. Direct TCP by default
--- (the invite carries a LAN address). Set relay to a host:port you run with
--- `deathterminal --share-relay` when the guest cannot dial you.
+-- Share the focused pane with another Death Terminal. The host listens on
+-- the LAN and, unless relay is "off", also dials out to a splice. An empty
+-- relay is wss://relay.youneek.xyz. The guest tries the LAN address in the
+-- invite, then the relay. The relay never sees plaintext.
 config.share.enabled = true          -- false refuses to host; --join still works
 config.share.bind = "0.0.0.0"        -- address the host listens on
 config.share.port = 0                -- 0 = pick a free port
 config.share.advertise = ""          -- "" = LAN IPv4; or a host guests can dial
-config.share.relay = ""              -- "" = direct; or "tcp://host:port"
+config.share.relay = ""              -- "" = hosted relay; "off" = LAN only;
+                                     -- or "wss://…", or "tcp://host:port"
 
 -- Status bar ---------------------------------------------------------------
 -- One row under the grid for plugin segments (YouNeeK Time, git branch, ...).

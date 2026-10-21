@@ -102,7 +102,7 @@ fn checkShareBind(s: []const u8) ?[]const u8 {
 
 fn checkShareRelay(s: []const u8) ?[]const u8 {
     if (s.len == 0) return null;
-    _ = share_invite.parseRelay(s) catch return "expected host:port or tcp://host:port";
+    _ = share_invite.resolveConfigured(s) catch return "expected off, a wss:// URL, or host:port";
     return null;
 }
 

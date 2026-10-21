@@ -52,3 +52,8 @@ vgcore.*
 vk_validation_*.txt
 __pycache__/
 *.pyc
+
+# Hosted share relay (Cloudflare Worker). The lockfile is committed.
+relay/node_modules/
+relay/.wrangler/
+relay/worker-configuration.d.ts

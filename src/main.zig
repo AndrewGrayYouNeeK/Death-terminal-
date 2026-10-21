@@ -299,7 +299,8 @@ fn printHelp() !void {
         \\                     on <n>, off <n>, add <spec>, reconnect
         \\    --share          Host this terminal and print the invite (LAN IP, port, and code)
         \\    --join <invite>  Watch that shared pane (invite code, or a deathterminal://join/ link)
-        \\    --share-relay <host:port|port>  Run the optional rendezvous (see docs/SHARING.md)
+        \\    --share-relay <host:port|port>  Run a self-hosted TCP rendezvous (see docs/SHARING.md).
+        \\                     The default share path is the hosted wss relay; this is the TCP splice.
         \\    --plugins list | enable <name> | disable <name>
         \\                     Show installed plugins (and their permissions), or switch
         \\                     one on/off; see docs/PLUGINS.md
