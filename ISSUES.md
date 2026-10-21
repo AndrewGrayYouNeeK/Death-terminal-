@@ -1,4 +1,4 @@
-# DeathTerminal Project Checklist
+# YouNeeK Death Terminal Project Checklist
 
 ## ✅ COMPLETED
 
@@ -118,7 +118,7 @@
 - [x] Sandboxing for dangerous operations (config; `--lua-unsafe` opt-out)
 - [x] Error handling and reporting (file:line, in-window notice)
 - [x] API documentation for script authors (docs/CONFIG.md, docs/PLUGINS.md)
-- [x] Example plugins (plugins/: git_branch, long_command, theme_cycle)
+- [x] Example plugins (plugins/: git_branch, long_command, theme_cycle, youneek-time)
 - [ ] Plugin hot reload of `require`d modules (only manifest/init.lua mtimes trigger a restart)
 - [ ] SSH hooks for `ssh` run inside a local shell (only the built-in client reports)
 

@@ -1,6 +1,6 @@
 # AI command suggestions
 
-Death Terminal suggests how to finish the command you are typing and can
+YouNeeK Death Terminal suggests how to finish the command you are typing and can
 explain why the last command failed. It talks to any **OpenAI-compatible
 chat/completions endpoint** over plain HTTP/JSON with SSE streaming. The
 default is a local [Ollama](https://ollama.com) at
@@ -141,7 +141,7 @@ left alone; the tests list the cases.
 To know exactly what you typed, where each command's output starts and how
 it exited, the shell marks its prompt with OSC 133 (`A` prompt start, `B`
 input start, `C` command start, `D;<exit>` finished) and reports the
-directory with OSC 7. Death Terminal ships snippets for bash, zsh and fish
+directory with OSC 7. YouNeeK Death Terminal ships snippets for bash, zsh and fish
 in [`shell-integration/`](../shell-integration) and **injects them
 automatically** (`shell.integration = true`):
 

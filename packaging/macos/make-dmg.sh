@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Build a DeathTerminal disk image from DeathTerminal.app.
+# Build a YouNeeK Death Terminal disk image from the .app bundle.
 #
-#   bash packaging/macos/make-dmg.sh <DeathTerminal.app> <out.dmg>
+#   bash packaging/macos/make-dmg.sh "YouNeeK Death Terminal.app" <out.dmg>
 #
 # macOS: hdiutil writes a compressed UDZO image.
 # Linux: genisoimage writes an HFS hybrid, then libdmg-hfsplus (downloaded
 # into packaging/.cache, GPL-3, not linked into the app) wraps it as a
-# zlib UDIF .dmg. Finder can open that image. It is not signed or
-# notarized; see packaging/SIGNING.md.
+# zlib UDIF .dmg. Finder can open that image. Developer ID signing and
+# notarization are the release job's, when the Apple secrets are set
+# (packaging/SIGNING.md).
 set -euo pipefail
 
 APP=$(cd "${1:?app bundle}" && pwd)
@@ -21,12 +22,19 @@ DMG_REV=1cc791e4173da9cb0b0cc16c5a1aaa25d5eb5efa
 
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
-cp -a "$APP" "$STAGE/DeathTerminal.app"
+VOLNAME="YouNeeK Death Terminal"
+APP_IN_DMG="YouNeeK Death Terminal.app"
+# ditto keeps the code signature; cp -a is the Linux fallback.
+if command -v ditto >/dev/null 2>&1; then
+  ditto "$APP" "$STAGE/$APP_IN_DMG"
+else
+  cp -a "$APP" "$STAGE/$APP_IN_DMG"
+fi
 ln -s /Applications "$STAGE/Applications"
 
 if command -v hdiutil >/dev/null 2>&1; then
   rm -f "$OUT"
-  hdiutil create -volname DeathTerminal -srcfolder "$STAGE" -ov -format UDZO "$OUT"
+  hdiutil create -volname "$VOLNAME" -srcfolder "$STAGE" -ov -format UDZO "$OUT"
   echo "$OUT"
   exit 0
 fi
@@ -55,7 +63,7 @@ ISO="$STAGE/raw.iso"
 # hybrid Finder can mount; Rock Ridge keeps the Applications symlink.
 # -l keeps names like deathterminal-gui intact (without it, ISO9660
 # collapses them onto an 8.3 name and one of the two binaries is renamed).
-genisoimage -D -l -V DeathTerminal -no-pad -r -hfs -hfs-volid DeathTerminal -o "$ISO" "$STAGE"
+genisoimage -D -l -V "$VOLNAME" -no-pad -r -hfs -hfs-volid "$VOLNAME" -o "$ISO" "$STAGE"
 rm -f "$OUT"
 "$DMG_BIN" "$ISO" "$OUT"
 echo "$OUT"

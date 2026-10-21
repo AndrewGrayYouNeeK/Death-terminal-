@@ -330,8 +330,8 @@ pub fn chordTaken(c: events.Chord) bool {
 pub fn desktopNotify(source: []const u8, text: []const u8) void {
     if (builtin.os.tag != .linux) return;
     var tb: [96]u8 = undefined;
-    const title = std.fmt.bufPrint(&tb, "DeathTerminal: {s}", .{source}) catch "DeathTerminal";
-    spawnDetached(&.{ "notify-send", "--app-name=DeathTerminal", "--", title, text[0..@min(text.len, 500)] }, true);
+    const title = std.fmt.bufPrint(&tb, "YouNeeK Death Terminal: {s}", .{source}) catch "YouNeeK Death Terminal";
+    spawnDetached(&.{ "notify-send", "--app-name=YouNeeK Death Terminal", "--", title, text[0..@min(text.len, 500)] }, true);
 }
 
 pub fn nowNs() u64 {

@@ -523,7 +523,7 @@ test "examples: the bundled plugins load and do their job" {
         .{ .name = "long_command", .settings = .{ .map = &.{.{ .key = "threshold_s", .value = .{ .integer = 5 } }} } },
     };
     const plan = try registry.planAt(aa, paths, &configs);
-    try t.expectEqual(@as(usize, 3), plan.specs.len);
+    try t.expectEqual(@as(usize, 4), plan.specs.len);
     f.host = try Host.init(t.allocator, f.fake.app(), .{ .log_path = paths.log_file, .data_root = paths.data_root, .version = "test" });
     f.host_opt = f.host;
     f.host.setInfo(.theme, "default");
@@ -581,6 +581,30 @@ test "examples: the bundled plugins load and do their job" {
     // No git in the environment: nothing to check beyond "no error".
     if (seg) |s| try t.expect(s.len > 2);
     try t.expect(f.host.plugins.items[0].running());
+
+    // youneek-time: branded clock, decimal minute, moon phase, green accent.
+    var ynk: ?host_mod.Segment = null;
+    for (f.host.segments.items) |s| if (std.mem.eql(u8, s.id, "youneek")) {
+        ynk = s;
+    };
+    try t.expect(ynk != null);
+    try t.expect(!f.noticeContains("YouNeeK Time"));
+    const clock = ynk.?;
+    try t.expect(std.mem.startsWith(u8, clock.text, "YouNeeK "));
+    try t.expect(std.mem.indexOf(u8, clock.text, " YNK  ") != null);
+    try t.expect(clock.right);
+    try t.expectEqual(@as(?u32, 0x7CFF6B), clock.fg);
+    const phases = [_][]const u8{
+        "New Moon",        "Waxing Crescent", "First Quarter", "Waxing Gibbous",
+        "Full Moon",       "Waning Gibbous",  "Last Quarter",  "Waning Crescent",
+    };
+    var named = false;
+    for (phases) |name| {
+        if (std.mem.indexOf(u8, clock.text, name) != null) {
+            named = true;
+        }
+    }
+    try t.expect(named);
 }
 
 test "tabs and panes: events, list and layout requests" {
@@ -639,4 +663,135 @@ test "tabs and panes: events, list and layout requests" {
         }
     };
     try t.expectEqualSlices(std.meta.Tag(host_mod.LayoutOp), &.{ .tab_focus, .tab_rename, .pane_split, .pane_close, .tab_new }, ops[0..n]);
+}
+
+test "youneek-time: decimal minutes, 12/24h, timezone and moon phase" {
+    const util = @import("../testutil.zig");
+    const clock_path = util.cwdPath(t.allocator, &.{ "plugins", "youneek-time", "lib", "clock.lua" }) catch return error.SkipZigTest;
+    defer t.allocator.free(clock_path);
+    const moon_path = try util.cwdPath(t.allocator, &.{ "plugins", "youneek-time", "lib", "moon.lua" });
+    defer t.allocator.free(moon_path);
+    const clock_src = try std.fs.cwd().readFileAlloc(t.allocator, clock_path, 1 << 16);
+    defer t.allocator.free(clock_src);
+    const moon_src = try std.fs.cwd().readFileAlloc(t.allocator, moon_path, 1 << 16);
+    defer t.allocator.free(moon_src);
+
+    const f = try Fixture.init();
+    defer f.deinit();
+    try f.write("ynk", "lib/clock.lua", clock_src);
+    try f.write("ynk", "lib/moon.lua", moon_src);
+    try f.start(&.{.{
+        "ynk",
+        \\local clock = require("lib.clock")
+        \\local moon = require("lib.moon")
+        \\local function eq(got, want, msg)
+        \\  if got ~= want then error(msg .. ": got " .. tostring(got) .. " want " .. tostring(want)) end
+        \\end
+        \\eq(clock.youneek_minute(30 * 60), 50, "14:30")
+        \\eq(clock.youneek_minute(30 * 60 + 35), 50, "14:30:35 still 50")
+        \\eq(clock.youneek_minute(59 * 60 + 59), 99, "14:59:59")
+        \\eq(clock.youneek_minute(0), 0, "top of the hour")
+        \\eq(clock.youneek_minute(35), 0, "35s")
+        \\eq(clock.youneek_minute(36), 1, "36s")
+        \\eq(clock.youneek_minute(-10), 0, "clamp low")
+        \\eq(clock.youneek_minute(4000), 99, "clamp high")
+        \\eq(clock.format_time(14, 30, 0, { mode = "youneek", hours = 24 }), "14:50", "ynk 24")
+        \\eq(clock.format_time(14, 59, 59, { mode = "youneek", hours = 24 }), "14:99", "ynk 99")
+        \\eq(clock.format_time(14, 30, 0, { mode = "youneek", hours = 12 }), "02:50 PM", "ynk 12")
+        \\eq(clock.format_time(0, 15, 0, { mode = "youneek", hours = 12 }), "12:25 AM", "midnight 12")
+        \\eq(clock.format_time(12, 0, 0, { hours = 12 }), "12:00 PM", "noon 12")
+        \\eq(clock.format_time(14, 30, 45, { mode = "regular", hours = 24 }), "14:30", "regular")
+        \\eq(clock.format_time(14, 30, 45, { mode = "normal", hours = 24 }), "14:30", "normal")
+        \\eq(clock.format_time(9, 5, 0, { mode = "regular", hours = 12 }), "09:05 AM", "regular 12")
+        \\eq(clock.normalize_hours(nil, true), 12, "hour12")
+        \\eq(clock.normalize_mode("Civilian"), "regular", "mode")
+        \\local utc = { kind = "utc" }
+        \\local h, m, s = clock.civil(52200, utc)
+        \\eq(h, 14, "utc hour")
+        \\eq(m, 30, "utc minute")
+        \\eq(s, 0, "utc second")
+        \\eq(clock.format_time(h, m, s, { mode = "youneek", hours = 24 }), "14:50", "utc 14:30")
+        \\local h2, m2, s2 = clock.civil(52200, { kind = "offset", offset = -5 * 3600 })
+        \\eq(clock.format_time(h2, m2, s2, { mode = "youneek", hours = 24 }), "09:50", "-05:00")
+        \\local h3, m3, s3 = clock.civil(52200, { kind = "offset", offset = -15 * 3600 })
+        \\eq(clock.format_time(h3, m3, s3, { mode = "youneek", hours = 24 }), "23:50", "day wrap")
+        \\eq(clock.parse_timezone("").kind, "local", "empty tz")
+        \\eq(clock.parse_timezone("UTC").kind, "utc", "utc")
+        \\eq(clock.parse_timezone("-05:00").offset, -5 * 3600, "parse offset")
+        \\eq(clock.parse_timezone("nope"), nil, "bad tz")
+        \\local function phase_name(p) return moon.phase_name(p) end
+        \\eq(phase_name(0), "New Moon", "0")
+        \\eq(phase_name(0.0299), "New Moon", "just under 0.03")
+        \\eq(phase_name(0.03), "Waxing Crescent", "0.03")
+        \\eq(phase_name(0.22), "First Quarter", "0.22")
+        \\eq(phase_name(0.28), "Waxing Gibbous", "0.28")
+        \\eq(phase_name(0.47), "Full Moon", "0.47")
+        \\eq(phase_name(0.53), "Waning Gibbous", "0.53")
+        \\eq(phase_name(0.72), "Last Quarter", "0.72")
+        \\eq(phase_name(0.78), "Waning Crescent", "0.78")
+        \\eq(phase_name(0.97), "New Moon", "0.97")
+        \\eq(moon.glyph("Full Moon"), "🌕", "glyph")
+        \\eq(moon.glyph("nope"), "🌙", "fallback glyph")
+        \\local known = moon.at(947182440)
+        \\eq(known.name, "New Moon", "suncalc new")
+        \\eq(known.illumination, 0, "suncalc new illum")
+        \\if known.phase < 0.97 then error("new phase " .. known.phase) end
+        \\local full = moon.at(948458136)
+        \\eq(full.name, "Full Moon", "suncalc full")
+        \\eq(full.illumination, 100, "suncalc full illum")
+        \\if full.phase < 0.47 or full.phase >= 0.53 then error("full phase " .. full.phase) end
+        \\local sample = moon.at(947182440)
+        \\local label = clock.segment(14, 30, 0, { mode = "youneek", hours = 24 }, sample)
+        \\eq(label, "YouNeeK 14:50 YNK  " .. sample.glyph .. " New Moon 0%", "segment")
+        \\dt.status.set("out", "ok")
+        ,
+        &.{},
+        .{ .name = "" },
+    }});
+    const p = f.plugin(0);
+    if (!p.running()) std.debug.print("youneek conversion: {s}\n", .{p.message});
+    try t.expect(p.running());
+    try t.expectEqualStrings("ok", f.host.segments.items[0].text);
+}
+
+test "youneek-time: regular 12h settings and a quiet chime" {
+    const util = @import("../testutil.zig");
+    const dir = util.cwdPath(t.allocator, &.{ "plugins", "youneek-time" }) catch return error.SkipZigTest;
+    defer t.allocator.free(dir);
+    const f = try Fixture.init();
+    defer f.deinit();
+    var lb: [300]u8 = undefined;
+    var db: [300]u8 = undefined;
+    f.host = try Host.init(t.allocator, f.fake.app(), .{
+        .log_path = try std.fmt.bufPrint(&lb, "{s}/plugins.log", .{f.root}),
+        .data_root = try std.fmt.bufPrint(&db, "{s}/data", .{f.root}),
+        .version = "test",
+    });
+    f.host_opt = f.host;
+    const V = value.Value;
+    try f.host.start(&.{.{
+        .name = "youneek-time",
+        .version = "1.0.0",
+        .dir = dir,
+        .config = .{
+            .name = "youneek-time",
+            .settings = .{ .map = &.{
+                .{ .key = "mode", .value = V{ .string = "regular" } },
+                .{ .key = "hours", .value = V{ .integer = 12 } },
+                .{ .key = "timezone", .value = V{ .string = "UTC" } },
+                .{ .key = "chime", .value = V{ .boolean = true } },
+            } },
+        },
+    }});
+    const p = f.plugin(0);
+    if (!p.running()) std.debug.print("youneek settings: {s}\n", .{p.message});
+    try t.expect(p.running());
+    var text: []const u8 = "";
+    for (f.host.segments.items) |s| if (std.mem.eql(u8, s.id, "youneek")) {
+        text = s.text;
+    };
+    try t.expect(std.mem.startsWith(u8, text, "YouNeeK "));
+    try t.expect(std.mem.indexOf(u8, text, " YNK") == null);
+    try t.expect(std.mem.indexOf(u8, text, " AM") != null or std.mem.indexOf(u8, text, " PM") != null);
+    try t.expect(!f.noticeContains("YouNeeK Time"));
 }

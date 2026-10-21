@@ -12,8 +12,9 @@ zig build release -Dtarget=aarch64-macos -Dpackages=true    # .tar.gz + .app + .
 `-Dpackages` on macOS runs `macos/make-app.sh` (bundle, zip, and dmg). On
 Windows it runs `windows/build-installer.sh` (`makensis`). Building the DMG
 on Linux needs `genisoimage`, `zlib1g-dev`, and a C compiler. The Windows
-installer needs `nsis`. Nothing is code-signed
-([SIGNING.md](SIGNING.md)).
+installer needs `nsis`. The release workflow signs and notarizes the macOS
+app when the Apple secrets are set, and still uploads unsigned artifacts
+when they are not ([SIGNING.md](SIGNING.md)). Windows signing is still a TODO.
 
 Output goes to `zig-out/release/`:
 
@@ -33,8 +34,10 @@ Output goes to `zig-out/release/`:
 | `windows/nsis/deathterminal.nsi`, `windows/build-installer.sh` | per-user NSIS setup exe (Start Menu shortcut runs `--gui`). Built on Linux with `makensis` |
 | `windows/winget/` | winget manifests (portable zip; fill in the SHA256). The NSIS exe is a separate release asset |
 | `windows/wix/deathterminal.wxs` | optional WiX v4 MSI (not built by CI) |
-| `macos/Info.plist`, `macos/make-app.sh`, `macos/make-dmg.sh` | `.app` bundle, zip, and `.dmg`. `hdiutil` on a Mac; on Linux an HFS hybrid wrapped as UDIF. Ad-hoc `codesign` only when the tool exists |
-| `SIGNING.md` | Authenticode, Developer ID, notarization: documented TODOs, no secrets |
+| `macos/Info.plist`, `macos/make-app.sh`, `macos/make-dmg.sh` | `.app` bundle, zip, and `.dmg`. `hdiutil` on a Mac; on Linux an HFS hybrid wrapped as UDIF. Ad-hoc `codesign` only when the tool exists. `MOLTENVK_DIR` copies `libMoltenVK.dylib` and `MoltenVK_icd.json` into `Contents/Frameworks` |
+| `macos/fetch-moltenvk.sh` | Pins MoltenVK 1.4.2 (`MoltenVK-macos.tar` + sha256) for the release workflow |
+| `macos/sign-release.sh`, `macos/entitlements.plist`, `macos/gui-launcher.c` | Release-job signing: Developer ID, hardened runtime, `hdiutil` DMG, notarize, staple. Signs `Contents/Frameworks/libMoltenVK.dylib`. Copies artifacts through unsigned when secrets are absent |
+| `SIGNING.md` | Developer ID setup, notarization, and the Windows/Linux TODOs. No secrets are stored here |
 | `macos/deathterminal-cask.rb`, `macos/deathterminal.rb` | Homebrew cask (the .app) and formula (from source) skeletons |
 | `ci/` | GitHub workflows to copy into `.github/workflows` (see `ci/README.md`) |
 

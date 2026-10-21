@@ -423,7 +423,7 @@ test "DA1, DA2, DSR, CPR, XTVERSION and window size replies" {
     try t.expectEqualStrings("\x1b[0n\x1b[3;7R\x1b[?3;7R", term.replies.items);
     term.replies.clearRetainingCapacity();
     try term.processOutput("\x1b[18t\x1b[>q");
-    try t.expectEqualStrings("\x1b[8;24;80t\x1bP>|DeathTerminal 0.1.0\x1b\\", term.replies.items);
+    try t.expectEqualStrings("\x1b[8;24;80t\x1bP>|YouNeeK Death Terminal 0.1.0\x1b\\", term.replies.items);
 }
 
 test "OSC 10/11 color queries" {

@@ -2,7 +2,7 @@
 -- status bar. Needs the shell to report its cwd (OSC 7; the bundled shell
 -- integration does) and, in config.lua:
 --
---   config.status_bar = { enabled = true }
+--   config.status_bar = { enabled = true }   -- already the default
 --   config.plugins.git_branch = { allow = { "exec" }, exec = { "git" } }
 
 local last_dir = nil
