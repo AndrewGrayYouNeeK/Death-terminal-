@@ -32,6 +32,7 @@ const frame_mod = @import("../renderer/frame.zig");
 const events = @import("../platform/events.zig");
 const color = @import("../terminal/color.zig");
 const config_watch = @import("config_watch.zig");
+const share_ctrl = @import("share_ctrl.zig");
 
 const Pane = session.Pane;
 const PaneId = session.PaneId;
@@ -103,6 +104,10 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
     var plugins = plugin_bridge.Bridge.init(a, &first.track);
     defer plugins.deinit();
 
+    var share = share_ctrl.Controller.init(a);
+    defer share.deinit();
+    share.configure(cfg);
+
     var gui = Gui{
         .loop = loop,
         .a = a,
@@ -118,6 +123,7 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
         .pace = &pace,
         .plugins = &plugins,
         .read_buf = read_buf,
+        .share = &share,
         .last_focus = first.id,
         .last_tab = ws.currentTab().id,
     };
@@ -128,6 +134,7 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
         try el.showDiagnostics(&gui.focusedPane().ui, d, loop.watch_path orelse "config", if (d.hasErrors()) "using the defaults" else null);
     };
     gui.startPlugins();
+    if (loop.join_code) |code| gui.share.joinCode(gui.focusedPane().id, code);
     if (gui.focusedPane().ai.engine != null) std.debug.print("  → AI: {s} via {s}\n", .{ cfg.ai_model, cfg.ai_endpoint });
     std.debug.print("GUI terminal active ({s}, scale={d:.2}). Close the window or exit the shell to quit.\n", .{ @tagName(window.backend), window.scale });
 
@@ -163,6 +170,9 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
             backlog = backlog or p.backlog;
         }
         try fds.append(io.pollFd(if (sig_pipe) |sp| sp[0] else io.none, io.POLL.IN));
+        var share_fds = [_]io.Fd{ io.none, io.none };
+        const nshare = gui.share.fillPoll(&share_fds);
+        for (share_fds[0..nshare]) |fd| try fds.append(io.pollFd(fd, io.POLL.IN));
 
         // Sleep until input, output or the next frame slot; with nothing to
         // do the timeout is infinite (no wakeups when idle).
@@ -180,6 +190,7 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
             if (p.ui.noticeTimeout(now_ms)) |t| timeout = el.minTimeout(timeout, t);
             if (p.ai.timeout(now_ms)) |t| timeout = el.minTimeout(timeout, t);
         }
+        if (gui.share.host != null or gui.share.guest != null) timeout = el.minTimeout(timeout, 50);
         _ = window.wait(fds.items, timeout);
         pace.wakeups += 1;
 
@@ -226,6 +237,10 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
         }
 
         if (gui.closing) break;
+        if (gui.share.host != null or gui.share.guest != null) {
+            gui.share.tick();
+            try gui.serviceShare();
+        }
         // Titles.
         for (ws.panes.items) |p| if (p.term.title_changed) {
             p.term.title_changed = false;
@@ -269,6 +284,7 @@ const Gui = struct {
     pace: *el.Pacer,
     plugins: *plugin_bridge.Bridge,
     read_buf: []u8,
+    share: *share_ctrl.Controller,
     window_focused: bool = true,
     need_present: bool = false,
     /// Expose/resize: redraw even if the frame is unchanged.
@@ -306,6 +322,15 @@ const Gui = struct {
     fn present(self: *Gui, force: bool) !bool {
         try self.vk.render();
         const comp = try self.ws.compose(self.chrome);
+        const paint_id: ?PaneId = if (self.share.promptOpen())
+            self.focusedPane().id
+        else if (self.share.bound)
+            self.share.pane
+        else
+            null;
+        if (paint_id) |id| if (self.ws.pane(id)) |sp| {
+            self.share.paint(self.ws.cells.items, self.ws.marks.items, self.ws.cols, sp.rect.x, sp.rect.y, sp.rect.w, sp.rect.h);
+        };
         const fp = self.focusedPane();
         var v = frame_mod.View.fromTerminal(fp.term);
         // Reverse video (DECSCNM) is whole-window: only with one pane shown.
@@ -504,6 +529,7 @@ const Gui = struct {
     /// Close pane `id` (its shell exited, or the user closed it). The last
     /// pane closes the window.
     fn closePane(self: *Gui, id: PaneId) !void {
+        self.share.onPaneClosed(id);
         const p = self.ws.pane(id) orelse return;
         const tab_id = p.track.tab;
         if (self.ws.confirm) |cf| switch (cf.what) {
@@ -638,6 +664,18 @@ const Gui = struct {
 
     /// Parse what pane `p`'s PTY has (up to the budget). True = it exited.
     fn readPane(self: *Gui, p: *Pane, revents: i16) !bool {
+        // A joined pane shows the host's grid. Drain the local shell so it
+        // cannot paint over that grid or fill the PTY buffer.
+        if (self.share.isGuest() and self.share.claims(p.id)) {
+            if (p.backlog or revents & io.POLL.IN != 0) {
+                const fd = p.ptyFd();
+                if (!io.isNone(fd)) while (true) {
+                    const n = io.read(fd, self.read_buf) catch break;
+                    if (n == 0) break;
+                };
+            }
+            return false;
+        }
         if (!p.backlog and revents & io.POLL.IN == 0) {
             return revents & (io.POLL.HUP | io.POLL.ERR) != 0;
         }
@@ -718,6 +756,11 @@ const Gui = struct {
             },
             .action => |a| try self.handleAction(a),
             .paste => |pv| {
+                if (self.share.promptOpen()) {
+                    self.share.promptPaste(pv.data);
+                    self.touchAll();
+                    return;
+                }
                 if (pv.purpose == .plugin) {
                     if (self.plugins.host) |h| h.clipboardResult(pv.data);
                     return;
@@ -761,7 +804,18 @@ const Gui = struct {
             self.touchAll();
             return;
         }
+        if (self.share.promptOpen()) {
+            if (self.share.feedPrompt(bytes) == .join) self.share.join(self.focusedPane().id);
+            self.touchAll();
+            try self.showShare();
+            return;
+        }
         const fp = self.focusedPane();
+        if (self.share.isGuest() and self.share.claims(fp.id)) {
+            if (self.share.access() == .control) self.share.sendGuestInput(bytes);
+            self.touch(fp);
+            return;
+        }
         if (self.chrome.palette != null) {
             _ = try self.chrome.handleText(fp.term, bytes);
             self.touchAll();
@@ -793,7 +847,34 @@ const Gui = struct {
             self.touchAll();
             return;
         }
+        if (self.share.promptOpen()) {
+            const fp = self.focusedPane();
+            switch (key) {
+                .enter, .kp_enter => if (self.share.feedPrompt("\n") == .join) self.share.join(fp.id),
+                .escape => _ = self.share.feedPrompt("\x1b"),
+                .backspace => _ = self.share.feedPrompt(&[_]u8{0x7f}),
+                else => {},
+            }
+            self.touchAll();
+            try self.showShare();
+            return;
+        }
         const fp = self.focusedPane();
+        if (self.share.isGuest() and self.share.claims(fp.id)) {
+            switch (self.share.onKey(key, mods)) {
+                .ignore => {},
+                .consumed => {
+                    self.touchAll();
+                    return;
+                },
+                .send => {
+                    const seq = input.encodeKey(key, mods, fp.term.modes);
+                    self.share.sendGuestInput(seq.constSlice());
+                    self.touch(fp);
+                    return;
+                },
+            }
+        }
         if (self.chrome.palette != null) {
             _ = try self.chrome.handleKey(fp.term, key, mods);
             self.touchAll();
@@ -914,6 +995,29 @@ const Gui = struct {
             },
             .zoom_pane => if (ws.toggleZoom()) self.relayout(),
             .equalize_panes => if (ws.equalize()) self.relayout(),
+            .share_pane => {
+                self.share.startHost(fp.id);
+                try self.showShare();
+                self.touchAll();
+            },
+            .share_grant => {
+                self.share.toggleControl();
+                try self.showShare();
+                self.touchAll();
+            },
+            .share_kick => {
+                if (!self.share.active()) return self.keyFallback(a);
+                self.share.kickOrStop();
+                self.touchAll();
+            },
+            .share_stop => {
+                self.share.stop();
+                self.touchAll();
+            },
+            .share_join => {
+                self.share.openPrompt();
+                self.touchAll();
+            },
             else => {
                 if (try fp.ui.handleAction(fp.term, act)) {
                     if (act == .ai_accept) fp.ai.onAccepted();
@@ -932,6 +1036,16 @@ const Gui = struct {
         const ch: i32 = @intCast(self.cellH());
         const col: u16 = @intCast(std.math.clamp(@divFloor(m.x, cw), 0, @as(i32, ws.cols) - 1));
         const row: u16 = @intCast(std.math.clamp(@divFloor(m.y, ch), 0, @as(i32, ws.rows) - 1));
+        if (self.share.isGuest()) if (self.ws.pane(self.share.pane)) |gp| {
+            const inside = gp.rect.contains(col, row);
+            if (inside or (self.share.dragging and m.action != .press)) {
+                const lr: u16 = if (row <= gp.rect.y) 0 else @intCast(@min(row - gp.rect.y, gp.rect.h -| 1));
+                const lc: u16 = if (col <= gp.rect.x) 0 else @intCast(@min(col - gp.rect.x, gp.rect.w -| 1));
+                self.share.onMouse(lr, lc, m.action, m.button);
+                self.touchAll();
+                return;
+            }
+        };
         const now = std.time.milliTimestamp();
 
         // Drags in progress.
@@ -1280,6 +1394,37 @@ const Gui = struct {
         el.installBindings(next);
         if (old.status_bar != next.status_bar) try self.setStatusBar(next.status_bar);
         self.frame.invalidate();
+        self.share.configure(next);
+    }
+
+    fn serviceShare(self: *Gui) !void {
+        var buf: [1024]u8 = undefined;
+        const n = self.share.takeInput(&buf);
+        if (n > 0) if (self.ws.pane(self.share.pane)) |p| {
+            try p.term.write(buf[0..n]);
+            self.touch(p);
+        };
+        if (self.share.host != null) if (self.ws.pane(self.share.pane)) |p| self.share.flushGrid(p.term);
+        if (self.share.isGuest()) if (self.ws.pane(self.share.pane)) |p| {
+            if (self.share.applyGrid(p.term)) {
+                p.ui.scroll = 0;
+                self.touch(p);
+            }
+        };
+        try self.showShare();
+    }
+
+    fn showShare(self: *Gui) !void {
+        var dirty = false;
+        if (self.share.takeAnnounce()) |code| {
+            try self.focusedPane().ui.setNotice(.info, "Shared Haunting — deathterminal --join", &.{code}, null, std.time.milliTimestamp());
+            dirty = true;
+        }
+        if (self.share.takeError()) |text| {
+            try self.focusedPane().ui.setNotice(.err, "Share", &.{text}, 6000, std.time.milliTimestamp());
+            dirty = true;
+        }
+        if (dirty) self.touchAll();
     }
 
     fn fontsChangedAndLoad(self: *Gui, old: *const config.Config, next: *const config.Config) bool {

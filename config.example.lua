@@ -79,7 +79,9 @@ config.links.open_command = dt.os == "macos" and "open" or dt.os == "windows" an
 -- scroll_page_down, scroll_line_up, scroll_line_down, scroll_top,
 -- scroll_bottom, zoom_in, zoom_out, zoom_reset, select_all,
 -- clear_selection, reload_config, ai_accept, ai_dismiss, ai_next, ai_prev,
--- ai_explain, ssh_palette (Ctrl+Shift+S). `false` removes a binding.
+-- ai_explain, ssh_palette (Ctrl+Shift+S), share_pane (Ctrl+Shift+H),
+-- share_grant (Ctrl+Shift+G), share_kick (F12), share_stop
+-- (Ctrl+Shift+Alt+H), share_join (Ctrl+Shift+J). `false` removes a binding.
 config.default_keybindings = true    -- false = start from an empty table
 -- config.keys["ctrl+shift+t"] = "search"
 -- config.keys["ctrl+shift+c"] = false
@@ -136,6 +138,16 @@ config.ssh.keepalive_s = 30          -- seconds; 0 = off
 --     keepalive_s = 15, reconnect = true,
 --   },
 -- }
+
+-- Shared Haunting (docs/SHARING.md) ----------------------------------------
+-- Share the focused pane with another Death Terminal. Direct TCP by default
+-- (the invite carries a LAN address). Set relay to a host:port you run with
+-- `deathterminal --share-relay` when the guest cannot dial you.
+config.share.enabled = true          -- false refuses to host; --join still works
+config.share.bind = "0.0.0.0"        -- address the host listens on
+config.share.port = 0                -- 0 = pick a free port
+config.share.advertise = ""          -- "" = LAN IPv4; or a host guests can dial
+config.share.relay = ""              -- "" = direct; or "tcp://host:port"
 
 -- Status bar ---------------------------------------------------------------
 -- One row under the grid for plugin segments (YouNeeK Time, git branch, ...).

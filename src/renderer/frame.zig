@@ -52,11 +52,14 @@ pub const View = struct {
     }
 };
 
-pub const Mark = enum(u8) { none, selected, match, current_match };
+pub const Mark = enum(u8) { none, selected, match, current_match, guest, guest_cursor };
 
 pub const match_bg: u32 = 0xD7AF00;
 pub const current_match_bg: u32 = 0xFF6F00;
 pub const scrollbar_rgb: u32 = 0x8A8A8A;
+/// Guest's own selection on a shared pane (distinct from the local selection).
+pub const guest_bg: u32 = 0x5B2A86;
+pub const guest_cursor_bg: u32 = 0xFFB000;
 
 /// Colours for a cell including selection / search highlights.
 pub fn markedColors(cell: Cell, view: View, block_cursor: bool, mark: Mark) struct { fg: u32, bg: u32 } {
@@ -67,6 +70,8 @@ pub fn markedColors(cell: Cell, view: View, block_cursor: bool, mark: Mark) stru
         .selected => .{ .fg = if (view.selection_fg != color.none) view.selection_fg else c.fg, .bg = view.selection_bg },
         .match => .{ .fg = 0x000000, .bg = match_bg },
         .current_match => .{ .fg = 0x000000, .bg = current_match_bg },
+        .guest => .{ .fg = c.fg, .bg = guest_bg },
+        .guest_cursor => .{ .fg = 0x000000, .bg = guest_cursor_bg },
     };
 }
 
