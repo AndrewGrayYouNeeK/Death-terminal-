@@ -899,6 +899,13 @@ const X11 = if (builtin.os.tag == .linux) struct {
     fn present(_: *Window, _: []const u32, _: u32, _: u32) void {}
 };
 
+test "host links the objc ABI checks" {
+    // Keep the arm64 objc_msgSend tests in the host suite. The Cocoa
+    // backend is the production referencer; this import covers a
+    // `zig test` of this file on its own.
+    _ = @import("objc.zig");
+}
+
 test "X11 keysyms map through the shared table" {
     if (builtin.os.tag != .linux) return;
     try std.testing.expectEqual(input.Key.up, events.keysymToKey(x11.XK_Up).?);

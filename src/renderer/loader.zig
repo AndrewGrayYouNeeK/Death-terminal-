@@ -15,15 +15,20 @@ pub const GetDeviceQueueFn = *const fn (vk.VkDevice, u32, u32, *vk.VkQueue) call
 pub const EnumerateInstanceExtensionPropertiesFn = *const fn (?[*:0]const u8, *u32, ?[*]vk.raw.VkExtensionProperties) callconv(.C) vk.VkResult;
 pub const EnumerateDeviceExtensionPropertiesFn = *const fn (vk.VkPhysicalDevice, ?[*:0]const u8, *u32, ?[*]vk.raw.VkExtensionProperties) callconv(.C) vk.VkResult;
 
+/// Names tried inside the directory that contains the running executable.
+const beside_exe = [_][]const u8{ "libvulkan.1.dylib", "libMoltenVK.dylib" };
+
 fn libNames() []const []const u8 {
     return switch (builtin.os.tag) {
         .windows => &[_][]const u8{"vulkan-1.dll"},
         // The Vulkan loader (with MoltenVK as its driver), else MoltenVK
-        // itself: next to the binary, in the .app's Frameworks, then the
-        // usual install places (Homebrew, the LunarG SDK).
+        // itself. The executable's own directory is searched first (see
+        // `openBesideExecutable`); then the .app Frameworks and the usual
+        // install places (Homebrew, the LunarG SDK).
         .macos, .ios => &[_][]const u8{
             "libvulkan.1.dylib",
             "@executable_path/libvulkan.1.dylib",
+            "@executable_path/libMoltenVK.dylib",
             "@executable_path/../Frameworks/libvulkan.1.dylib",
             "@executable_path/../Frameworks/libMoltenVK.dylib",
             "/opt/homebrew/lib/libvulkan.1.dylib",
@@ -72,10 +77,50 @@ pub const Loader = struct {
 };
 
 fn openLib() !std.DynLib {
+    if (builtin.os.tag == .macos) {
+        if (openBesideExecutable()) |lib| return lib;
+    }
     for (libNames()) |name| {
         return std.DynLib.open(name) catch continue;
     }
     return error.VulkanLoaderMissing;
+}
+
+const DarwinPath = if (builtin.os.tag == .macos) struct {
+    extern "c" fn _NSGetExecutablePath(buf: [*]u8, bufsize: *u32) c_int;
+} else struct {};
+
+/// `dlopen` does not search the directory that contains the binary, so a
+/// `libMoltenVK.dylib` dropped next to it is invisible unless
+/// `DYLD_LIBRARY_PATH` is set. Resolve that directory with
+/// `_NSGetExecutablePath` (the same place `@executable_path` names) and try
+/// the loader and MoltenVK there first.
+fn openBesideExecutable() ?std.DynLib {
+    if (builtin.os.tag != .macos) return null;
+    var exe_buf: [4096]u8 = undefined;
+    var size: u32 = exe_buf.len;
+    if (DarwinPath._NSGetExecutablePath(&exe_buf, &size) != 0) return null;
+    const exe = std.mem.sliceTo(exe_buf[0..], 0);
+    const dir = std.fs.path.dirname(exe) orelse return null;
+    var path_buf: [4096]u8 = undefined;
+    for (beside_exe) |name| {
+        const full = pathBeside(dir, name, &path_buf) catch continue;
+        if (std.DynLib.open(full)) |lib| return lib else |_| continue;
+    }
+    return null;
+}
+
+fn pathBeside(dir: []const u8, name: []const u8, buf: []u8) ![:0]u8 {
+    return std.fmt.bufPrintZ(buf, "{s}/{s}", .{ dir, name });
+}
+
+test "MoltenVK next to the executable is a candidate" {
+    var buf: [160]u8 = undefined;
+    const molten = try pathBeside("/Applications/DeathTerminal.app/Contents/MacOS", "libMoltenVK.dylib", &buf);
+    try std.testing.expectEqualStrings("/Applications/DeathTerminal.app/Contents/MacOS/libMoltenVK.dylib", molten);
+    const vulkan = try pathBeside("/opt/dt", "libvulkan.1.dylib", &buf);
+    try std.testing.expectEqualStrings("/opt/dt/libvulkan.1.dylib", vulkan);
+    try std.testing.expectEqualStrings(beside_exe[1], "libMoltenVK.dylib");
 }
 
 test "Vulkan loader opens and resolves vkGetInstanceProcAddr" {
