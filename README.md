@@ -82,9 +82,9 @@ Context-aware, not just history-based.
 - New tabs/panes inherit the cwd (OSC 7); the SSH palette opens a profile in a tab, a split, or a new window; startup layouts in Lua (see [docs/TABS.md](docs/TABS.md))
 
 ### 👁 Shared Haunting
-- Share the focused pane live with one other terminal: Ctrl+Shift+H, then `deathterminal --join <code>` (or Ctrl+Shift+J)
+- Share the focused pane live with one other terminal: Ctrl+Shift+H (macOS: Cmd+Shift+H; Cmd+H is Hide), then `deathterminal --join <code>` (or Ctrl+Shift+J, Cmd+Shift+J on macOS)
 - Direct TCP by default. Noise (X25519 + ChaCha20-Poly1305, keyed by the invite) — no central server. Optional `config.share.relay` is a splice, not a decryption point
-- Guest is read-only until the host presses Ctrl+Shift+G. The host shows a "being watched" banner; F12 kicks. Other panes are never sent. AI redaction does not apply to the shared screen (see [docs/SHARING.md](docs/SHARING.md))
+- Guest is read-only until the host presses Ctrl+Shift+G (macOS: Cmd+Shift+G). The host shows a "being watched" banner; F12 kicks. Stop is Ctrl+Shift+Alt+H (macOS: Cmd+Shift+Option+H). Other panes are never sent. AI redaction does not apply to the shared screen (see [docs/SHARING.md](docs/SHARING.md))
 
 ### 🎯 Brutalist Design
 - No animations

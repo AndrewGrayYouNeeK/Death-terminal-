@@ -92,7 +92,7 @@ draft release gets.
 The Cocoa backend (`src/platform/cocoa_backend.zig`) loads libobjc, AppKit, QuartzCore, CoreGraphics and CoreFoundation with `dlopen`. That is why it cross-compiles without an SDK. It uses no delegate and no NSView subclass:
 
 - **Events:** read straight off the AppKit queue. Keys are handled without `sendEvent:`, so unhandled keys don't beep.
-- **Cmd shortcuts:** map onto the Ctrl+Shift bindings (Cmd+C/V/T/W…), and Cmd+Q quits.
+- **Cmd shortcuts:** Command is not a binding modifier. Without Option it tries Ctrl+Shift first, then Ctrl, so Cmd+C copies and Cmd+T opens a tab. Cmd+Q quits. Cmd+H (Hide) and Cmd+Option+H (Hide Others) are not translated. Share, grant, join, and Ask the Output are Command+Shift: Cmd+Shift+H, Cmd+Shift+G, Cmd+Shift+J, and Cmd+Shift+Q. Stop sharing is Cmd+Shift+Option+H. Time Travel is Cmd+Option+T, so it does not take New Tab. Physical Control chords are matched from the virtual key code, because `charactersIgnoringModifiers` is a C0 control character while Control is held.
 - **Option:** acts as Meta.
 - **Waiting:** a helper thread `poll()`s the PTY and wake fds and posts an application-defined NSEvent. The main thread sleeps in `nextEventMatchingMask:`.
 - **Vulkan:** needs MoltenVK. The loader resolves paths next to the executable and in `../Frameworks` (`dlopen` does not expand `@executable_path`), then `/opt/homebrew/lib` and `/usr/local/lib`. The release workflow bundles `libMoltenVK.dylib` and `MoltenVK_icd.json` in `Contents/Frameworks`. The instance enables `VK_KHR_portability_enumeration` and the device enables `VK_KHR_portability_subset` when offered.

@@ -1560,7 +1560,7 @@ const Gui = struct {
             for (self.ws.tabs.tabs.items, 0..) |tab, i| {
                 var tb: [160]u8 = undefined;
                 const label = std.fmt.bufPrint(&tb, "Go to tab {d}: {s}", .{ i + 1, self.ws.tabLabel(tab) }) catch "Go to tab";
-                const chord: []const u8 = if (i < 9) events.chordFor(&events.bindings, @enumFromInt(@intFromEnum(events.Action.goto_tab_1) + i), &cb) orelse "" else "";
+                const chord: []const u8 = if (i < 9) events.chordLabel(&events.bindings, @enumFromInt(@intFromEnum(events.Action.goto_tab_1) + i), &cb) orelse "" else "";
                 try pal.addItem(.tab, label, chord, tab.id, false);
             }
         }
@@ -1576,7 +1576,7 @@ const Gui = struct {
         inline for (@typeInfo(events.Action).Enum.fields) |f| {
             const act: events.Action = @enumFromInt(f.value);
             if (act.title()) |ttl| {
-                try pal.addItem(.action, ttl, events.chordFor(&events.bindings, act, &cb) orelse "", f.value, false);
+                try pal.addItem(.action, ttl, events.chordLabel(&events.bindings, act, &cb) orelse "", f.value, false);
             }
         }
         self.touchAll();

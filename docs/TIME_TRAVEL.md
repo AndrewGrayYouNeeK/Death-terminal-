@@ -40,7 +40,7 @@ OSC 133 D records the exit code and a diff: added, removed and modified paths (a
 | n / Esc | Cancel the confirm, or close the overlay |
 | u | Undo the last rewind |
 
-Ctrl+Shift+T and Cmd+T stay **New Tab**. On macOS, Command without Option is matched as Ctrl+Shift, so Cmd+Shift+T cannot be a different action. Cmd+Option+T is Time Travel.
+Ctrl+Shift+T and Cmd+T stay **New Tab**. On macOS, Command without Option is matched as Ctrl+Shift, so Cmd+T and Cmd+Shift+T are both New Tab. Time Travel is Cmd+Option+T. It is not Cmd+Shift+T, and it is not affected by the Hide shortcut (Cmd+H) that blocks Share's bare Command chord.
 
 Rewind is refused while a command is still running, when that command had no snapshot, or when the folder is now larger than `max_dir_mb` (the rewind has to be undoable). It only writes into the directory the snapshot was taken from.
 

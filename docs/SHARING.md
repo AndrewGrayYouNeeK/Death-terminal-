@@ -7,7 +7,7 @@ secret, and the session is end-to-end encrypted with a Noise handshake
 ciphertext.
 
 ```sh
-# host, in the window: Ctrl+Shift+H  (or the command palette)
+# host, in the window: Ctrl+Shift+H  (macOS: Cmd+Shift+H, or the command palette)
 # the notice and stderr print:
 deathterminal --join dt1....
 
@@ -17,8 +17,8 @@ deathterminal --join 'deathterminal://join/dt1....'
 deathterminal --gui --join dt1....     # same view, in a window
 ```
 
-`Ctrl+Shift+J` opens a join prompt in the window. Paste the code or the
-`deathterminal://join/` link.
+`Ctrl+Shift+J` (macOS: `Cmd+Shift+J`) opens a join prompt in the window. Paste
+the code or the `deathterminal://join/` link.
 
 ## What is shared
 
@@ -43,7 +43,7 @@ underline styles are not on the wire; colors are resolved RGB.
 Guest input is off. Arrows, Home, and Escape move the guest's cursor. Other
 keys are swallowed. The mouse sets the cursor and a rectangular selection.
 
-`Ctrl+Shift+G` grants or revokes **control for this session**. The host's gate
+`Ctrl+Shift+G` (macOS: `Cmd+Shift+G`) grants or revokes **control for this session**. The host's gate
 is the boundary: input is queued into the pane only when access is control,
 the gate is open, and the bytes are non-empty. A new guest after a kick starts
 at read-only again.
@@ -56,23 +56,28 @@ The host's shared pane shows a banner on row 0 (local overlay, not sent):
 | Read-only guest | `BEING WATCHED \| read-only \| F12 kick \| Ctrl+Shift+G grant` |
 | Guest has control | `BEING WATCHED \| guest has CONTROL \| F12 kick \| Ctrl+Shift+G revoke` |
 
+On macOS the grant/revoke hint is `Cmd+Shift+G`, the chord that reaches the app.
+
 `F12` kicks the current guest and keeps the same invite so someone else can
 join. When nobody is connected, `F12` stops the share. `Ctrl+Shift+Alt+H`
-always stops it. When you are not sharing, `F12` still reaches the shell.
+(macOS: `Cmd+Shift+Option+H`) always stops it. When you are not sharing, `F12`
+still reaches the shell.
 
 `config.share.enabled = false` refuses to host. `--join` still works.
 
 ## Keys
 
-| Chord | Action |
-| --- | --- |
-| `Ctrl+Shift+H` | `share_pane` — share the focused pane |
-| `Ctrl+Shift+G` | `share_grant` — grant or revoke guest control |
-| `F12` | `share_kick` — kick the guest, or stop if you are only waiting |
-| `Ctrl+Shift+Alt+H` | `share_stop` — stop the share |
-| `Ctrl+Shift+J` | `share_join` — paste an invite |
+Linux and Windows use Control. On macOS the same bindings are reached with
+Command+Shift. Bare Cmd+H is Hide and Cmd+Option+H is Hide Others, so those
+are not share shortcuts. The command palette lists `Share: share this pane`.
 
-The same names are in the command palette.
+| Action | Linux / Windows | macOS |
+| --- | --- | --- |
+| `share_pane` — share the focused pane | `Ctrl+Shift+H` | `Cmd+Shift+H` |
+| `share_grant` — grant or revoke guest control | `Ctrl+Shift+G` | `Cmd+Shift+G` |
+| `share_kick` — kick the guest, or stop if you are only waiting | `F12` | `F12` |
+| `share_stop` — stop the share | `Ctrl+Shift+Alt+H` | `Cmd+Shift+Option+H` |
+| `share_join` — paste an invite | `Ctrl+Shift+J` | `Cmd+Shift+J` |
 
 ## Config
 

@@ -149,9 +149,9 @@ Actions: `copy`, `paste`, `paste_selection`, `search`, `scroll_page_up`,
 while a suggestion shows), `ai_dismiss` (Esc, likewise), `ai_next` / `ai_prev`
 (Alt+] / Alt+[), `ai_explain` (Ctrl+Shift+A), `ai_ask` (Ctrl+Shift+Q; Cmd+Shift+Q on macOS, Cmd+Q still quits), `ssh_palette` (Ctrl+Shift+S),
 `command_palette` (Ctrl+Shift+P), `toggle_status_bar` (Ctrl+Shift+B). `select_all` is Ctrl+Shift+Alt+A.
-Sharing ([SHARING.md](SHARING.md)): `share_pane` (Ctrl+Shift+H), `share_grant`
-(Ctrl+Shift+G), `share_kick` (F12), `share_stop` (Ctrl+Shift+Alt+H), `share_join`
-(Ctrl+Shift+J).
+Sharing ([SHARING.md](SHARING.md)): `share_pane` (Ctrl+Shift+H; macOS Cmd+Shift+H), `share_grant`
+(Ctrl+Shift+G; macOS Cmd+Shift+G), `share_kick` (F12), `share_stop` (Ctrl+Shift+Alt+H; macOS Cmd+Shift+Option+H), `share_join`
+(Ctrl+Shift+J; macOS Cmd+Shift+J). On macOS, Cmd+H is Hide, so Share is Command+Shift, not bare Command. Cmd+Q still quits; Ask the Output stays Cmd+Shift+Q.
 
 Tabs and panes ([TABS.md](TABS.md)): `new_tab` (Ctrl+Shift+T), `close_tab`
 (Ctrl+Shift+Alt+W), `next_tab` / `prev_tab` (Ctrl+PgDn / Ctrl+PgUp, Ctrl+Tab /
