@@ -77,6 +77,11 @@ jobs:
             ver=$(sed -n 's/^const default_version = "\(.*\)";/\1/p' build.zig)
           fi
           echo "REL_VERSION=$ver" >> "$GITHUB_ENV"
+      - name: Fetch MoltenVK
+        if: endsWith(matrix.target, '-macos')
+        run: |
+          dir=$(bash packaging/macos/fetch-moltenvk.sh "$RUNNER_TEMP/MoltenVK")
+          echo "MOLTENVK_DIR=$dir" >> "$GITHUB_ENV"
       - name: Release archive and installer
         run: zig build release -Dtarget=${{ matrix.target }} -Dpackages=true -Dversion=${REL_VERSION}
       - uses: actions/upload-artifact@v4
