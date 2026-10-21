@@ -768,6 +768,7 @@ const Gui = struct {
             return;
         }
         if (try fp.ui.handleText(fp.term, bytes)) {
+            try self.pumpAsk(fp);
             self.touch(fp);
         } else if (self.plugins.text(bytes)) {
             self.touch(fp);
@@ -800,6 +801,7 @@ const Gui = struct {
             return;
         }
         if (try fp.ui.handleKey(fp.term, key, mods)) {
+            try self.pumpAsk(fp);
             self.touch(fp);
         } else if (self.plugins.key(key, mods)) {
             self.touch(fp);
@@ -845,6 +847,10 @@ const Gui = struct {
                 self.force_present = true;
             },
             .ai_explain => try fp.ai.explain(&fp.ui, fp.term, now),
+            .ai_ask => {
+                try fp.ai.openAsk(&fp.ui, fp.term, now);
+                self.touch(fp);
+            },
             .ssh_palette => if (self.chrome.paletteOpen(.ssh)) self.chrome.closePalette() else try self.openSshPalette(),
             .command_palette => if (self.chrome.paletteOpen(.commands)) self.chrome.closePalette() else try self.openCommandPalette(),
             .toggle_status_bar => try self.setStatusBar(!self.chrome.status_visible),
@@ -917,10 +923,17 @@ const Gui = struct {
             else => {
                 if (try fp.ui.handleAction(fp.term, act)) {
                     if (act == .ai_accept) fp.ai.onAccepted();
+                    try self.pumpAsk(fp);
                     self.touch(fp);
                 } else return self.keyFallback(a);
             },
         }
+    }
+
+    fn pumpAsk(self: *Gui, fp: *Pane) !void {
+        _ = self;
+        if (fp.ui.takeAskCancel()) fp.ai.cancelAsk(&fp.ui);
+        if (fp.ui.takeAskSubmit()) try fp.ai.submitAsk(&fp.ui, fp.term, std.time.milliTimestamp());
     }
 
     // -------------------------------------------------------------- mouse

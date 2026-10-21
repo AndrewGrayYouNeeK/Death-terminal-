@@ -23,6 +23,7 @@ nothing leaves your machine unless you point it somewhere else.
 | `Esc` | Dismiss it |
 | `Alt+]` / `Alt+[` | Next / previous alternative (the `(1/3)` counter shows when there are several) |
 | `Ctrl+Shift+A` | **Explain / fix the last error**: an overlay at the top with the cause and a corrected command (`Esc` closes it) |
+| `Ctrl+Shift+Q` | **Ask the Output**: a prompt bar. The question goes to the model with the selection, else the last command's output, else the visible screen. The answer is an overlay; cited lines are highlighted and `Down` / `Enter` jump between them (`Esc` closes). On macOS this is `Cmd+Shift+Q`; `Cmd+Q` still quits |
 
 - Nothing is ever inserted without your accept. Ghost text is drawn by the
   renderer only; the shell never sees it.
@@ -41,7 +42,7 @@ If the endpoint is unreachable, times out or returns an error, nothing pops
 up: a small **`AI offline`** badge appears in the bottom-right (or
 top-right) corner, and suggestion requests back off (5 s, doubling up to
 60 s) so a missing server costs nothing. An explicit `Ctrl+Shift+A` always
-tries and, if it fails, says so in the overlay. The badge goes away after
+tries and, if it fails, says so in the overlay. **Ask the Output** (`Ctrl+Shift+Q`) does the same: the bar and the overlay both say **AI offline**. The badge goes away after
 the next successful request or when the config is reloaded with a new
 endpoint/model.
 
@@ -106,6 +107,8 @@ All options (see also [CONFIG.md](CONFIG.md)):
 | `ai.history` | `5` | Previous commands (with exit codes) sent as context |
 | `ai.output_lines` | `20` | Lines of recent output sent as context |
 | `ai.accept_key` | `"tab"` | Chord that accepts the ghost text |
+| `ai.ask.enabled` | `true` | Ask the Output (`Ctrl+Shift+Q` / `Cmd+Shift+Q`) |
+| `ai.ask.max_lines` | `200` | Tail of the region sent with the question (1–4000). Longer output is chunked; the note says which lines were omitted |
 | `shell.integration` | `true` | Load the OSC 133 shell integration (restart) |
 
 ## What is sent
@@ -182,8 +185,12 @@ screen is used as context. Explain then describes the visible output.
 - `src/ai/context.zig`: prompt building (with redaction) and reply parsing
   (strips numbering, bullets, `$ ` and backticks; keeps only lines that
   extend what you typed; no control characters).
+- `src/ai/ask.zig`: the output region (selection, last OSC 133 command, or
+  the visible screen), the tail window, redaction, and parsing `REFS:`
+  line/substring citations into search highlights.
+- `src/app/ask_ui.zig`: the question bar and jump-between-matches.
 - `src/app/ai_controller.zig`: debounce, ghost text, explain overlay,
-  status badge.
+  Ask the Output, status badge.
 - `src/terminal/shell_integration.zig`: OSC 133 tracking (input, command
   history with exit codes and output tails).
 - Tests run against `src/ai/mock_server.zig`, a scripted local HTTP server

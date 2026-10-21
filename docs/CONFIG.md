@@ -105,6 +105,8 @@ config is reloaded.
 | `ai.history` | `5` | Previous commands (with exit codes) sent as context, 0–32 |
 | `ai.output_lines` | `20` | Lines of recent output sent as context, 0–200 |
 | `ai.accept_key` | `"tab"` | Chord that accepts the ghost text |
+| `ai.ask.enabled` | `true` | Ask the Output on/off (`Ctrl+Shift+Q`, `Cmd+Shift+Q` on macOS). See [AI.md](AI.md) |
+| `ai.ask.max_lines` | `200` | Lines of that region sent to the model (the tail), 1–4000 |
 | `ssh.enabled` | `true` | Built-in SSH client (`--ssh`, Ctrl+Shift+S). See [SSH.md](SSH.md) |
 | `ssh.config_file` | `"~/.ssh/config"` | OpenSSH config to read Host aliases from (`""` = none) |
 | `ssh.keepalive_s` | `30` | Default keepalive interval, 0–3600 (0 = off); profiles can override |
@@ -129,7 +131,7 @@ Actions: `copy`, `paste`, `paste_selection`, `search`, `scroll_page_up`,
 `scroll_bottom`, `zoom_in`, `zoom_out`, `zoom_reset`, `select_all`,
 `clear_selection`, `reload_config` (default Ctrl+Shift+R), `ai_accept` (Tab, only
 while a suggestion shows), `ai_dismiss` (Esc, likewise), `ai_next` / `ai_prev`
-(Alt+] / Alt+[), `ai_explain` (Ctrl+Shift+A), `ssh_palette` (Ctrl+Shift+S),
+(Alt+] / Alt+[), `ai_explain` (Ctrl+Shift+A), `ai_ask` (Ctrl+Shift+Q; Cmd+Shift+Q on macOS, Cmd+Q still quits), `ssh_palette` (Ctrl+Shift+S),
 `command_palette` (Ctrl+Shift+P), `toggle_status_bar` (Ctrl+Shift+B). `select_all` is Ctrl+Shift+Alt+A.
 
 Tabs and panes ([TABS.md](TABS.md)): `new_tab` (Ctrl+Shift+T), `close_tab`
