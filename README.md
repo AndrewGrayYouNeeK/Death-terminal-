@@ -4,6 +4,8 @@
 
 Fast. Minimal. Unapologetically powerful.
 
+Download: https://andrewgrayyouneek.github.io/Death-terminal-/
+
 ## ⚡ Why YouNeeK Death Terminal?
 
 Most terminals are either:
@@ -110,6 +112,10 @@ See [QUICKSTART.md](QUICKSTART.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for deta
 
 ### Install (0.1.0)
 
+Prebuilt packages: https://andrewgrayyouneek.github.io/Death-terminal-/
+
+That page links the latest published GitHub release (macOS Apple Silicon and Intel `.dmg`, Windows setup `.exe`, Linux AppImage / `.deb` / `.rpm`, and `SHA256SUMS`). With no published release it links the [Releases](https://github.com/AndrewGrayYouNeeK/Death-terminal-/releases) page.
+
 `zig build release` writes versioned archives to `zig-out/release/`.
 `zig build release -Dpackages=true` also builds the installable packages:
 AppImage, `.deb` and `.rpm` on Linux; an NSIS setup exe on Windows; a
@@ -135,7 +141,7 @@ in [docs/MOBILE.md](docs/MOBILE.md) and is not built.
 - Lua plugins: sandboxed per-plugin states, permission grants in config.lua, hooks, command palette (Ctrl+Shift+P), status bar (on by default), toasts, timers, themes, four example plugins including the bundled YouNeeK Time clock (see [docs/PLUGINS.md](docs/PLUGINS.md))
 - Tabs and split panes: layout tree, keyboard/mouse resize and focus, zoom, equalize, tab bar, confirm-close for running programs, startup layouts, plugin tab/pane events and actions (see [docs/TABS.md](docs/TABS.md))
 - CI: Linux build + unit tests, Windows and macOS cross-compiles; a `v*` tag opens a draft GitHub release
-- Packaging: `zig build release -Dpackages=true` builds an AppImage, `.deb` (with a `.desktop` file) and `.rpm`, a Windows zip plus NSIS installer, and a macOS `.app` plus `.dmg`. A `v*` tag publishes them. Signing is not done yet ([packaging/SIGNING.md](packaging/SIGNING.md))
+- Packaging: `zig build release -Dpackages=true` builds an AppImage, `.deb` (with a `.desktop` file) and `.rpm`, a Windows zip plus NSIS installer, and a macOS `.app` plus `.dmg`. A `v*` tag publishes them as a draft. macOS signing and notarization run when the Apple secrets in [packaging/SIGNING.md](packaging/SIGNING.md) are set; otherwise those artifacts stay unsigned. Windows signing is still a TODO
 - 80/132-column DECCOLM: headless grids resize; GUI panes keep their width and only clear, home, and reset margins
 
 **Not done yet** (tracked in [ISSUES.md](ISSUES.md))

@@ -81,9 +81,13 @@ zig build release -Dtarget=aarch64-macos -Dpackages=true
 ```
 
 The `.dmg` is an `hdiutil` UDZO image when built on a Mac, and an HFS hybrid
-wrapped as UDIF when built on Linux. Neither is notarized
-(`packaging/SIGNING.md`). `make-app.sh` still ad-hoc signs with `codesign -`
-when that tool exists.
+wrapped as UDIF when built on Linux. `make-app.sh` ad-hoc signs with
+`codesign -` when that tool exists. The release workflow downloads MoltenVK
+1.4.2 into `Contents/Frameworks`, then signs that dylib and the `.app` with
+a Developer ID, rebuilds the `.dmg` with `hdiutil`, notarizes, and staples
+when the Apple secrets in `packaging/SIGNING.md` are set. When any of those
+secrets are missing, the unsigned cross-compiled zip and dmg are what the
+draft release gets.
 
 The Cocoa backend (`src/platform/cocoa_backend.zig`) loads libobjc, AppKit, QuartzCore, CoreGraphics and CoreFoundation with `dlopen`. That is why it cross-compiles without an SDK. It uses no delegate and no NSView subclass:
 
@@ -91,7 +95,7 @@ The Cocoa backend (`src/platform/cocoa_backend.zig`) loads libobjc, AppKit, Quar
 - **Cmd shortcuts:** map onto the Ctrl+Shift bindings (Cmd+C/V/T/W…), and Cmd+Q quits.
 - **Option:** acts as Meta.
 - **Waiting:** a helper thread `poll()`s the PTY and wake fds and posts an application-defined NSEvent. The main thread sleeps in `nextEventMatchingMask:`.
-- **Vulkan:** needs MoltenVK. The loader looks in `@executable_path`, `../Frameworks` (the `.app` bundle), `/opt/homebrew/lib` and `/usr/local/lib`. The instance enables `VK_KHR_portability_enumeration` and the device enables `VK_KHR_portability_subset` when offered.
+- **Vulkan:** needs MoltenVK. The loader resolves paths next to the executable and in `../Frameworks` (`dlopen` does not expand `@executable_path`), then `/opt/homebrew/lib` and `/usr/local/lib`. The release workflow bundles `libMoltenVK.dylib` and `MoltenVK_icd.json` in `Contents/Frameworks`. The instance enables `VK_KHR_portability_enumeration` and the device enables `VK_KHR_portability_subset` when offered.
 
 None of this has run on a Mac yet. Expect fixes after a first test, especially in the areas below:
 
