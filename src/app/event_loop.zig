@@ -301,6 +301,7 @@ pub const EventLoop = struct {
         if (builtin.os.tag == .macos) {
             std.debug.print("If macOS asks to allow incoming connections, allow them, or the guest cannot connect.\n", .{});
         }
+        io.ignoreSigpipe();
         if (builtin.os.tag != .windows and posix.isatty(std.io.getStdOut().handle) and posix.isatty(posix.STDIN_FILENO)) {
             std.debug.print("Press Enter to continue. Copy the invite above first.\n", .{});
             var line: [64]u8 = undefined;
@@ -308,10 +309,15 @@ pub const EventLoop = struct {
         }
 
         const pty_fd = term.getPtyFd() orelse return error.NoPty;
-        try setNonBlocking(pty_fd);
+        setNonBlocking(pty_fd) catch |err| {
+            std.debug.print("share: pty nonblocking failed ({s}); continuing\n", .{@errorName(err)});
+        };
         var stdin_raw = false;
         if (builtin.os.tag != .windows) {
-            stdin_raw = try enableRawMode();
+            stdin_raw = enableRawMode() catch |err| blk: {
+                std.debug.print("share: terminal raw mode failed ({s}); keys may be cooked\n", .{@errorName(err)});
+                break :blk false;
+            };
         } else {
             stdin_raw = win_misc.enableRawConsole();
         }
@@ -319,7 +325,9 @@ pub const EventLoop = struct {
             if (builtin.os.tag == .windows) win_misc.restoreConsole() else disableRawMode() catch {};
         };
         const stdin_fd: io.Fd = if (builtin.os.tag == .windows) win_misc.stdinSocket() catch io.none else posix.STDIN_FILENO;
-        try installSignalHandlers();
+        installSignalHandlers() catch |err| {
+            std.debug.print("share: signal handlers failed ({s}); continuing\n", .{@errorName(err)});
+        };
 
         const read_buf = try std.heap.page_allocator.alloc(u8, READ_BUFFER_SIZE);
         defer std.heap.page_allocator.free(read_buf);
@@ -348,26 +356,38 @@ pub const EventLoop = struct {
             if (poll_fds[0].revents & posix.POLL.IN != 0) {
                 const n = io.read(pty_fd, read_buf) catch |err| switch (err) {
                     error.WouldBlock => 0,
-                    error.InputOutput => {
-                        std.debug.print("\nShell exited.\n", .{});
+                    // Linux reports EIO when the slave closes. Darwin often
+                    // reports an unmapped errno (ENXIO) as Unexpected.
+                    error.InputOutput, error.Unexpected, error.NotOpenForReading, error.ConnectionResetByPeer => {
+                        std.debug.print("\nShell exited ({s}).\n", .{@errorName(err)});
                         break;
                     },
-                    else => return err,
+                    else => {
+                        std.debug.print("\nshare: pty read failed ({s}); hosting continues until the shell ends\n", .{@errorName(err)});
+                        break;
+                    },
                 };
                 if (n == 0) {
                     std.debug.print("\nShell exited.\n", .{});
                     break;
                 }
-                try term.processOutput(read_buf[0..n]);
+                term.processOutput(read_buf[0..n]) catch |err| {
+                    std.debug.print("share: terminal parse failed ({s})\n", .{@errorName(err)});
+                };
                 dirty = true;
             }
             if (poll_fds[1].revents & posix.POLL.IN != 0) {
                 const n = io.read(stdin_fd, &input_buf) catch |err| switch (err) {
                     error.WouldBlock => 0,
-                    else => return err,
+                    else => {
+                        std.debug.print("share: stdin read failed ({s})\n", .{@errorName(err)});
+                        break;
+                    },
                 };
                 if (n == 0) break;
-                try self.headlessInput(term, &ghost, input_buf[0..n]);
+                self.headlessInput(term, &ghost, input_buf[0..n]) catch |err| {
+                    std.debug.print("share: input failed ({s})\n", .{@errorName(err)});
+                };
                 dirty = true;
             }
 
@@ -375,16 +395,20 @@ pub const EventLoop = struct {
             var guest_in: [1024]u8 = undefined;
             const gn = share.takeInput(&guest_in);
             if (gn > 0) {
-                try term.write(guest_in[0..gn]);
+                term.write(guest_in[0..gn]) catch |err| {
+                    std.debug.print("share: write to the shell failed ({s})\n", .{@errorName(err)});
+                };
                 dirty = true;
             }
             share.flushGrid(term);
             if (dirty) {
-                try renderHeadless(term, vulkan_renderer);
+                renderHeadless(term, vulkan_renderer) catch |err| {
+                    std.debug.print("share: redraw failed ({s})\n", .{@errorName(err)});
+                };
                 dirty = false;
             }
         }
-        try renderHeadless(term, vulkan_renderer);
+        renderHeadless(term, vulkan_renderer) catch {};
         std.debug.print("\n", .{});
     }
 

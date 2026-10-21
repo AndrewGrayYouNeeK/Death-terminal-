@@ -15,6 +15,7 @@ const builtin = @import("builtin");
 const std = @import("std");
 const posix = std.posix;
 const dial = @import("../net/dial.zig");
+const certs = @import("../share/certs.zig");
 const Relay = @import("../net/relay.zig").Relay;
 const use_relay = builtin.os.tag == .windows;
 
@@ -308,7 +309,7 @@ fn openConnection(client: *std.http.Client, uri: std.Uri, timeout_ms: u32, deadl
             client.ca_bundle_mutex.lock();
             defer client.ca_bundle_mutex.unlock();
             if (client.next_https_rescan_certs) {
-                client.ca_bundle.rescan(allocator) catch return error.BadEndpoint;
+                certs.scan(&client.ca_bundle, allocator) catch return error.BadEndpoint;
                 client.next_https_rescan_certs = false;
             }
         }

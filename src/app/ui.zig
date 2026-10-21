@@ -393,7 +393,11 @@ pub const Ui = struct {
                             return true;
                         }
                     }
-                    if (p.eql(self.last_click) and now_ms - self.last_click_ms <= self.opts.multi_click_ms) {
+                    // Cocoa reports NSEvent.clickCount. Other backends leave
+                    // `clicks` at 0 and the timer below decides.
+                    if (m.clicks >= 1) {
+                        self.click_count = if (m.clicks >= 3) 3 else m.clicks;
+                    } else if (p.eql(self.last_click) and now_ms - self.last_click_ms <= self.opts.multi_click_ms) {
                         self.click_count = self.click_count % 3 + 1;
                     } else self.click_count = 1;
                     self.last_click = p;
@@ -1582,6 +1586,26 @@ test "double-click word, triple-click line, shift-click extends, alt-drag block"
     // Alt-drag: rectangle.
     try drag(&ui, &term, 1, 1, 3, 2, .{ .alt = true }, 9000);
     try expectClipboard(&ui, .primary, "y 1\nbcd");
+}
+
+test "a reported click count selects a word or a line without the timer" {
+    var term = try Terminal.initBuffer(testing.allocator, 3, 20, 10);
+    defer term.deinit();
+    try term.processOutput("ls /usr/bin -la\r\nxy 12345\r\nabcdefgh");
+    var ui = Ui.init(testing.allocator, .{});
+    defer ui.deinit();
+    var press = mouse(.press, .left, 5, 0, .{});
+    press.clicks = 2;
+    var rel = mouse(.release, .left, 5, 0, .{});
+    rel.clicks = 2;
+    _ = try ui.handleMouse(&term, press, CW, CH, 0);
+    _ = try ui.handleMouse(&term, rel, CW, CH, 0);
+    try expectClipboard(&ui, .primary, "/usr/bin");
+    press.clicks = 3;
+    rel.clicks = 3;
+    _ = try ui.handleMouse(&term, press, CW, CH, 50_000);
+    _ = try ui.handleMouse(&term, rel, CW, CH, 50_000);
+    try expectClipboard(&ui, .primary, "ls /usr/bin -la");
 }
 
 test "mouse reporting gets clicks unless Shift is held" {

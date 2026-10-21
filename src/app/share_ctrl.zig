@@ -19,6 +19,8 @@ const session = @import("../share/session.zig");
 const Cell = terminal.Cell;
 const Mark = frame_mod.Mark;
 
+const OverlayKind = enum { char, word, line, all };
+
 const BarPaint = struct { fg: u32, bg: u32 };
 const paint_watched: BarPaint = .{ .fg = 0x000000, .bg = 0xFF0033 };
 const paint_reading: BarPaint = .{ .fg = 0x000000, .bg = 0xFFB000 };
@@ -58,6 +60,18 @@ pub const Controller = struct {
     /// "ip:port\ndeathterminal --join <code>\n" while hosting. Clipboard and overlay.
     invite: [640]u8 = undefined,
     invite_len: usize = 0,
+    /// Selection inside the host invite overlay, as byte offsets into `invite`.
+    /// A click with no drag selects the whole invite. Drag, double-click, and
+    /// triple-click select a slice. `ov_copy` asks the window to put that
+    /// slice on the clipboard once.
+    ov_on: bool = false,
+    ov_lo: usize = 0,
+    ov_hi: usize = 0,
+    ov_anchor: usize = 0,
+    ov_drag: bool = false,
+    ov_moved: bool = false,
+    ov_copy: bool = false,
+    ov_kind: OverlayKind = .char,
     addr: [80]u8 = undefined,
     addr_len: usize = 0,
     err: [160]u8 = undefined,
@@ -179,6 +193,105 @@ pub const Controller = struct {
         return self.invite[0..self.invite_len];
     }
 
+    /// Highlighted slice of the invite, when the host has one.
+    pub fn overlayText(self: *const Controller) ?[]const u8 {
+        if (!self.ov_on or self.invite_len == 0) return null;
+        const lo = @min(self.ov_lo, self.ov_hi);
+        const hi = @min(self.invite_len, @max(self.ov_lo, self.ov_hi));
+        if (lo >= hi) return null;
+        return self.invite[lo..hi];
+    }
+
+    /// One clipboard payload for the gesture that just finished. The highlight stays.
+    pub fn takeOverlayCopy(self: *Controller) ?[]const u8 {
+        if (!self.ov_copy) return null;
+        self.ov_copy = false;
+        return self.overlayText();
+    }
+
+    pub fn clearOverlaySel(self: *Controller) void {
+        self.ov_on = false;
+        self.ov_lo = 0;
+        self.ov_hi = 0;
+        self.ov_anchor = 0;
+        self.ov_drag = false;
+        self.ov_moved = false;
+        self.ov_copy = false;
+        self.ov_kind = .char;
+    }
+
+    /// Host invite overlay. `row` 0 is the banner; the invite is wrapped on the
+    /// rows under it, the same way `paint` draws it. Returns true when the
+    /// event belongs to the overlay (including a drag that started there).
+    pub fn feedHostOverlay(
+        self: *Controller,
+        col: u16,
+        row: u16,
+        w: u16,
+        h: u16,
+        action: input.MouseAction,
+        button: input.MouseButton,
+        clicks: u8,
+    ) bool {
+        const hosting = self.host != null and self.invite_len > 0 and w > 0 and h > 1;
+        if (!hosting) {
+            if (action == .press) self.clearOverlaySel();
+            return false;
+        }
+        const invite_rows: u16 = @min(h - 1, 6);
+        const on_banner = row == 0;
+        const on_body = row >= 1 and row - 1 < invite_rows;
+        const hit = on_banner or on_body;
+        if (action == .press and button != .left) return false;
+        if (action == .press and !hit) {
+            self.clearOverlaySel();
+            return false;
+        }
+        if (!self.ov_drag and !hit) return false;
+        switch (action) {
+            .press => {
+                if (on_banner) {
+                    self.selectOverlayAll();
+                    self.ov_drag = true;
+                    self.ov_kind = .all;
+                    self.ov_moved = false;
+                    self.ov_copy = true;
+                    return true;
+                }
+                const at = self.caretAt(w, invite_rows, row, col);
+                const n: u8 = if (clicks >= 3) 3 else if (clicks == 2) 2 else 1;
+                if (n >= 3) {
+                    self.selectOverlayLine(at);
+                    self.ov_kind = .line;
+                } else if (n == 2) {
+                    self.selectOverlayWord(at);
+                    self.ov_kind = .word;
+                } else {
+                    self.ov_anchor = @min(at, self.invite_len);
+                    self.ov_lo = self.ov_anchor;
+                    self.ov_hi = self.ov_anchor;
+                    self.ov_on = false;
+                    self.ov_kind = .char;
+                }
+                self.ov_drag = true;
+                self.ov_moved = false;
+                return true;
+            },
+            .motion => {
+                if (!self.ov_drag) return false;
+                if (self.ov_kind == .char) self.extendOverlay(self.caretAt(w, invite_rows, row, col));
+                return true;
+            },
+            .release => {
+                if (!self.ov_drag) return false;
+                self.ov_drag = false;
+                if (self.ov_kind == .char and !self.ov_moved) self.selectOverlayAll();
+                if (self.ov_on) self.ov_copy = true;
+                return true;
+            },
+        }
+    }
+
     pub fn join(self: *Controller, pane: u32) void {
         if (self.pending_len == 0) {
             self.setErr("empty invite code");
@@ -213,6 +326,7 @@ pub const Controller = struct {
         self.bound = false;
         self.announce_pending = false;
         self.invite_len = 0;
+        self.clearOverlaySel();
         self.addr_len = 0;
         self.banner_len = 0;
         self.a.free(self.fp);
@@ -615,11 +729,11 @@ pub const Controller = struct {
         var row: u16 = 0;
         var col: u16 = 0;
         var line_started = false;
-        for (text) |ch| {
+        for (text, 0..) |ch, i| {
             if (row >= h) break;
             if (ch == '\n') {
                 if (line_started) {
-                    while (col < w) : (col += 1) self.putOverlay(cells, marks, stride, x, y, row, col, ' ');
+                    while (col < w) : (col += 1) self.putOverlay(cells, marks, stride, x, y, row, col, ' ', null);
                 }
                 row += 1;
                 col = 0;
@@ -631,14 +745,13 @@ pub const Controller = struct {
                 col = 0;
                 if (row >= h) break;
             }
-            self.putOverlay(cells, marks, stride, x, y, row, col, ch);
+            self.putOverlay(cells, marks, stride, x, y, row, col, ch, i);
             col += 1;
             line_started = true;
         }
     }
 
-    fn putOverlay(self: *Controller, cells: []Cell, marks: []Mark, stride: u16, x: u16, y: u16, row: u16, col: u16, ch: u8) void {
-        _ = self;
+    fn putOverlay(self: *Controller, cells: []Cell, marks: []Mark, stride: u16, x: u16, y: u16, row: u16, col: u16, ch: u8, index: ?usize) void {
         const at = @as(usize, y + row) * stride + (x + col);
         if (at >= cells.len) return;
         var cell = Cell.init();
@@ -646,7 +759,62 @@ pub const Controller = struct {
         cell.bg_color = paint_waiting.bg;
         cell.char = ch;
         cells[at] = cell;
-        if (at < marks.len) marks[at] = .none;
+        if (at < marks.len) {
+            const on = if (index) |i| self.byteSelected(i) else false;
+            marks[at] = if (on) .selected else .none;
+        }
+    }
+
+    fn byteSelected(self: *const Controller, index: usize) bool {
+        if (!self.ov_on) return false;
+        const lo = @min(self.ov_lo, self.ov_hi);
+        const hi = @max(self.ov_lo, self.ov_hi);
+        return index >= lo and index < hi;
+    }
+
+    fn caretAt(self: *const Controller, w: u16, invite_rows: u16, row: u16, col: u16) usize {
+        if (row == 0) return 0;
+        if (row >= 1 and row - 1 < invite_rows) {
+            return indexAt(self.invite[0..self.invite_len], w, invite_rows, row - 1, col) orelse self.invite_len;
+        }
+        return self.invite_len;
+    }
+
+    fn selectOverlayAll(self: *Controller) void {
+        self.ov_on = self.invite_len > 0;
+        self.ov_lo = 0;
+        self.ov_hi = self.invite_len;
+        self.ov_kind = .all;
+    }
+
+    fn selectOverlayWord(self: *Controller, at: usize) void {
+        const b = wordBounds(self.invite[0..self.invite_len], at);
+        self.ov_on = b.lo < b.hi;
+        self.ov_lo = b.lo;
+        self.ov_hi = b.hi;
+        self.ov_kind = .word;
+    }
+
+    fn selectOverlayLine(self: *Controller, at: usize) void {
+        const b = lineBounds(self.invite[0..self.invite_len], at);
+        self.ov_on = b.lo < b.hi;
+        self.ov_lo = b.lo;
+        self.ov_hi = b.hi;
+        self.ov_kind = .line;
+    }
+
+    fn extendOverlay(self: *Controller, at: usize) void {
+        const end = self.invite_len;
+        const a = @min(self.ov_anchor, end);
+        const b = @min(at, end);
+        if (a == b) return;
+        self.ov_moved = true;
+        self.ov_on = true;
+        const lo = @min(a, b);
+        var hi = @max(a, b);
+        if (hi < end and self.invite[hi] != '\n') hi += 1;
+        self.ov_lo = lo;
+        self.ov_hi = hi;
     }
 
     fn paintBar(self: *Controller, cells: []Cell, marks: []Mark, stride: u16, x: u16, y: u16, w: u16, text: []const u8, colors: BarPaint) void {
@@ -724,6 +892,64 @@ pub const Controller = struct {
         std.debug.print("share: {s}\n", .{self.err[0..self.err_len]});
     }
 };
+
+const Span = struct { lo: usize, hi: usize };
+
+/// Byte index of the invite cell at (`row`, `col`) in the same wrap `paintWrapped` uses.
+/// `row` is 0 on the first invite line (the banner is not part of the string).
+fn indexAt(text: []const u8, width: u16, max_rows: u16, row: u16, col: u16) ?usize {
+    if (width == 0 or row >= max_rows) return null;
+    var r: u16 = 0;
+    var c: u16 = 0;
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        if (r >= max_rows) return null;
+        const ch = text[i];
+        if (ch == '\n') {
+            if (r == row) return i;
+            r += 1;
+            c = 0;
+            continue;
+        }
+        if (c >= width) {
+            r += 1;
+            c = 0;
+            if (r >= max_rows) return null;
+        }
+        if (r == row and c == col) return i;
+        c += 1;
+    }
+    if (r == row) return text.len;
+    return null;
+}
+
+fn isInviteWord(ch: u8) bool {
+    if (ch >= 'a' and ch <= 'z') return true;
+    if (ch >= 'A' and ch <= 'Z') return true;
+    if (ch >= '0' and ch <= '9') return true;
+    return std.mem.indexOfScalar(u8, "-_./~:@%+#?&=", ch) != null;
+}
+
+fn wordBounds(text: []const u8, at: usize) Span {
+    if (at >= text.len or !isInviteWord(text[at])) {
+        if (at >= text.len) return .{ .lo = text.len, .hi = text.len };
+        return .{ .lo = at, .hi = at + 1 };
+    }
+    var lo = at;
+    while (lo > 0 and isInviteWord(text[lo - 1])) lo -= 1;
+    var hi = at + 1;
+    while (hi < text.len and isInviteWord(text[hi])) hi += 1;
+    return .{ .lo = lo, .hi = hi };
+}
+
+fn lineBounds(text: []const u8, at: usize) Span {
+    var lo: usize = @min(at, text.len);
+    if (lo == text.len and lo > 0) lo -= 1;
+    while (lo > 0 and text[lo - 1] != '\n') lo -= 1;
+    var hi: usize = lo;
+    while (hi < text.len and text[hi] != '\n') hi += 1;
+    return .{ .lo = lo, .hi = hi };
+}
 
 /// Plain-language share failures. Zig error names stay in the log via the caller
 /// only when they are already a sentence (they contain a space).
@@ -849,6 +1075,55 @@ test "host invite shows the address, port, and join command" {
     }
     try std.testing.expect(std.mem.indexOf(u8, &flat, "127.0.0.1:") != null);
     try std.testing.expect(std.mem.indexOf(u8, &flat, "deathterminal --join dt1.") != null);
+}
+
+test "host invite overlay: click copies all, drag and multi-click select a slice" {
+    var c = Controller.init(std.testing.allocator);
+    defer c.deinit();
+    c.setBind("127.0.0.1");
+    const off = "off";
+    c.relay_len = off.len;
+    @memcpy(c.relay[0..off.len], off);
+    const adv = "127.0.0.1";
+    c.advertise_len = adv.len;
+    @memcpy(c.advertise[0..adv.len], adv);
+    c.startHost(7);
+    const full = c.inviteText() orelse return error.NoInvite;
+    const nl = std.mem.indexOfScalar(u8, full, '\n') orelse return error.NoInvite;
+    const width: u16 = 48;
+
+    try std.testing.expect(c.feedHostOverlay(0, 0, width, 8, .press, .left, 1));
+    try std.testing.expectEqualStrings(full, c.takeOverlayCopy().?);
+    try std.testing.expectEqualStrings(full, c.overlayText().?);
+
+    try std.testing.expect(c.feedHostOverlay(0, 1, width, 8, .press, .left, 1));
+    try std.testing.expect(c.feedHostOverlay(3, 1, width, 8, .motion, .left, 0));
+    try std.testing.expect(c.feedHostOverlay(3, 1, width, 8, .release, .left, 1));
+    try std.testing.expectEqualStrings(full[0..4], c.takeOverlayCopy().?);
+
+    try std.testing.expect(c.feedHostOverlay(0, 2, width, 8, .press, .left, 2));
+    try std.testing.expect(c.feedHostOverlay(0, 2, width, 8, .release, .left, 2));
+    try std.testing.expectEqualStrings("deathterminal", c.overlayText().?);
+
+    try std.testing.expect(c.feedHostOverlay(4, 2, width, 8, .press, .left, 3));
+    try std.testing.expect(c.feedHostOverlay(4, 2, width, 8, .release, .left, 3));
+    const line = full[nl + 1 ..];
+    const line_end = std.mem.indexOfScalar(u8, line, '\n') orelse line.len;
+    try std.testing.expectEqualStrings(line[0..line_end], c.overlayText().?);
+
+    const cols: usize = width;
+    const rows: usize = 5;
+    var cells = [_]Cell{Cell.init()} ** (cols * rows);
+    var marks = [_]Mark{.none} ** (cols * rows);
+    c.paint(&cells, &marks, @intCast(cols), 0, 0, @intCast(cols), @intCast(rows));
+    try std.testing.expectEqual(Mark.selected, marks[2 * cols]);
+    try std.testing.expectEqual(@as(u21, 'd'), cells[2 * cols].char);
+
+    try std.testing.expect(!c.feedHostOverlay(0, 7, width, 8, .press, .left, 1));
+    try std.testing.expect(c.overlayText() == null);
+
+    const mapped = indexAt(full, width, 6, 0, 3) orelse return error.NoInvite;
+    try std.testing.expectEqual(@as(usize, 3), mapped);
 }
 
 test "host banner names the Mac grant chord" {

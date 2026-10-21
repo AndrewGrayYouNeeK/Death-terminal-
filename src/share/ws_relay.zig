@@ -16,6 +16,48 @@ const invite = @import("invite.zig");
 const relay = @import("relay.zig");
 
 const posix = std.posix;
+const certs = @import("certs.zig");
+
+threadlocal var detail_buf: [192]u8 = undefined;
+threadlocal var detail_len: usize = 0;
+
+fn setDetail(text: []const u8) void {
+    const n = @min(text.len, detail_buf.len);
+    @memcpy(detail_buf[0..n], text[0..n]);
+    detail_len = n;
+}
+
+fn setDetailFmt(comptime fmt: []const u8, args: anytype) void {
+    var buf: [192]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf, fmt, args) catch return;
+    setDetail(text);
+}
+
+fn headerValue(head: []const u8, name: []const u8) ?[]const u8 {
+    var i: usize = 0;
+    while (i < head.len) {
+        const line_end = std.mem.indexOfPos(u8, head, i, "\r\n") orelse break;
+        const line = head[i..line_end];
+        if (line.len > name.len + 1 and std.ascii.eqlIgnoreCase(line[0..name.len], name) and line[name.len] == ':') {
+            return std.mem.trim(u8, line[name.len + 1 ..], " \t");
+        }
+        i = line_end + 2;
+    }
+    return null;
+}
+
+fn noteHttp(prefix: []const u8, bytes: []const u8) void {
+    var shown: [64]u8 = undefined;
+    const m = @min(bytes.len, shown.len);
+    for (bytes[0..m], 0..) |b, i| shown[i] = if (b >= 32 and b < 127) b else '.';
+    setDetailFmt("{s}: {s}", .{ prefix, shown[0..m] });
+}
+
+/// Last failure from this thread's `open`, or empty.
+pub fn takeDetail() []const u8 {
+    if (detail_len == 0) return "";
+    return detail_buf[0..detail_len];
+}
 
 pub const max_frame: usize = 64 * 1024;
 const guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -76,6 +118,7 @@ fn parseUrl(url: []const u8) Error!Target {
 }
 
 fn mapDial(err: netdial.Error) Error {
+    setDetailFmt("connect {s}", .{@errorName(err)});
     return switch (err) {
         error.Timeout => error.Timeout,
         error.Cancelled => error.Cancelled,
@@ -90,7 +133,10 @@ fn mapIo(err: anyerror) Error {
         error.OutOfMemory => error.OutOfMemory,
         error.Cancelled => error.Cancelled,
         error.Timeout => error.Timeout,
-        else => error.Closed,
+        else => {
+            setDetailFmt("io {s}", .{@errorName(err)});
+            return error.Closed;
+        },
     };
 }
 
@@ -133,7 +179,10 @@ fn readExact(pipe: Io, buf: []u8, wait: Wait) Error!void {
             },
             else => |e| return e,
         };
-        if (n == 0) return error.Closed;
+        if (n == 0) {
+            setDetail("eof");
+            return error.Closed;
+        }
         got += n;
     }
 }
@@ -234,12 +283,21 @@ fn readData(pipe: Io, buf: []u8, wait: Wait) Error![]u8 {
         switch (opcode) {
             0x9 => try sendFrame(pipe, 0xA, dst[0..len], true, wait),
             0xA => {},
-            0x8 => return error.Closed,
+            0x8 => {
+                setDetail("websocket close");
+                return error.Closed;
+            },
             0x2 => {
-                if (!fin) return error.Closed;
+                if (!fin) {
+                    setDetail("fragmented websocket frame");
+                    return error.Closed;
+                }
                 return dst[0..len];
             },
-            else => return error.Closed,
+            else => {
+                setDetailFmt("websocket opcode {d}", .{opcode});
+                return error.Closed;
+            },
         }
     }
 }
@@ -261,30 +319,53 @@ fn httpUpgrade(pipe: Io, target: Target, role: relay.Role, id: *const [8]u8, wai
     else
         "";
     const text = if (host_hdr.len > 0)
-        std.fmt.bufPrint(&req, "GET /v1/{s}?role={s} HTTP/1.1\r\nHost: {s}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {s}\r\nSec-WebSocket-Version: 13\r\n\r\n", .{ hex_id, role_name, host_hdr, key }) catch return error.BadRelay
+        std.fmt.bufPrint(&req, "GET /v1/{s}?role={s} HTTP/1.1\r\nHost: {s}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {s}\r\nSec-WebSocket-Version: 13\r\nUser-Agent: deathterminal\r\n\r\n", .{ hex_id, role_name, host_hdr, key }) catch return error.BadRelay
     else
-        std.fmt.bufPrint(&req, "GET /v1/{s}?role={s} HTTP/1.1\r\nHost: {s}:{d}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {s}\r\nSec-WebSocket-Version: 13\r\n\r\n", .{ hex_id, role_name, target.host(), target.port, key }) catch return error.BadRelay;
+        std.fmt.bufPrint(&req, "GET /v1/{s}?role={s} HTTP/1.1\r\nHost: {s}:{d}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {s}\r\nSec-WebSocket-Version: 13\r\nUser-Agent: deathterminal\r\n\r\n", .{ hex_id, role_name, target.host(), target.port, key }) catch return error.BadRelay;
     try writeAll(pipe, text, wait);
 
-    var hdr: [1024]u8 = undefined;
+    // One byte at a time. A larger read would swallow the WebSocket frame
+    // that the relay sends immediately after the headers.
+    var hdr: [8192]u8 = undefined;
     var n: usize = 0;
     while (n + 1 < hdr.len) {
         try readExact(pipe, hdr[n .. n + 1], wait);
         n += 1;
         if (n >= 4 and std.mem.endsWith(u8, hdr[0..n], "\r\n\r\n")) break;
-    } else return error.Closed;
+    } else {
+        noteHttp("http header truncated", hdr[0..@min(n, hdr.len)]);
+        return error.Closed;
+    }
     const head = hdr[0..n];
-    const line_end = std.mem.indexOf(u8, head, "\r\n") orelse return error.Closed;
+    const line_end = std.mem.indexOf(u8, head, "\r\n") orelse {
+        setDetail("http status missing");
+        return error.Closed;
+    };
     const status = head[0..line_end];
-    if (std.mem.indexOf(u8, status, " 101 ") == null) return error.RelayRejected;
-    const mark = "Sec-WebSocket-Accept: ";
-    const at = std.mem.indexOf(u8, head, mark) orelse return error.RelayRejected;
-    const rest = head[at + mark.len ..];
-    const end = std.mem.indexOf(u8, rest, "\r\n") orelse return error.RelayRejected;
-    const got = std.mem.trim(u8, rest[0..end], " \t");
+    if (std.mem.indexOf(u8, status, " 101 ") == null) {
+        var peek: [64]u8 = undefined;
+        var pn: usize = 0;
+        while (pn < peek.len) {
+            const nread = pipe.readSome(peek[pn..]) catch break;
+            if (nread == 0) break;
+            pn += nread;
+        }
+        var shown: [64]u8 = undefined;
+        for (peek[0..pn], 0..) |b, i| shown[i] = if (b >= 32 and b < 127) b else '.';
+        const req_line_end = std.mem.indexOf(u8, text, "\r\n") orelse text.len;
+        setDetailFmt("{s} body {s} req {s}", .{ status, shown[0..pn], text[0..req_line_end] });
+        return error.RelayRejected;
+    }
+    const got = headerValue(head, "Sec-WebSocket-Accept") orelse {
+        noteHttp("missing accept", status);
+        return error.RelayRejected;
+    };
     var expect: [28]u8 = undefined;
     acceptKey(&key, &expect);
-    if (!std.mem.eql(u8, got, &expect)) return error.RelayRejected;
+    if (!std.mem.eql(u8, got, &expect)) {
+        setDetail("websocket accept mismatch");
+        return error.RelayRejected;
+    }
 }
 
 const Pump = struct {
@@ -348,22 +429,31 @@ fn writeFd(fd: io.Fd, data: []const u8) bool {
 /// `wait_peer` is the host: it blocks until cancelled or the guest arrives.
 pub fn open(url: []const u8, role: relay.Role, id: *const [8]u8, cancel: ?netdial.CancelFn, wait_peer: bool) Error!std.net.Stream {
     io.ensureSockets();
+    io.ignoreSigpipe();
+    detail_len = 0;
     const target = try parseUrl(url);
     const fd = netdial.connect(target.host(), target.port, 15000, cancel) catch |err| return mapDial(err);
     var tcp = std.net.Stream{ .handle = fd };
     var tcp_owned = true;
     errdefer if (tcp_owned) tcp.close();
     link_mod.setNoDelay(tcp);
+    io.armSocket(tcp.handle);
 
     var tls_ptr: ?*std.crypto.tls.Client = null;
     errdefer if (tcp_owned and tls_ptr != null) std.heap.page_allocator.destroy(tls_ptr.?);
     if (target.tls) {
         var bundle = std.crypto.Certificate.Bundle{};
-        bundle.rescan(std.heap.page_allocator) catch return error.Tls;
+        certs.scan(&bundle, std.heap.page_allocator) catch |err| {
+            setDetailFmt("certificates {s}", .{@errorName(err)});
+            return error.Tls;
+        };
         defer bundle.deinit(std.heap.page_allocator);
         const t = std.heap.page_allocator.create(std.crypto.tls.Client) catch return error.OutOfMemory;
         tls_ptr = t;
-        t.* = std.crypto.tls.Client.init(tcp, bundle, target.host()) catch return error.Tls;
+        t.* = std.crypto.tls.Client.init(tcp, bundle, target.host()) catch |err| {
+            setDetailFmt("TLS {s}", .{@errorName(err)});
+            return error.Tls;
+        };
         t.allow_truncation_attacks = true;
     }
     io.setNonBlocking(tcp.handle) catch {};

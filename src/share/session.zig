@@ -28,7 +28,7 @@ const Dial = struct {
     mu: std.Thread.Mutex = .{},
     done: bool = false,
     stream: ?std.net.Stream = null,
-    err: [48]u8 = [_]u8{0} ** 48,
+    err: [160]u8 = [_]u8{0} ** 160,
     err_len: usize = 0,
     thread: std.Thread = undefined,
     joined: bool = false,
@@ -89,10 +89,12 @@ const Dial = struct {
             const opened: ?std.net.Stream = switch (kind) {
                 .direct => null,
                 .tcp => self.openTcp(cancel) catch |err| {
+                    self.remember(err);
                     if (!self.retry(err, cancel)) return;
                     continue;
                 },
                 .ws => ws_relay.open(self.ws_url[0..self.ws_url_len], self.role, &self.id, cancel, self.wait_peer) catch |err| {
+                    self.remember(err);
                     if (!self.retry(err, cancel)) return;
                     continue;
                 },
@@ -131,12 +133,29 @@ const Dial = struct {
         return stream;
     }
 
-    fn fail(self: *Dial, err: anyerror) void {
-        const name = @errorName(err);
+    /// Keep the real reason (TLS alert, connect errno, certificate load).
+    /// A hosting dial keeps retrying; the first failure is printed and the
+    /// LAN listener stays up. Giving up sets `done` via `fail`.
+    fn remember(self: *Dial, err: anyerror) void {
+        const detail = ws_relay.takeDetail();
+        const text: []const u8 = if (detail.len > 0) detail else @errorName(err);
         self.mu.lock();
-        const n = @min(name.len, self.err.len);
-        @memcpy(self.err[0..n], name[0..n]);
+        const first = self.err_len == 0;
+        const n = @min(text.len, self.err.len);
+        @memcpy(self.err[0..n], text[0..n]);
         self.err_len = n;
+        self.mu.unlock();
+        if (!first) return;
+        if (self.wait_peer) {
+            std.debug.print("share: relay failed ({s}); hosting on the LAN only\n", .{text});
+        } else {
+            std.debug.print("share: relay failed ({s})\n", .{text});
+        }
+    }
+
+    fn fail(self: *Dial, err: anyerror) void {
+        self.remember(err);
+        self.mu.lock();
         self.done = true;
         self.mu.unlock();
     }
@@ -230,7 +249,7 @@ pub const Host = struct {
     relay_tcp_host: [invite.max_relay]u8 = [_]u8{0} ** invite.max_relay,
     relay_tcp_host_len: usize = 0,
     relay_tcp_port: u16 = 0,
-    fail: [48]u8 = [_]u8{0} ** 48,
+    fail: [160]u8 = [_]u8{0} ** 160,
     fail_len: usize = 0,
 
     pub fn deinit(self: *Host) void {
@@ -287,8 +306,10 @@ pub const Host = struct {
         }
 
         const addr = std.net.Address.parseIp(bind_ip, port_n) catch return error.BadAddress;
+        io.ignoreSigpipe();
         if (addr.listen(.{ .reuse_address = true, .force_nonblocking = true })) |listener| {
             self.listener = listener;
+            io.armSocket(listener.stream.handle);
             self.port_n = listener.listen_address.getPort();
         } else |err| {
             if (mode.kind == .off) return err;
@@ -378,6 +399,8 @@ pub const Host = struct {
                     self.phase = .closed;
                     return;
                 }
+                // The dial thread already printed the reason. The LAN socket
+                // keeps accepting. A relay error must not end the share.
             } else if (d.take()) |stream| {
                 d.finish(self.allocator);
                 self.dial = null;
@@ -525,7 +548,7 @@ pub const Guest = struct {
     grid: std.ArrayList(u8),
     dirty: bool = false,
     kicked: bool = false,
-    fail: [48]u8 = [_]u8{0} ** 48,
+    fail: [160]u8 = [_]u8{0} ** 160,
     fail_len: usize = 0,
 
     pub fn deinit(self: *Guest) void {
@@ -538,6 +561,7 @@ pub const Guest = struct {
 
     /// Parse `code` (or a deathterminal:// link) and dial in the background.
     pub fn start(allocator: std.mem.Allocator, code: []const u8) !*Guest {
+        io.ignoreSigpipe();
         var owned = try invite.decodeOwned(allocator, code);
         defer owned.deinit();
         const view = owned.view();
@@ -900,6 +924,100 @@ test "guest uses the relay when the LAN port does not answer" {
     try std.testing.expect(mock.forwardedLen() > 0);
     try std.testing.expect(!mock.contains(&secret));
     try std.testing.expect(mock.guestCount() >= 1);
+}
+
+fn hostedRelayReachable() bool {
+    var stream = std.net.tcpConnectToHost(std.testing.allocator, "relay.youneek.xyz", 443) catch return false;
+    stream.close();
+    return true;
+}
+
+fn waitOpenFor(host: *Host, guest: *Guest, rounds: usize, step_ms: u64) !void {
+    var i: usize = 0;
+    while (i < rounds and (host.phase != .open or guest.phase != .open)) : (i += 1) {
+        try host.tick();
+        try guest.tick();
+        if (guest.failure()) |why| {
+            std.debug.print("join failed: {s}\n", .{why});
+            // The TCP port answered, but the edge did not hand the request to
+            // the Worker (managed challenge, or a 404 generated at the edge).
+            // A Worker 404 includes the body "not found" and still fails.
+            if (std.mem.indexOf(u8, why, "not found") == null and
+                (std.mem.indexOf(u8, why, "403") != null or std.mem.indexOf(u8, why, "404") != null))
+            {
+                return error.EdgeChallenge;
+            }
+            return error.JoinFailed;
+        }
+        if (host.phase == .closed) return error.JoinFailed;
+        std.time.sleep(step_ms * std.time.ns_per_ms);
+    }
+    try pumpBoth(host, guest);
+    try std.testing.expectEqual(Phase.open, host.phase);
+    try std.testing.expectEqual(Phase.open, guest.phase);
+}
+
+test "hosted relay: guest sees the screen and types after the grant" {
+    io.ensureSockets();
+    if (!hostedRelayReachable()) return;
+    // 192.0.2.1 is TEST-NET. The guest cannot prefer the LAN, so both sides
+    // meet on the deployed relay. The listener stays on loopback.
+    const host = try Host.listen(std.testing.allocator, "127.0.0.1", 0, "192.0.2.1", "wss://relay.youneek.xyz", null);
+    defer host.deinit();
+    const guest = try Guest.start(std.testing.allocator, host.code);
+    defer guest.deinit();
+    waitOpenFor(host, guest, 400, 50) catch |err| switch (err) {
+        error.EdgeChallenge => return,
+        else => return err,
+    };
+
+    var rowbuf: [msg.wire_len]u8 = undefined;
+    msg.writeCell(&rowbuf, 'R', 0xAABBCC, 0x101010, 0);
+    try host.sendRow(.{
+        .rows = 1,
+        .cols = 1,
+        .cursor_row = 0,
+        .cursor_col = 0,
+        .cursor_on = true,
+        .index = 0,
+        .cells = &rowbuf,
+    });
+    var saw: usize = 0;
+    while (saw < 200 and guest.grid.items.len < msg.wire_len) : (saw += 1) {
+        try host.tick();
+        try guest.tick();
+        std.time.sleep(50 * std.time.ns_per_ms);
+    }
+    try std.testing.expect(guest.grid.items.len >= msg.wire_len);
+    try std.testing.expectEqual(@as(u21, 'R'), msg.readCell(guest.grid.items[0..msg.wire_len]).cp);
+
+    try guest.sendInput("nope");
+    const dropped_before = host.dropped;
+    var dropped: usize = 0;
+    while (dropped < 80 and host.dropped == dropped_before) : (dropped += 1) {
+        try host.tick();
+        try guest.tick();
+        std.time.sleep(50 * std.time.ns_per_ms);
+    }
+    try std.testing.expect(host.dropped > dropped_before);
+    try std.testing.expectEqual(@as(usize, 0), host.input.items.len);
+
+    try host.setControl(true);
+    var grant: usize = 0;
+    while (grant < 80 and guest.access != .control) : (grant += 1) {
+        try host.tick();
+        try guest.tick();
+        std.time.sleep(50 * std.time.ns_per_ms);
+    }
+    try std.testing.expectEqual(Access.control, guest.access);
+    try guest.sendInput("hi\n");
+    var got: usize = 0;
+    while (got < 80 and !std.mem.eql(u8, host.input.items, "hi\n")) : (got += 1) {
+        try host.tick();
+        try guest.tick();
+        std.time.sleep(50 * std.time.ns_per_ms);
+    }
+    try std.testing.expectEqualStrings("hi\n", host.input.items);
 }
 
 test "guest prefers the LAN and does not dial the relay" {

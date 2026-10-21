@@ -163,6 +163,7 @@ pub fn closeSocket(fd: posix.socket_t) void {
 pub fn connectAddress(addr: std.net.Address, deadline_ms: i64, cancel: ?CancelFn) Error!posix.socket_t {
     const fd = posix.socket(addr.any.family, posix.SOCK.STREAM | posix.SOCK.CLOEXEC | posix.SOCK.NONBLOCK, posix.IPPROTO.TCP) catch return error.Unexpected;
     errdefer closeSocket(fd);
+    io.armSocket(fd);
     posix.connect(fd, &addr.any, addr.getOsSockLen()) catch |err| switch (err) {
         error.WouldBlock => {},
         error.ConnectionRefused => return error.Refused,

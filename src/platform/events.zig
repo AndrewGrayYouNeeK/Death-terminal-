@@ -13,6 +13,9 @@ pub const MouseInput = struct {
     x: i32,
     y: i32,
     mods: input.Mods = .{},
+    /// 0: the UI counts clicks with its timer (Win32, X11, Wayland).
+    /// 1, 2, 3+: the backend's click count (Cocoa `clickCount`).
+    clicks: u8 = 0,
 };
 
 pub const Event = union(enum) {

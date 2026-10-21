@@ -1256,6 +1256,15 @@ const Gui = struct {
                 try self.showShare();
                 self.touchAll();
             },
+            .copy => {
+                if (self.share.overlayText()) |t| {
+                    self.window.setClipboard(.clipboard, t);
+                    try fp.ui.setNotice(.info, "Share: invite copied", &.{}, NOTICE_MS, now);
+                    self.touchAll();
+                    return;
+                }
+                if (try fp.ui.handleAction(fp.term, act)) self.touch(fp) else return self.keyFallback(a);
+            },
             .share_copy => {
                 if (self.share.inviteText()) |t| {
                     self.window.setClipboard(.clipboard, t);
@@ -1416,6 +1425,24 @@ const Gui = struct {
 
     fn paneMouse(self: *Gui, p: *Pane, m: events.MouseInput) !void {
         const local = Workspace.localMouse(p, m, self.cellW(), self.cellH());
+        if (p.rect.w > 0 and p.rect.h > 0 and self.share.claims(p.id)) {
+            const cw: i32 = @intCast(self.cellW());
+            const ch: i32 = @intCast(self.cellH());
+            if (cw > 0 and ch > 0) {
+                const col: u16 = @intCast(std.math.clamp(@divFloor(local.x, cw), 0, @as(i32, p.rect.w) - 1));
+                const row: u16 = @intCast(std.math.clamp(@divFloor(local.y, ch), 0, @as(i32, p.rect.h) - 1));
+                if (self.share.feedHostOverlay(col, row, p.rect.w, p.rect.h, local.action, local.button, local.clicks)) {
+                    p.ui.sel = null;
+                    p.ui.dragging = false;
+                    if (self.share.takeOverlayCopy()) |t| {
+                        self.window.setClipboard(.clipboard, t);
+                        try p.ui.setNotice(.info, "Share: invite copied", &.{}, NOTICE_MS, std.time.milliTimestamp());
+                    }
+                    self.touch(p);
+                    return;
+                }
+            }
+        }
         if (try p.ui.handleMouse(p.term, local, self.cellW(), self.cellH(), std.time.milliTimestamp())) {
             self.touch(p);
         } else {

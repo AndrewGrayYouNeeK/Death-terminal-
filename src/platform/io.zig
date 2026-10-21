@@ -115,16 +115,48 @@ pub fn setNonBlocking(fd: Fd) !void {
     if (ws2.ioctlsocket(fd, ws2.FIONBIO, &on) != 0) return error.Unexpected;
 }
 
-/// Connected pair of loopback TCP sockets (Windows has no socketpair()).
+/// Connected pair of loopback sockets (Windows has no socketpair()).
 /// Both ends are blocking; Nagle is off so single bytes go out at once.
+///
+/// Darwin has no SOCK_CLOEXEC. Zig's flag is a fake bit (`1 << 15`) that
+/// `socket(2)` strips and `socketpair(2)` does not, so passing it makes
+/// the relay's byte pipe fail with EINVAL. Close-on-exec is set afterwards.
 pub fn socketPair() ![2]Fd {
     if (!is_windows) {
         var fds: [2]posix.fd_t = undefined;
-        const rc = std.c.socketpair(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0, &fds);
+        const typ: u32 = if (builtin.target.isDarwin()) posix.SOCK.STREAM else posix.SOCK.STREAM | posix.SOCK.CLOEXEC;
+        const rc = std.c.socketpair(posix.AF.UNIX, typ, 0, &fds);
         if (rc != 0) return error.SocketPairFailed;
+        armSocket(fds[0]);
+        armSocket(fds[1]);
         return fds;
     }
     return Win.socketPair();
+}
+
+/// Darwin: SIGPIPE kills the process on a write to a closed socket (there is
+/// no MSG_NOSIGNAL). SO_NOSIGPIPE makes that write return EPIPE instead.
+/// Also sets close-on-exec. Other systems already get both from the socket
+/// flags the caller passed.
+pub fn armSocket(fd: Fd) void {
+    if (is_windows or isNone(fd)) return;
+    if (comptime builtin.target.isDarwin()) {
+        const one: c_int = 1;
+        _ = std.posix.system.setsockopt(fd, posix.SOL.SOCKET, posix.SO.NOSIGPIPE, std.mem.asBytes(&one).ptr, @sizeOf(c_int));
+        _ = posix.fcntl(fd, posix.F.SETFD, posix.FD_CLOEXEC) catch {};
+    }
+}
+
+/// Ignore SIGPIPE for the process. A relay write must not abort `--share`.
+pub fn ignoreSigpipe() void {
+    if (comptime builtin.target.isDarwin()) {
+        const action = posix.Sigaction{
+            .handler = .{ .handler = posix.SIG.IGN },
+            .mask = posix.empty_sigset,
+            .flags = 0,
+        };
+        posix.sigaction(posix.SIG.PIPE, &action, null) catch {};
+    }
 }
 
 /// Windows: start Winsock once (std.net does it lazily too).

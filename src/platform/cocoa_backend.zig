@@ -87,6 +87,12 @@ pub const State = struct {
     key_taken: bool = false,
     /// Main-menu key equivalents cleared so Hide/Quit cannot swallow Cmd+Shift+letter.
     menu_disarmed: bool = false,
+    /// Last mouse event already given to selection. The poll loop and the
+    /// view's mouseDown:/mouseDragged:/mouseUp: can both see one NSEvent.
+    mouse_stamp: f64 = -1,
+    mouse_type: u64 = 0,
+    mouse_clicks: i64 = -1,
+    mouse_seen: bool = false,
 };
 
 /// The one window. View callbacks have no ivar slot (no SDK).
@@ -442,7 +448,7 @@ fn handleEvent(st: *State, ev: Id) void {
         },
         NSEventType.key_up, NSEventType.flags_changed => return,
         NSEventType.left_down, NSEventType.left_up, NSEventType.right_down, NSEventType.right_up, NSEventType.other_down, NSEventType.other_up, NSEventType.mouse_moved, NSEventType.left_dragged, NSEventType.right_dragged, NSEventType.other_dragged => {
-            if (msg(Id, ev, "window", .{}) == st.window) handleMouse(st, ev, ty);
+            if (msg(Id, ev, "window", .{}) == st.window and claimMouse(st, ev)) handleMouse(st, ev, ty);
         },
         NSEventType.scroll_wheel => {
             if (msg(Id, ev, "window", .{}) == st.window) handleScroll(st, ev);
@@ -483,7 +489,12 @@ fn matchKey(st: *State, ev: Id, via: KeyVia) bool {
     // virtual key code in that case; see `keysymOf`.
     const chars = objc.utf8(msg(Id, ev, "charactersIgnoringModifiers", .{}));
 
-    if (keysymOf(code, chars)) |sym| {
+        if (keysymOf(code, chars)) |sym| {
+        if (macStandardEdit(sym, mac)) |action| {
+            logCommand(ev, via, mac, sym, @tagName(action));
+            st.queue.pushAction(.{ .action = action, .sym = sym, .mods = modsOf(flags) });
+            return true;
+        }
         const plan = macMatchPlan(sym, chars, mac);
         if (plan.quit) {
             logCommand(ev, via, mac, sym, "quit");
@@ -563,7 +574,8 @@ fn viewAcceptsFirstResponder(_: Id, _: objc.Sel) callconv(.C) objc.BOOL {
     return objc.YES;
 }
 
-/// Command chords are delivered here, not to keyDown:.
+/// Command chords are delivered here, not to keyDown:. Cmd+C, Cmd+V and
+/// Cmd+A are matched in `macStandardEdit` before any Ctrl+Shift binding.
 fn viewKeyEquivalent(_: Id, _: objc.Sel, ev: Id) callconv(.C) objc.BOOL {
     const st = cocoa_key_state orelse return objc.NO;
     if (ev == null) return objc.NO;
@@ -578,6 +590,43 @@ fn viewKeyDown(_: Id, _: objc.Sel, ev: Id) callconv(.C) void {
     _ = deliverKey(st, ev, .key_down);
 }
 
+/// AppKit's `sendEvent:` for a mouse-down runs a tracking loop and delivers
+/// `mouseDragged:` / `mouseUp:` to the view. Those events never come back
+/// out of `nextEventMatchingMask`. Without these methods the drag and the
+/// button-up are dropped, so a press starts an inactive selection and
+/// nothing highlights.
+fn viewMouse(_: Id, _: objc.Sel, ev: Id) callconv(.C) void {
+    const st = cocoa_key_state orelse return;
+    if (ev == null) return;
+    if (!claimMouse(st, ev)) return;
+    handleMouse(st, ev, msg(u64, ev, "type", .{}));
+}
+
+/// Selectors installed on `DTContentView`. The test below checks this list
+/// so a mouse or Command-key method cannot be dropped from the class.
+const content_selectors = [_]struct { name: [:0]const u8, types: [:0]const u8 }{
+    .{ .name = "acceptsFirstResponder", .types = "c@:" },
+    .{ .name = "canBecomeKeyView", .types = "c@:" },
+    .{ .name = "keyDown:", .types = "v@:@" },
+    .{ .name = "performKeyEquivalent:", .types = "c@:@" },
+    .{ .name = "mouseDown:", .types = "v@:@" },
+    .{ .name = "mouseDragged:", .types = "v@:@" },
+    .{ .name = "mouseUp:", .types = "v@:@" },
+    .{ .name = "rightMouseDown:", .types = "v@:@" },
+    .{ .name = "rightMouseDragged:", .types = "v@:@" },
+    .{ .name = "rightMouseUp:", .types = "v@:@" },
+    .{ .name = "otherMouseDown:", .types = "v@:@" },
+    .{ .name = "otherMouseDragged:", .types = "v@:@" },
+    .{ .name = "otherMouseUp:", .types = "v@:@" },
+};
+
+fn contentImp(name: [:0]const u8) *const anyopaque {
+    if (std.mem.eql(u8, name, "acceptsFirstResponder") or std.mem.eql(u8, name, "canBecomeKeyView")) return @ptrCast(&viewAcceptsFirstResponder);
+    if (std.mem.eql(u8, name, "keyDown:")) return @ptrCast(&viewKeyDown);
+    if (std.mem.eql(u8, name, "performKeyEquivalent:")) return @ptrCast(&viewKeyEquivalent);
+    return @ptrCast(&viewMouse);
+}
+
 var content_class_ready = false;
 
 fn ensureContentClass() !void {
@@ -588,10 +637,10 @@ fn ensureContentClass() !void {
     const super = objc.class("NSView");
     if (super == null) return error.NoWindow;
     const cls = objc.allocateClassPair(super, "DTContentView") orelse return error.NoWindow;
-    const ok = objc.addMethod(cls, "acceptsFirstResponder", @ptrCast(&viewAcceptsFirstResponder), "c@:") and
-        objc.addMethod(cls, "canBecomeKeyView", @ptrCast(&viewAcceptsFirstResponder), "c@:") and
-        objc.addMethod(cls, "keyDown:", @ptrCast(&viewKeyDown), "v@:@") and
-        objc.addMethod(cls, "performKeyEquivalent:", @ptrCast(&viewKeyEquivalent), "c@:@");
+    var ok = true;
+    for (content_selectors) |m| {
+        ok = objc.addMethod(cls, m.name, contentImp(m.name), m.types) and ok;
+    }
     objc.registerClassPair(cls);
     if (!ok) return error.NoWindow;
     content_class_ready = true;
@@ -618,13 +667,50 @@ fn clearMenuKeys(menu: Id, depth: u8) void {
     }
 }
 
+/// True the first time this NSEvent is seen. `timestamp` plus type plus
+/// clickCount identifies it; AppKit reuses event objects, so the pointer
+/// is not an identity.
+fn claimMouse(st: *State, ev: Id) bool {
+    const stamp = msg(f64, ev, "timestamp", .{});
+    const ty = msg(u64, ev, "type", .{});
+    const clicks = msg(i64, ev, "clickCount", .{});
+    if (st.mouse_seen and stamp == st.mouse_stamp and ty == st.mouse_type and clicks == st.mouse_clicks) return false;
+    st.mouse_seen = true;
+    st.mouse_stamp = stamp;
+    st.mouse_type = ty;
+    st.mouse_clicks = clicks;
+    return true;
+}
+
+const ViewPixels = struct { x: i32, y: i32, inside: bool };
+
+fn mouseLocation(st: *State, ev: Id) ViewPixels {
+    var loc = msg(objc.NSPoint, ev, "locationInWindow", .{});
+    if (st.view == null) return .{ .x = 0, .y = 0, .inside = false };
+    // Window points include the title bar. The view's own bounds do not.
+    loc = msg(objc.NSPoint, st.view, "convertPoint:fromView:", .{ loc, @as(Id, null) });
+    const bounds = msg(objc.NSRect, st.view, "bounds", .{});
+    return viewPixels(loc.x, loc.y, bounds.size.height, st.scale);
+}
+
+/// Flip a view-local point into physical pixels. `inside` is false in the
+/// title bar (y above the content view).
+fn viewPixels(x_pt: f64, y_pt: f64, height: f64, scale: f64) ViewPixels {
+    const s = if (scale < 1) 1 else scale;
+    return .{
+        .x = @intFromFloat(@floor(x_pt * s)),
+        .y = @intFromFloat(@floor((height - y_pt) * s)),
+        .inside = y_pt >= 0 and y_pt <= height,
+    };
+}
+
 fn handleMouse(st: *State, ev: Id, ty: u64) void {
-    const loc = msg(objc.NSPoint, ev, "locationInWindow", .{});
-    const frame = msg(objc.NSRect, st.view, "frame", .{});
-    const s: f64 = st.scale;
-    const x: i32 = @intFromFloat(@floor(loc.x * s));
-    const y: i32 = @intFromFloat(@floor((frame.size.height - loc.y) * s));
+    const loc = mouseLocation(st, ev);
+    const x = loc.x;
+    const y = loc.y;
     const mods = modsOf(msg(u64, ev, "modifierFlags", .{}));
+    const raw_clicks = msg(i64, ev, "clickCount", .{});
+    const clicks: u8 = if (raw_clicks <= 0) 1 else if (raw_clicks > 3) 3 else @intCast(raw_clicks);
     const button: input.MouseButton = switch (ty) {
         NSEventType.left_down, NSEventType.left_up, NSEventType.left_dragged => .left,
         NSEventType.right_down, NSEventType.right_up, NSEventType.right_dragged => .right,
@@ -633,13 +719,13 @@ fn handleMouse(st: *State, ev: Id, ty: u64) void {
     };
     switch (ty) {
         NSEventType.left_down, NSEventType.right_down, NSEventType.other_down => {
-            if (y < 0) return; // title bar
+            if (!loc.inside) return; // title bar, or outside the content view
             st.held = button;
-            st.queue.pushMouse(.{ .action = .press, .button = button, .x = x, .y = y, .mods = mods });
+            st.queue.pushMouse(.{ .action = .press, .button = button, .x = x, .y = y, .mods = mods, .clicks = clicks });
         },
         NSEventType.left_up, NSEventType.right_up, NSEventType.other_up => {
             st.held = .none;
-            st.queue.pushMouse(.{ .action = .release, .button = button, .x = x, .y = y, .mods = mods });
+            st.queue.pushMouse(.{ .action = .release, .button = button, .x = x, .y = y, .mods = mods, .clicks = clicks });
         },
         else => st.queue.pushMouse(.{ .action = .motion, .button = st.held, .x = x, .y = y, .mods = mods }),
     }
@@ -909,6 +995,33 @@ fn commandQuits(chars: []const u8, flags: u64) bool {
     return true;
 }
 
+test "cocoa: content view takes mouse and Command-key events" {
+    const need = [_][]const u8{
+        "acceptsFirstResponder",
+        "mouseDown:",
+        "mouseDragged:",
+        "mouseUp:",
+        "performKeyEquivalent:",
+    };
+    for (need) |name| {
+        var found = false;
+        for (content_selectors) |m| {
+            if (std.mem.eql(u8, m.name, name)) found = true;
+        }
+        try std.testing.expect(found);
+    }
+}
+
+test "cocoa: view pixels flip Y and apply the backing scale" {
+    const p = viewPixels(10, 20, 100, 2);
+    try std.testing.expectEqual(@as(i32, 20), p.x);
+    try std.testing.expectEqual(@as(i32, 160), p.y);
+    try std.testing.expect(p.inside);
+    const title = viewPixels(0, 120, 100, 1);
+    try std.testing.expect(!title.inside);
+    try std.testing.expect(title.y < 0);
+}
+
 test "cocoa: Cmd+Q quits; Cmd+Shift+Q does not" {
     try std.testing.expect(commandQuits("q", Flag.command));
     try std.testing.expect(commandQuits("q", Flag.command | Flag.control));
@@ -919,8 +1032,22 @@ test "cocoa: Cmd+Q quits; Cmd+Shift+Q does not" {
 
 const MacHit = struct { quit: bool = false, action: ?events.Action = null };
 
+/// Bare Command (and Command+Shift) for the Edit menu. These are not
+/// "try Ctrl+Shift first": Cmd+C copies, Cmd+V pastes, Cmd+A selects all
+/// even when the binding table only has Ctrl+Shift+Alt+A for select-all.
+fn macStandardEdit(sym: u32, flags: MacFlags) ?events.Action {
+    if (!flags.command or flags.option or flags.control) return null;
+    return switch (sym) {
+        'c' => .copy,
+        'v' => .paste,
+        'a' => .select_all,
+        else => null,
+    };
+}
+
 fn resolveMac(b: *const events.Bindings, code: u16, chars: []const u8, flags: MacFlags) MacHit {
     const sym = keysymOf(code, chars) orelse return .{};
+    if (macStandardEdit(sym, flags)) |a| return .{ .action = a };
     const plan = macMatchPlan(sym, chars, flags);
     if (plan.quit) return .{ .quit = true };
     for (plan.mods) |slot| if (slot) |m| if (b.match(sym, m)) |a| return .{ .action = a };
@@ -987,6 +1114,11 @@ test "cocoa: mac chords for share, ask, and time travel" {
     try std.testing.expectEqual(events.Action.new_tab, resolveMac(&b, 0x11, "T", cmd_shift).action.?);
     try std.testing.expectEqual(events.Action.time_travel, resolveMac(&b, 0x11, "\x14", .{ .control = true, .option = true }).action.?);
     try std.testing.expectEqual(events.Action.copy, resolveMac(&b, 0x08, "c", cmd).action.?);
+    try std.testing.expectEqual(events.Action.paste, resolveMac(&b, 0x09, "v", cmd).action.?);
+    try std.testing.expectEqual(events.Action.select_all, resolveMac(&b, 0x00, "a", cmd).action.?);
+    // Command+Shift still edits. It is not a different chord from Command.
+    try std.testing.expectEqual(events.Action.paste, resolveMac(&b, 0x09, "V", cmd_shift).action.?);
+    try std.testing.expectEqual(events.Action.select_all, resolveMac(&b, 0x00, "A", cmd_shift).action.?);
 }
 
 test "cocoa: Cmd+Shift+letter reaches the matcher through performKeyEquivalent" {
@@ -1001,6 +1133,8 @@ test "cocoa: Cmd+Shift+letter reaches the matcher through performKeyEquivalent" 
     try std.testing.expectEqual(KeyDelivery.key_equivalent, keyDelivery(cmd_shift, 'q'));
     try std.testing.expectEqual(KeyDelivery.key_equivalent, keyDelivery(cmd_opt, 't'));
     try std.testing.expectEqual(KeyDelivery.key_equivalent, keyDelivery(cmd, 'c'));
+    try std.testing.expectEqual(KeyDelivery.key_equivalent, keyDelivery(cmd, 'v'));
+    try std.testing.expectEqual(KeyDelivery.key_equivalent, keyDelivery(cmd, 'a'));
     try std.testing.expectEqual(KeyDelivery.key_equivalent, keyDelivery(cmd, 'q'));
     try std.testing.expectEqual(KeyDelivery.system, keyDelivery(cmd, 'h'));
     try std.testing.expectEqual(KeyDelivery.system, keyDelivery(cmd_opt, 'h'));
