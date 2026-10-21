@@ -25,7 +25,10 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libvulkan-dev libx11-dev libwayland-dev wayland-protocols \
+          # mesa-vulkan-drivers ships lavapipe. Without an ICD, vkCreateInstance
+          # returns VK_ERROR_INCOMPATIBLE_DRIVER (-9) and the instance test fails.
+          # CI already installs this package.
+          sudo apt-get install -y pkg-config libvulkan-dev mesa-vulkan-drivers libx11-dev libwayland-dev wayland-protocols \
             libxkbcommon-dev libfreetype-dev libharfbuzz-dev libfontconfig-dev libssl-dev file
       - name: Resolve version
         run: |
