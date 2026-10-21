@@ -5,7 +5,8 @@
 #
 # <stage-dir> is a `zig build release -Dtarget=aarch64-macos` (or x86_64)
 # tree: zig-out/release/deathterminal-<ver>-<arch>-macos. Produces
-# <out-dir>/DeathTerminal.app and DeathTerminal-<ver>-<arch>.zip.
+# <out-dir>/DeathTerminal.app, DeathTerminal-<ver>-<arch>.zip and
+# DeathTerminal-<ver>-<arch>.dmg (see make-dmg.sh).
 #
 # Vulkan on macOS goes through MoltenVK. If MOLTENVK_DIR (containing
 # libMoltenVK.dylib and optionally libvulkan.1.dylib) is set, they are copied
@@ -17,9 +18,11 @@ STAGE=$(cd "${1:?stage dir}" && pwd)
 OUT=$(mkdir -p "${2:?out dir}" && cd "$2" && pwd)
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
-NAME=$(basename "$STAGE")              # deathterminal-0.1.0-aarch64-macos
-VER=$(echo "$NAME" | cut -d- -f2)
-ARCH=$(echo "$NAME" | cut -d- -f3)
+NAME=$(basename "$STAGE")              # deathterminal-<ver>-<arch>-macos
+base=${NAME#deathterminal-}
+rest=${base%-*}                        # drop the os
+ARCH=${rest##*-}
+VER=${rest%-$ARCH}
 APP="$OUT/DeathTerminal.app"
 
 rm -rf "$APP"
@@ -53,10 +56,13 @@ if command -v iconutil >/dev/null; then
   iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/deathterminal.icns"
 fi
 
-# Ad-hoc signature so Gatekeeper on Apple silicon will run it locally.
+# Ad-hoc signature only. A Developer ID signature and notarization are
+# TODO; CI has no Apple secrets (packaging/SIGNING.md).
 command -v codesign >/dev/null && codesign --force --deep --sign - "$APP" || true
 
 (cd "$OUT" && rm -f "DeathTerminal-$VER-$ARCH.zip" && \
   if command -v ditto >/dev/null; then ditto -c -k --keepParent DeathTerminal.app "DeathTerminal-$VER-$ARCH.zip"; \
   else python3 -c "import shutil; shutil.make_archive('DeathTerminal-$VER-$ARCH', 'zip', '.', 'DeathTerminal.app')"; fi)
+bash "$HERE/make-dmg.sh" "$APP" "$OUT/DeathTerminal-$VER-$ARCH.dmg"
+python3 "$ROOT/packaging/archive.py" "$OUT" "$(basename "$STAGE")" sums >/dev/null
 echo "$APP"

@@ -47,16 +47,16 @@ fn addFontLibs(b: *std.Build, step: *std.Build.Step.Compile, target: std.Build.R
     const ft = b.lazyDependency("freetype", .{}) orelse return;
     const hb = b.lazyDependency("harfbuzz", .{}) orelse return;
     const ft_srcs = [_][]const u8{
-        "src/autofit/autofit.c", "src/base/ftbase.c",     "src/base/ftbbox.c",     "src/base/ftbdf.c",
-        "src/base/ftbitmap.c",   "src/base/ftcid.c",      "src/base/ftfstype.c",   "src/base/ftgasp.c",
-        "src/base/ftglyph.c",    "src/base/ftgxval.c",    "src/base/ftinit.c",     "src/base/ftmm.c",
-        "src/base/ftotval.c",    "src/base/ftpatent.c",   "src/base/ftpfr.c",      "src/base/ftstroke.c",
-        "src/base/ftsynth.c",    "src/base/fttype1.c",    "src/base/ftwinfnt.c",   "src/base/ftsystem.c",
-        "src/base/ftdebug.c",    "src/bdf/bdf.c",         "src/cache/ftcache.c",   "src/cff/cff.c",
-        "src/cid/type1cid.c",    "src/gzip/ftgzip.c",     "src/lzw/ftlzw.c",       "src/pcf/pcf.c",
-        "src/pfr/pfr.c",         "src/psaux/psaux.c",     "src/pshinter/pshinter.c", "src/psnames/psnames.c",
-        "src/raster/raster.c",   "src/sdf/sdf.c",         "src/sfnt/sfnt.c",       "src/smooth/smooth.c",
-        "src/svg/svg.c",         "src/truetype/truetype.c", "src/type1/type1.c",   "src/type42/type42.c",
+        "src/autofit/autofit.c", "src/base/ftbase.c",       "src/base/ftbbox.c",       "src/base/ftbdf.c",
+        "src/base/ftbitmap.c",   "src/base/ftcid.c",        "src/base/ftfstype.c",     "src/base/ftgasp.c",
+        "src/base/ftglyph.c",    "src/base/ftgxval.c",      "src/base/ftinit.c",       "src/base/ftmm.c",
+        "src/base/ftotval.c",    "src/base/ftpatent.c",     "src/base/ftpfr.c",        "src/base/ftstroke.c",
+        "src/base/ftsynth.c",    "src/base/fttype1.c",      "src/base/ftwinfnt.c",     "src/base/ftsystem.c",
+        "src/base/ftdebug.c",    "src/bdf/bdf.c",           "src/cache/ftcache.c",     "src/cff/cff.c",
+        "src/cid/type1cid.c",    "src/gzip/ftgzip.c",       "src/lzw/ftlzw.c",         "src/pcf/pcf.c",
+        "src/pfr/pfr.c",         "src/psaux/psaux.c",       "src/pshinter/pshinter.c", "src/psnames/psnames.c",
+        "src/raster/raster.c",   "src/sdf/sdf.c",           "src/sfnt/sfnt.c",         "src/smooth/smooth.c",
+        "src/svg/svg.c",         "src/truetype/truetype.c", "src/type1/type1.c",       "src/type42/type42.c",
         "src/winfonts/winfnt.c",
     };
     step.addIncludePath(ft.path("include"));
@@ -180,18 +180,84 @@ fn addApp(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin
     addShellIntegration(b, exe);
     addVersion(b, exe, version);
     if (target.result.os.tag == .windows) {
-        // Icon + version info (packaging/windows/deathterminal.rc).
-        exe.addWin32ResourceFile(.{ .file = b.path("packaging/windows/deathterminal.rc") });
+        // Icon + version info. Generated so `-Dversion` reaches the exe
+        // (packaging/windows/deathterminal.rc is the checked-in 0.1.0 copy).
+        exe.addWin32ResourceFile(.{ .file = winResource(b, version) });
         // GUI binary without a console window would hide headless mode;
         // keep the console subsystem (Windows Terminal friendly).
     }
     return exe;
 }
 
+/// `0.1.0` -> `0,1,0,0`. A leading non-numeric suffix stops the parse.
+fn commaVersion(b: *std.Build, version: []const u8) []const u8 {
+    var nums = [4]u32{ 0, 0, 0, 0 };
+    var part: usize = 0;
+    var n: u32 = 0;
+    var saw = false;
+    for (version) |c| {
+        if (c >= '0' and c <= '9') {
+            saw = true;
+            n = n * 10 + (c - '0');
+        } else if (c == '.' and part < 3) {
+            nums[part] = n;
+            part += 1;
+            n = 0;
+            saw = false;
+        } else break;
+    }
+    if (saw and part < 4) nums[part] = n;
+    return b.fmt("{d},{d},{d},{d}", .{ nums[0], nums[1], nums[2], nums[3] });
+}
+
+fn winResource(b: *std.Build, version: []const u8) std.Build.LazyPath {
+    // The icon path has to be relative. zig's rc compiler treats a leading
+    // "/" as a command-line switch, so an absolute path fails with FileNotFound.
+    const filever = commaVersion(b, version);
+    const wf = b.addWriteFiles();
+    _ = wf.addCopyFile(b.path("packaging/windows/deathterminal.ico"), "deathterminal.ico");
+    const rc = b.fmt(
+        \\#include <winver.h>
+        \\
+        \\1 ICON "deathterminal.ico"
+        \\
+        \\VS_VERSION_INFO VERSIONINFO
+        \\FILEVERSION {s}
+        \\PRODUCTVERSION {s}
+        \\FILEFLAGSMASK 0x3fL
+        \\FILEFLAGS 0x0L
+        \\FILEOS VOS_NT_WINDOWS32
+        \\FILETYPE VFT_APP
+        \\FILESUBTYPE 0x0L
+        \\BEGIN
+        \\    BLOCK "StringFileInfo"
+        \\    BEGIN
+        \\        BLOCK "040904b0"
+        \\        BEGIN
+        \\            VALUE "CompanyName", "DeathTerminal"
+        \\            VALUE "FileDescription", "DeathTerminal - Brutalist Terminal Emulator"
+        \\            VALUE "FileVersion", "{s}"
+        \\            VALUE "InternalName", "deathterminal"
+        \\            VALUE "LegalCopyright", "Public domain (The Unlicense)"
+        \\            VALUE "OriginalFilename", "deathterminal.exe"
+        \\            VALUE "ProductName", "DeathTerminal"
+        \\            VALUE "ProductVersion", "{s}"
+        \\        END
+        \\    END
+        \\    BLOCK "VarFileInfo"
+        \\    BEGIN
+        \\        VALUE "Translation", 0x409, 1200
+        \\    END
+        \\END
+        \\
+    , .{ filever, filever, version, version });
+    return wf.add("deathterminal.rc", rc);
+}
+
 /// `zig build release`: ReleaseFast build staged as
 /// zig-out/release/deathterminal-<version>-<arch>-<os>/ plus a .tar.gz
 /// (.zip for Windows) and SHA256SUMS. `-Dpackages` also builds the Linux
-/// AppImage/.deb/.rpm (packaging/linux/build-packages.sh).
+/// AppImage/.deb/.rpm, the macOS .app/.dmg, or the Windows NSIS installer.
 fn addRelease(b: *std.Build, target: std.Build.ResolvedTarget, version: []const u8) void {
     const t = target.result;
     const os_name = switch (t.os.tag) {
@@ -250,7 +316,7 @@ fn addRelease(b: *std.Build, target: std.Build.ResolvedTarget, version: []const 
     for (files.items) |s| archive.step.dependOn(s);
     step.dependOn(&archive.step);
 
-    const packages = b.option(bool, "packages", "With `release` on Linux: also build AppImage, .deb and .rpm") orelse false;
+    const packages = b.option(bool, "packages", "With `release`: Linux AppImage/.deb/.rpm, macOS .app/.dmg, or the Windows NSIS installer") orelse false;
     if (packages and t.os.tag == .linux) {
         const pkg = b.addSystemCommand(&.{ "bash", "packaging/linux/build-packages.sh" });
         pkg.addArg(version);
@@ -259,6 +325,22 @@ fn addRelease(b: *std.Build, target: std.Build.ResolvedTarget, version: []const 
         pkg.has_side_effects = true;
         pkg.step.dependOn(&archive.step);
         step.dependOn(&pkg.step);
+    }
+    if (packages and t.os.tag == .macos) {
+        const app = b.addSystemCommand(&.{ "bash", "packaging/macos/make-app.sh" });
+        app.addArg(b.getInstallPath(.prefix, stage));
+        app.addArg(b.getInstallPath(.prefix, "release"));
+        app.has_side_effects = true;
+        app.step.dependOn(&archive.step);
+        step.dependOn(&app.step);
+    }
+    if (packages and t.os.tag == .windows) {
+        const setup = b.addSystemCommand(&.{ "bash", "packaging/windows/build-installer.sh" });
+        setup.addArg(b.getInstallPath(.prefix, stage));
+        setup.addArg(b.getInstallPath(.prefix, "release"));
+        setup.has_side_effects = true;
+        setup.step.dependOn(&archive.step);
+        step.dependOn(&setup.step);
     }
 }
 

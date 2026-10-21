@@ -10,7 +10,7 @@ cp packaging/ci/ci.yml packaging/ci/release.yml .github/workflows/
 | File | Installed at | What it does |
 |------|--------------|--------------|
 | `ci.yml` | `.github/workflows/ci.yml` | Linux build + tests with the full dependency list, plus compile-only checks for Windows and macOS |
-| `release.yml` | `.github/workflows/release.yml` | On a `v*` tag: Linux tarball, AppImage, .deb and .rpm; Windows zip; macOS tarballs and `.app` zips; SHA256SUMS; a draft GitHub release |
+| `release.yml` | `.github/workflows/release.yml` | On a `v*` tag: Linux tarball, AppImage, .deb and .rpm; Windows zip and NSIS setup exe; macOS tarball, `.app` zip and `.dmg`; SHA256SUMS; a draft GitHub release. Unsigned (see `packaging/SIGNING.md`) |
 
 ## CI dependencies
 
@@ -27,7 +27,8 @@ cp packaging/ci/ci.yml packaging/ci/release.yml .github/workflows/
   lazy `build.zig.zon` dependencies (network access at build time; Linux
   builds never fetch them).
 - The release job downloads `nfpm` and `appimagetool` (see
-  `packaging/linux/build-packages.sh`).
+  `packaging/linux/build-packages.sh`). The cross job also installs `nsis`
+  (Windows setup exe) and `genisoimage` plus `zlib1g-dev` (macOS `.dmg`).
 
 `release.yml` uses `softprops/action-gh-release@v2` and needs
 `permissions: contents: write`. The release is created as a draft for review.

@@ -109,10 +109,13 @@ See [QUICKSTART.md](QUICKSTART.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for deta
 
 ### Install (0.1.0)
 
-`zig build release` writes versioned archives to `zig-out/release/`. On Linux,
-`zig build release -Dpackages=true` also builds the AppImage, `.deb` and `.rpm`.
-Package skeletons for AUR, winget/MSI and Homebrew (cask and formula) are in
-[packaging/](packaging/README.md).
+`zig build release` writes versioned archives to `zig-out/release/`.
+`zig build release -Dpackages=true` also builds the installable packages:
+AppImage, `.deb` and `.rpm` on Linux; an NSIS setup exe on Windows; a
+`.app` and `.dmg` on macOS. They are unsigned
+([packaging/SIGNING.md](packaging/SIGNING.md)). AUR, winget and Homebrew
+skeletons are in [packaging/](packaging/README.md). A phone port is planned
+in [docs/MOBILE.md](docs/MOBILE.md) and is not built.
 
 ## 🧪 Current Status
 
@@ -131,7 +134,7 @@ Package skeletons for AUR, winget/MSI and Homebrew (cask and formula) are in
 - Lua plugins: sandboxed per-plugin states, permission grants in config.lua, hooks, command palette (Ctrl+Shift+P), optional status bar, toasts, timers, themes, three example plugins (see [docs/PLUGINS.md](docs/PLUGINS.md))
 - Tabs and split panes: layout tree, keyboard/mouse resize and focus, zoom, equalize, tab bar, confirm-close for running programs, startup layouts, plugin tab/pane events and actions (see [docs/TABS.md](docs/TABS.md))
 - CI: Linux build + unit tests, Windows and macOS cross-compiles; a `v*` tag opens a draft GitHub release
-- Packaging: `zig build release`, AppImage / .deb / .rpm, AUR, Windows zip (+ winget/MSI skeletons), macOS .app + Homebrew skeletons
+- Packaging: `zig build release -Dpackages=true` builds an AppImage, `.deb` (with a `.desktop` file) and `.rpm`, a Windows zip plus NSIS installer, and a macOS `.app` plus `.dmg`. A `v*` tag publishes them. Signing is not done yet ([packaging/SIGNING.md](packaging/SIGNING.md))
 - 80/132-column DECCOLM: headless grids resize; GUI panes keep their width and only clear, home, and reset margins
 
 **Not done yet** (tracked in [ISSUES.md](ISSUES.md))

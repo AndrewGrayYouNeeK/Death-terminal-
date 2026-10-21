@@ -1,5 +1,8 @@
 // Windows resources: application icon and version info.
-// Keep FILEVERSION / ProductVersion in sync with build.zig (default_version).
+// `zig build` does not compile this file. build.zig writes a copy whose
+// FILEVERSION / ProductVersion follow `-Dversion` (default_version otherwise)
+// and whose ICON path is absolute. This copy stays at 0.1.0 so the resource
+// script is readable next to deathterminal.ico.
 #include <winver.h>
 
 1 ICON "deathterminal.ico"
