@@ -175,7 +175,7 @@ sign_machos() {
 
 sign_one() {
   local zip=$1
-  local stem app
+  local stem app molten
   stem=$(basename "$zip" .zip)
   WORK=$(mktemp -d)
   mkdir -p "$WORK/unz"
@@ -195,8 +195,18 @@ sign_one() {
     chmod +x "$app/Contents/MacOS/deathterminal-gui"
   fi
 
+  molten="$app/Contents/Frameworks/libMoltenVK.dylib"
+  if [ ! -f "$molten" ]; then
+    echo "DeathTerminal.app is missing Contents/Frameworks/libMoltenVK.dylib" >&2
+    exit 1
+  fi
+  # Bundled Mach-O, including this dylib, is signed inside out. Sign MoltenVK
+  # explicitly so a universal binary is not skipped if `file` is odd, then
+  # sign everything else and the bundle.
+  codesign_runtime "$molten" ""
   sign_machos "$app/Contents"
   codesign_runtime "$app" "$ENTITLEMENTS"
+  codesign --verify --strict "$molten"
   codesign --verify --strict --verbose=2 "$app"
 
   bash "$HERE/make-dmg.sh" "$app" "$OUT/$stem.dmg"

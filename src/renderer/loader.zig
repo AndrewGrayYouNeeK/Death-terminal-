@@ -15,8 +15,15 @@ pub const GetDeviceQueueFn = *const fn (vk.VkDevice, u32, u32, *vk.VkQueue) call
 pub const EnumerateInstanceExtensionPropertiesFn = *const fn (?[*:0]const u8, *u32, ?[*]vk.raw.VkExtensionProperties) callconv(.C) vk.VkResult;
 pub const EnumerateDeviceExtensionPropertiesFn = *const fn (vk.VkPhysicalDevice, ?[*:0]const u8, *u32, ?[*]vk.raw.VkExtensionProperties) callconv(.C) vk.VkResult;
 
-/// Names tried inside the directory that contains the running executable.
-const beside_exe = [_][]const u8{ "libvulkan.1.dylib", "libMoltenVK.dylib" };
+/// Real paths relative to the running executable. `dlopen` does not expand
+/// `@executable_path`, so the .app's Frameworks directory is `../Frameworks`
+/// from `Contents/MacOS`.
+const beside_exe = [_][]const u8{
+    "libvulkan.1.dylib",
+    "libMoltenVK.dylib",
+    "../Frameworks/libvulkan.1.dylib",
+    "../Frameworks/libMoltenVK.dylib",
+};
 
 fn libNames() []const []const u8 {
     return switch (builtin.os.tag) {
@@ -90,11 +97,10 @@ const DarwinPath = if (builtin.os.tag == .macos) struct {
     extern "c" fn _NSGetExecutablePath(buf: [*]u8, bufsize: *u32) c_int;
 } else struct {};
 
-/// `dlopen` does not search the directory that contains the binary, so a
-/// `libMoltenVK.dylib` dropped next to it is invisible unless
-/// `DYLD_LIBRARY_PATH` is set. Resolve that directory with
-/// `_NSGetExecutablePath` (the same place `@executable_path` names) and try
-/// the loader and MoltenVK there first.
+/// `dlopen` does not search the directory that contains the binary, and it
+/// does not expand `@executable_path`. Resolve the executable directory with
+/// `_NSGetExecutablePath` and try the loader and MoltenVK there, then in
+/// `../Frameworks` (where the release bundle places them).
 fn openBesideExecutable() ?std.DynLib {
     if (builtin.os.tag != .macos) return null;
     var exe_buf: [4096]u8 = undefined;
@@ -115,12 +121,26 @@ fn pathBeside(dir: []const u8, name: []const u8, buf: []u8) ![:0]u8 {
 }
 
 test "MoltenVK next to the executable is a candidate" {
-    var buf: [160]u8 = undefined;
+    var buf: [256]u8 = undefined;
     const molten = try pathBeside("/Applications/DeathTerminal.app/Contents/MacOS", "libMoltenVK.dylib", &buf);
     try std.testing.expectEqualStrings("/Applications/DeathTerminal.app/Contents/MacOS/libMoltenVK.dylib", molten);
     const vulkan = try pathBeside("/opt/dt", "libvulkan.1.dylib", &buf);
     try std.testing.expectEqualStrings("/opt/dt/libvulkan.1.dylib", vulkan);
     try std.testing.expectEqualStrings(beside_exe[1], "libMoltenVK.dylib");
+}
+
+test "MoltenVK in the app Frameworks directory is a candidate" {
+    var buf: [256]u8 = undefined;
+    const molten = try pathBeside(
+        "/Applications/DeathTerminal.app/Contents/MacOS",
+        "../Frameworks/libMoltenVK.dylib",
+        &buf,
+    );
+    try std.testing.expectEqualStrings(
+        "/Applications/DeathTerminal.app/Contents/MacOS/../Frameworks/libMoltenVK.dylib",
+        molten,
+    );
+    try std.testing.expectEqualStrings(beside_exe[3], "../Frameworks/libMoltenVK.dylib");
 }
 
 test "Vulkan loader opens and resolves vkGetInstanceProcAddr" {

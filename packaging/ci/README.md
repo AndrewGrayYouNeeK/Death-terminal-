@@ -30,8 +30,9 @@ cp packaging/ci/ci.yml packaging/ci/release.yml .github/workflows/
   `packaging/linux/build-packages.sh`). The cross job also installs `nsis`
   (Windows setup exe) and `genisoimage` plus `zlib1g-dev` (macOS `.dmg`).
   The linux release job installs `mesa-vulkan-drivers` so `zig build test`
-  can create a Vulkan instance. A `macos-latest` job then signs the
-  cross-compiled macOS artifacts when the Apple secrets are set.
+  can create a Vulkan instance. macOS release jobs download MoltenVK 1.4.2
+  (`packaging/macos/fetch-moltenvk.sh`) into the app bundle. A `macos-latest`
+  job then signs that dylib and the app when the Apple secrets are set.
 
 `release.yml` uses `softprops/action-gh-release@v2` and needs
 `permissions: contents: write`. The release is created as a draft for review.

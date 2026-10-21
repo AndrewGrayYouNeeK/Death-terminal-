@@ -89,14 +89,14 @@ To see the skip path before the secrets exist, the same tag workflow is enough: 
 
 `packaging/macos/entitlements.plist` is applied to the app and to the Mach-O executables:
 
-- `com.apple.security.cs.disable-library-validation` — the app `dlopen`s MoltenVK. The release does not bundle it unless `MOLTENVK_DIR` was set for the cross build, and the Homebrew cask depends on the `molten-vk` formula (`/opt/homebrew/lib`). Hardened runtime would block that library without this entitlement. Dylibs that are inside the bundle are still signed with the same identity.
+- `com.apple.security.cs.disable-library-validation` — the release bundle's `libMoltenVK.dylib` is signed with the same identity, so library validation allows it. The entitlement stays so `/opt/homebrew/lib/libMoltenVK.dylib` (the Homebrew cask's `molten-vk` formula) still loads if that is the copy the process opens.
 - `com.apple.security.cs.allow-jit` and `com.apple.security.cs.allow-unsigned-executable-memory` — MoltenVK / Metal and the Zig runtime allocate executable memory. Without these, a hardened process is killed on first use.
 
 The app is not sandboxed. Sandbox entitlements are not required for Developer ID notarization.
 
 ### MoltenVK
 
-If `MOLTENVK_DIR` was set when the artifact was built, `libMoltenVK.dylib` (and `libvulkan.1.dylib` when present) are in `Contents/Frameworks` and are signed in the same pass as the other bundled dylibs. A missing dylib is not an error: the loader then uses Homebrew or the software renderer.
+The macOS cross job downloads MoltenVK 1.4.2 (`packaging/macos/fetch-moltenvk.sh`) and copies `libMoltenVK.dylib` and `MoltenVK_icd.json` into `Contents/Frameworks`. The signing job signs that dylib with the hardened runtime and a timestamp, then `codesign --verify`s it. If the dylib is missing, signing fails instead of producing an app that only works with Homebrew. `libvulkan.1.dylib` is signed too when the build copied one. The ICD json is a resource; the app signature covers it.
 
 ### If notarization is rejected
 

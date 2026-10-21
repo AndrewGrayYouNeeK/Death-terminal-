@@ -8,9 +8,11 @@
 # <out-dir>/DeathTerminal.app, DeathTerminal-<ver>-<arch>.zip and
 # DeathTerminal-<ver>-<arch>.dmg (see make-dmg.sh).
 #
-# Vulkan on macOS goes through MoltenVK. If MOLTENVK_DIR (containing
-# libMoltenVK.dylib and optionally libvulkan.1.dylib) is set, they are copied
-# into Contents/Frameworks, where src/renderer/loader.zig looks first.
+# Vulkan on macOS goes through MoltenVK. The release workflow points
+# MOLTENVK_DIR at packaging/macos/fetch-moltenvk.sh, which supplies
+# libMoltenVK.dylib and MoltenVK_icd.json. Both are copied into
+# Contents/Frameworks. The loader resolves that directory from the
+# executable (`../Frameworks`); dlopen does not expand @executable_path.
 # Without them the app uses Homebrew's /opt/homebrew/lib, or falls back to
 # the software renderer. The .icns is made with iconutil (macOS only).
 set -euo pipefail
@@ -39,8 +41,11 @@ chmod +x "$APP/Contents/MacOS/deathterminal-gui" "$APP/Contents/MacOS/deathtermi
 cp -R "$STAGE/share" "$APP/Contents/Resources/"
 
 if [ -n "${MOLTENVK_DIR:-}" ]; then
-  cp "$MOLTENVK_DIR"/libMoltenVK.dylib "$APP/Contents/Frameworks/"
-  [ -f "$MOLTENVK_DIR/libvulkan.1.dylib" ] && cp "$MOLTENVK_DIR/libvulkan.1.dylib" "$APP/Contents/Frameworks/"
+  cp "$MOLTENVK_DIR/libMoltenVK.dylib" "$APP/Contents/Frameworks/libMoltenVK.dylib"
+  cp "$MOLTENVK_DIR/MoltenVK_icd.json" "$APP/Contents/Frameworks/MoltenVK_icd.json"
+  if [ -f "$MOLTENVK_DIR/libvulkan.1.dylib" ]; then
+    cp "$MOLTENVK_DIR/libvulkan.1.dylib" "$APP/Contents/Frameworks/libvulkan.1.dylib"
+  fi
 fi
 
 if command -v iconutil >/dev/null; then
