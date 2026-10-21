@@ -189,8 +189,8 @@ pub const Config = struct {
     font_retro: bool = false,
     /// HarfBuzz ligatures (calt/liga/dlig).
     font_ligatures: bool = true,
-    /// Bundled theme name (see themes.zig).
-    theme: []const u8 = "default",
+    /// Bundled theme name (see themes.zig). Unset uses the death theme.
+    theme: []const u8 = themes.default_name,
     colors: ColorOverrides = .{},
     cursor_shape: CursorShape = .block,
     /// Mouse selections also go to CLIPBOARD (PRIMARY is always set).
@@ -274,7 +274,7 @@ pub const Config = struct {
 
     /// The effective colours: the theme with `colors` overrides on top.
     pub fn palette(self: *const Config) color.Palette {
-        const t = themes.find(self.theme) orelse &themes.all[0];
+        const t = themes.find(self.theme) orelse themes.defaultTheme();
         var p = t.palette();
         const o = &self.colors;
         if (o.fg) |v| p.fg = v;
@@ -624,6 +624,8 @@ test "Config defaults" {
     defer config.deinit();
     try testing.expect(config.ai_enabled);
     try testing.expectEqual(@as(u16, 24), config.rows);
+    try testing.expectEqualStrings(themes.default_name, config.theme);
+    try testing.expectEqual(themes.defaultTheme().palette().hash(), config.palette().hash());
 }
 
 test "Config arg parsing" {
