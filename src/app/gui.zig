@@ -33,6 +33,9 @@ const events = @import("../platform/events.zig");
 const color = @import("../terminal/color.zig");
 const config_watch = @import("config_watch.zig");
 const share_ctrl = @import("share_ctrl.zig");
+const ghost_hold = @import("../ghost/hold.zig");
+const time_travel = @import("../ghost/time_travel.zig");
+const muscle_mod = @import("../muscle/session.zig");
 
 const Pane = session.Pane;
 const PaneId = session.PaneId;
@@ -108,6 +111,15 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
     defer share.deinit();
     share.configure(cfg);
 
+    var muscle = try muscle_mod.Session.open(a);
+    defer muscle.deinit();
+    muscle.setSettings(.{
+        .enabled = cfg.muscle_enabled,
+        .min_repeats = cfg.muscle_min_repeats,
+        .max_len = cfg.muscle_max_len,
+    });
+    if (muscle.shortcutCount() > 0) std.debug.print("  → Muscle memory: {d} shortcut(s)\n", .{muscle.shortcutCount()});
+
     var gui = Gui{
         .loop = loop,
         .a = a,
@@ -122,11 +134,14 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
         .palette = &palette,
         .pace = &pace,
         .plugins = &plugins,
+        .muscle = &muscle,
         .read_buf = read_buf,
         .share = &share,
+        .ghost = ghost_hold.Hold.init(a),
         .last_focus = first.id,
         .last_tab = ws.currentTab().id,
     };
+    defer gui.ghost.deinit();
     gui.setupPane(first);
     gui.fitWindow(window.width, window.height);
     if (loop.startup_layout) gui.buildStartupLayout();
@@ -199,6 +214,10 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
             const p = ws.pane(id) orelse continue;
             if (fds.items[3 + 2 * i + 1].revents & io.POLL.IN != 0) {
                 if (try p.ai.onWake(&p.ui, p.term, std.time.milliTimestamp())) gui.touch(p);
+            }
+            if (gui.ghost.open and gui.ghost.pane == id) {
+                const st = p.ai.ghostExplainState();
+                if (gui.ghost.pullAi(st.text, st.done, st.failed)) gui.touchAll();
             }
             p.ai.tick(p.term, std.time.milliTimestamp());
             if (p.ui.tickNotice(std.time.milliTimestamp())) gui.touch(p);
@@ -283,8 +302,13 @@ const Gui = struct {
     palette: *color.Palette,
     pace: *el.Pacer,
     plugins: *plugin_bridge.Bridge,
+    muscle: *muscle_mod.Session,
+    /// Scratch for a pane directory when the plugin track has no cwd yet.
+    muscle_dir: [std.fs.max_path_bytes]u8 = undefined,
     read_buf: []u8,
     share: *share_ctrl.Controller,
+    /// Risky-command preview. Enter is held until Run, Cancel, or a snapshot.
+    ghost: ghost_hold.Hold,
     window_focused: bool = true,
     need_present: bool = false,
     /// Expose/resize: redraw even if the frame is unchanged.
@@ -331,12 +355,16 @@ const Gui = struct {
         if (paint_id) |id| if (self.ws.pane(id)) |sp| {
             self.share.paint(self.ws.cells.items, self.ws.marks.items, self.ws.cols, sp.rect.x, sp.rect.y, sp.rect.w, sp.rect.h);
         };
+        if (self.ghost.open) {
+            const area = self.ws.area;
+            self.ghost.draw(self.ws.cells.items, self.ws.marks.items, self.ws.cols, area.y, area.y + area.h);
+        }
         const fp = self.focusedPane();
         var v = frame_mod.View.fromTerminal(fp.term);
         // Reverse video (DECSCNM) is whole-window: only with one pane shown.
         if (self.ws.visibleCount() > 1) v.reverse_video = false;
         v.focused = self.window_focused;
-        v.cursor_visible = comp.cursor_visible;
+        v.cursor_visible = comp.cursor_visible and !self.ghost.open;
         v.marks = self.ws.marks.items;
         v.palette = self.palette;
         v.selection_bg = self.palette.selection_bg;
@@ -538,6 +566,10 @@ const Gui = struct {
             },
             else => {},
         };
+        if (self.ghost.open and self.ghost.pane == id) {
+            p.ai.cancelGhostExplain();
+            self.ghost.close();
+        }
         if (self.ws.drag == .pane and self.ws.drag.pane == id) self.ws.drag = .none;
         const removed_tab = self.ws.detachPane(id);
         self.plugins.removeTrack(&p.track);
@@ -718,6 +750,7 @@ const Gui = struct {
             p.ui.sync(p.term);
             self.plugins.afterOutput(&p.track, std.time.milliTimestamp());
             try self.pluginEffects();
+            try self.muscleAfterOutput(p);
             const is_focus = p == self.focusedPane();
             if (!p.visible and !p.activity) {
                 p.activity = true;
@@ -765,6 +798,10 @@ const Gui = struct {
                     if (self.plugins.host) |h| h.clipboardResult(pv.data);
                     return;
                 }
+                if (self.muscle.capturing()) {
+                    self.muscleResult(try self.muscle.onText(pv.data));
+                    return;
+                }
                 const fp = self.focusedPane();
                 try fp.ui.onPaste(fp.term, pv.data, pv.target, pv.purpose);
                 fp.ai.onKeystroke(&fp.ui, std.time.milliTimestamp());
@@ -792,6 +829,10 @@ const Gui = struct {
     }
 
     fn handleInput(self: *Gui, bytes: []const u8) !void {
+        if (self.ghost.open) {
+            try self.answerGhost(self.ghost.answerText(bytes));
+            return;
+        }
         if (self.ws.confirm != null) {
             if (bytes.len == 1) switch (bytes[0]) {
                 'y', 'Y', '\r' => try self.answerConfirm(true),
@@ -821,13 +862,22 @@ const Gui = struct {
             self.touchAll();
             return;
         }
+        if (self.muscle.capturing()) {
+            self.muscleResult(try self.muscle.onText(bytes));
+            return;
+        }
+        if (bytes.len == 1 and (bytes[0] == '\r' or bytes[0] == '\n')) {
+            if (try self.tryMuscleEnter()) return;
+        }
         if (try fp.ui.handleText(fp.term, bytes)) {
+            try self.pumpAsk(fp);
             self.touch(fp);
         } else if (self.plugins.text(bytes)) {
             self.touch(fp);
         } else {
             // Ctrl+C arrives as 0x03 and goes to the shell like any key.
             _ = fp.ui.userTyped();
+            if (ghost_hold.loneEnter(bytes) and try self.maybeGhost(fp, bytes)) return;
             try fp.term.write(bytes);
             fp.ai.onTyped(&fp.ui, fp.term, bytes, std.time.milliTimestamp());
             self.touch(fp);
@@ -835,6 +885,10 @@ const Gui = struct {
     }
 
     fn handleKey(self: *Gui, key: input.Key, mods: input.Mods) !void {
+        if (self.ghost.open) {
+            try self.answerGhost(self.ghost.answerKey(key));
+            return;
+        }
         if (self.ws.confirm != null) {
             switch (key) {
                 .enter, .kp_enter => try self.answerConfirm(true),
@@ -880,16 +934,111 @@ const Gui = struct {
             self.touchAll();
             return;
         }
+        if (self.muscle.capturing()) {
+            const mk: ?muscle_mod.Key = switch (key) {
+                .enter, .kp_enter => if (mods.any()) null else .enter,
+                .escape => .escape,
+                .backspace => .backspace,
+                else => null,
+            };
+            if (mk) |k| self.muscleResult(try self.muscle.onKey(k));
+            return;
+        }
+        if (!mods.any() and (key == .enter or key == .kp_enter)) {
+            if (try self.tryMuscleEnter()) return;
+        }
         if (try fp.ui.handleKey(fp.term, key, mods)) {
+            try self.pumpAsk(fp);
             self.touch(fp);
         } else if (self.plugins.key(key, mods)) {
             self.touch(fp);
         } else {
             _ = fp.ui.userTyped();
             const seq = input.encodeKey(key, mods, fp.term.modes);
+            if (submitsLine(key, mods, fp.term.modes) and try self.maybeGhost(fp, seq.constSlice())) return;
             try fp.term.write(seq.constSlice());
             fp.ai.onKeystroke(&fp.ui, std.time.milliTimestamp());
             self.touch(fp);
+        }
+    }
+
+    /// Unmodified Enter submits the shell line. Keypad Enter does too,
+    /// unless application keypad mode turned it into SS3 M.
+    fn submitsLine(key: input.Key, mods: input.Mods, modes: terminal.Modes) bool {
+        if (mods.any()) return false;
+        return switch (key) {
+            .enter => true,
+            .kp_enter => !modes.app_keypad,
+            else => false,
+        };
+    }
+
+    fn maybeGhost(self: *Gui, fp: *Pane, enter: []const u8) !bool {
+        if (!self.cfg.ghost_run_enabled) return false;
+        const want_ai = self.cfg.ghost_run_ai and fp.ai.engine != null;
+        const armed = self.ghost.consider(.{
+            .term = fp.term,
+            .enter = enter,
+            .patterns = ghost_hold.patternList(self.cfg.ghost_patterns_set, self.cfg.ghost_patterns.items),
+            .remote = fp.ssh_display.len > 0,
+            .pane = fp.id,
+            .want_ai = want_ai,
+        }) catch return false;
+        if (!armed) return false;
+        if (want_ai) {
+            const impact = self.ghost.impactText(self.a) catch "";
+            defer if (impact.len > 0) self.a.free(impact);
+            fp.ai.requestGhostExplain(self.ghost.command, impact, self.ghost.cwd) catch {
+                self.ghost.ai_pending = false;
+            };
+        }
+        self.touchAll();
+        self.force_present = true;
+        return true;
+    }
+
+    fn answerGhost(self: *Gui, ans: ghost_hold.Answer) !void {
+        if (!self.ghost.open) return;
+        switch (ans) {
+            .ignore => {},
+            .cancel => try self.finishGhost(false),
+            .run => try self.finishGhost(true),
+            .snapshot => try self.snapshotGhost(),
+        }
+    }
+
+    fn snapshotGhost(self: *Gui) !void {
+        const result = time_travel.snapshot(.{
+            .cwd = self.ghost.cwd,
+            .command = self.ghost.command,
+            .pane = self.ghost.pane,
+        });
+        switch (result) {
+            .ok => try self.finishGhost(true),
+            .unavailable => {
+                self.ghost.setNotice("Time Travel is not available.");
+                self.touchAll();
+            },
+            .failed => |why| {
+                self.ghost.setNotice(why);
+                self.touchAll();
+            },
+        }
+    }
+
+    /// `send` writes the held Enter. Cancel drops it. The preview
+    /// never ran the command itself.
+    fn finishGhost(self: *Gui, send: bool) !void {
+        const pane = self.ghost.pane;
+        const enter = if (send) self.a.dupe(u8, self.ghost.enter) catch return else &.{};
+        defer if (enter.len > 0) self.a.free(enter);
+        if (self.ws.pane(pane)) |p| p.ai.cancelGhostExplain();
+        self.ghost.close();
+        self.touchAll();
+        if (enter.len == 0) return;
+        if (self.ws.pane(pane)) |p| {
+            try p.term.write(enter);
+            self.touch(p);
         }
     }
 
@@ -907,7 +1056,8 @@ const Gui = struct {
     fn handleAction(self: *Gui, a: events.ActionEvent) !void {
         const act = a.action;
         // While a prompt is up only the palettes stay reachable.
-        if ((self.ws.confirm != null or self.ws.rename != null) and act != .command_palette) return self.keyFallback(a);
+        if ((self.ws.confirm != null or self.ws.rename != null or self.ghost.open) and act != .command_palette) return self.keyFallback(a);
+        if (self.muscle.capturing() and act != .command_palette) return self.keyFallback(a);
         if (self.chrome.palette != null and act != .command_palette and act != .ssh_palette) return self.keyFallback(a);
         const fp = self.focusedPane();
         const now = std.time.milliTimestamp();
@@ -926,6 +1076,10 @@ const Gui = struct {
                 self.force_present = true;
             },
             .ai_explain => try fp.ai.explain(&fp.ui, fp.term, now),
+            .ai_ask => {
+                try fp.ai.openAsk(&fp.ui, fp.term, now);
+                self.touch(fp);
+            },
             .ssh_palette => if (self.chrome.paletteOpen(.ssh)) self.chrome.closePalette() else try self.openSshPalette(),
             .command_palette => if (self.chrome.paletteOpen(.commands)) self.chrome.closePalette() else try self.openCommandPalette(),
             .toggle_status_bar => try self.setStatusBar(!self.chrome.status_visible),
@@ -1021,17 +1175,24 @@ const Gui = struct {
             else => {
                 if (try fp.ui.handleAction(fp.term, act)) {
                     if (act == .ai_accept) fp.ai.onAccepted();
+                    try self.pumpAsk(fp);
                     self.touch(fp);
                 } else return self.keyFallback(a);
             },
         }
     }
 
+    fn pumpAsk(self: *Gui, fp: *Pane) !void {
+        _ = self;
+        if (fp.ui.takeAskCancel()) fp.ai.cancelAsk(&fp.ui);
+        if (fp.ui.takeAskSubmit()) try fp.ai.submitAsk(&fp.ui, fp.term, std.time.milliTimestamp());
+    }
+
     // -------------------------------------------------------------- mouse
 
     fn handleMouse(self: *Gui, m: events.MouseInput) !void {
         const ws = self.ws;
-        if (self.chrome.palette != null or ws.confirm != null) return;
+        if (self.chrome.palette != null or ws.confirm != null or self.ghost.open) return;
         const cw: i32 = @intCast(self.cellW());
         const ch: i32 = @intCast(self.cellH());
         const col: u16 = @intCast(std.math.clamp(@divFloor(m.x, cw), 0, @as(i32, ws.cols) - 1));
@@ -1182,6 +1343,7 @@ const Gui = struct {
             .tab => |id| if (self.ws.tabs.indexOf(@intCast(id))) |i| {
                 if (self.ws.selectTab(i)) self.relayout();
             },
+            .muscle => |v| try self.musclePick(v),
             else => try self.sshPick(pick),
         }
     }
@@ -1298,6 +1460,9 @@ const Gui = struct {
                 try pal.addItem(.tab, label, chord, tab.id, false);
             }
         }
+        for (try self.muscle.paletteItems()) |it| {
+            try pal.addItem(.muscle, it.title, it.detail, it.arg, false);
+        }
         if (self.plugins.host) |h| {
             for (h.commands.items, 0..) |cmd, i| {
                 if (!cmd.plugin.running()) continue;
@@ -1353,6 +1518,12 @@ const Gui = struct {
             p.ui.opts = opts;
             p.ai.applySettings(&p.ui, paneAiSettings(self.cfg, p.ssh_display));
         }
+        self.muscle.setSettings(.{
+            .enabled = self.cfg.muscle_enabled,
+            .min_repeats = self.cfg.muscle_min_repeats,
+            .max_len = self.cfg.muscle_max_len,
+        });
+        self.muscle.refreshShortcuts();
         if (self.plugins.reload(self.cfg, el.chordTaken)) {
             self.installAllBindings();
             self.refreshStatus();
@@ -1542,8 +1713,158 @@ const Gui = struct {
                 var out: [64]u8 = undefined;
                 _ = ssh_control.request(pid, "reconnect", &out) catch {};
             },
-            .action, .command, .tab => {},
+            .action, .command, .tab, .muscle => {},
         }
+    }
+
+    // ------------------------------------------------------- muscle memory
+
+    fn paneDir(self: *Gui, p: *Pane) []const u8 {
+        if (p.track.cwd.items.len > 0) return p.track.cwd.items;
+        return terminal.shell_integration.cwdFromUri(p.term.cwd_uri, &self.muscle_dir) orelse "";
+    }
+
+    fn muscleAfterOutput(self: *Gui, p: *Pane) !void {
+        const now_finished = p.term.shell.finished;
+        const prev = p.muscle_finished;
+        if (now_finished == prev) return;
+        p.muscle_finished = now_finished;
+        var delta = now_finished -% prev;
+        if (delta > terminal.shell_integration.max_history) delta = terminal.shell_integration.max_history;
+        const hist = p.term.shell.history.items;
+        if (hist.len == 0 or delta == 0) return;
+        const start = hist.len - @min(delta, hist.len);
+        const cwd = self.paneDir(p);
+        var offer = false;
+        for (hist[start..]) |cmd| {
+            offer = (self.muscle.observe(cwd, cmd.text, cmd.exit_code) catch false) or offer;
+            const step = self.muscle.runExit(p.id, cmd.text, cmd.exit_code) catch continue;
+            try self.applyRunStep(p, step);
+        }
+        if (offer) self.refreshMuscleUi(true);
+    }
+
+    fn applyRunStep(self: *Gui, p: *Pane, step: muscle_mod.RunStep) !void {
+        switch (step) {
+            .ignore, .finished => {},
+            .send => |bytes| {
+                defer self.a.free(bytes);
+                try p.term.write(bytes);
+                self.touch(p);
+            },
+            .stopped => |msg| {
+                defer self.a.free(msg);
+                try self.chrome.addToast(msg, .warn, 6 * NOTICE_MS, std.time.milliTimestamp());
+                self.touchAll();
+            },
+        }
+    }
+
+    fn tryMuscleEnter(self: *Gui) !bool {
+        const fp = self.focusedPane();
+        const raw = (fp.term.currentInput(self.a) catch return false) orelse return false;
+        defer self.a.free(raw);
+        const name = std.mem.trim(u8, raw, " \t");
+        if (name.len == 0) return false;
+        const cwd = self.paneDir(fp);
+        if (self.muscle.running()) {
+            return self.muscle.lookup(cwd, name) != null;
+        }
+        const idx = self.muscle.lookup(cwd, name) orelse return false;
+        if (fp.commandRunning()) {
+            try self.chrome.addToast("finish the current command first", .warn, NOTICE_MS, std.time.milliTimestamp());
+            self.touchAll();
+            return true;
+        }
+        if (try self.muscle.begin(idx, fp.id, fp.term.shell.seen, true)) |bytes| {
+            defer self.a.free(bytes);
+            try fp.term.write(bytes);
+            self.touch(fp);
+        }
+        return true;
+    }
+
+    fn musclePick(self: *Gui, v: usize) !void {
+        const decoded = muscle_mod.unpack(v) orelse return;
+        const now = std.time.milliTimestamp();
+        const fp = self.focusedPane();
+        switch (decoded.op) {
+            .run => {
+                if (fp.commandRunning()) {
+                    try self.chrome.addToast("finish the current command first", .warn, NOTICE_MS, now);
+                    return;
+                }
+                if (try self.muscle.begin(decoded.index, fp.id, fp.term.shell.seen, true)) |bytes| {
+                    defer self.a.free(bytes);
+                    try fp.term.write(bytes);
+                    self.touch(fp);
+                }
+            },
+            .rename => {
+                try self.muscle.beginRename(decoded.index);
+                self.refreshMuscleUi(false);
+            },
+            .delete => if (try self.muscle.deleteAt(decoded.index)) {
+                try self.chrome.addToast(self.muscle.status(), .info, NOTICE_MS, now);
+            },
+            .save => {
+                self.muscle.acceptOffer(false);
+                self.refreshMuscleUi(false);
+            },
+            .save_global => {
+                self.muscle.acceptOffer(true);
+                self.refreshMuscleUi(false);
+            },
+        }
+    }
+
+    fn muscleResult(self: *Gui, r: muscle_mod.InputResult) void {
+        const fp = self.focusedPane();
+        const now = std.time.milliTimestamp();
+        switch (r) {
+            .idle => {},
+            .stay, .invalid => self.refreshMuscleUi(false),
+            .saved => {
+                fp.ui.clearNotice();
+                self.chrome.addToast(self.muscle.status(), .info, NOTICE_MS, now) catch {};
+            },
+            .dismissed => fp.ui.clearNotice(),
+        }
+        self.touchAll();
+    }
+
+    fn refreshMuscleUi(self: *Gui, toast_offer: bool) void {
+        const fp = self.focusedPane();
+        const now = std.time.milliTimestamp();
+        switch (self.muscle.mode) {
+            .idle => {},
+            .offer => {
+                if (toast_offer) self.chrome.addToast(muscle_mod.offer_text, .info, 20 * NOTICE_MS, now) catch {};
+                var lines: [5][]const u8 = undefined;
+                var n: usize = 0;
+                const cmds = self.muscle.offerCommands();
+                const show = @min(cmds.len, 3);
+                for (cmds[0..show]) |c| {
+                    lines[n] = c;
+                    n += 1;
+                }
+                if (cmds.len > show) {
+                    lines[n] = "…";
+                    n += 1;
+                }
+                lines[n] = "y save · n dismiss · Esc dismiss · *name saves it globally";
+                n += 1;
+                fp.ui.setNotice(.info, muscle_mod.offer_text, lines[0..n], null, now) catch {};
+            },
+            .name => {
+                const typed = self.muscle.nameText();
+                const shown: []const u8 = if (typed.len == 0) "(type a name)" else typed;
+                const hint: []const u8 = if (self.muscle.status().len > 0) self.muscle.status() else "Enter saves · Esc cancels · prefix * for every project";
+                const lines = [_][]const u8{ shown, hint };
+                fp.ui.setNotice(.info, "Name this shortcut", &lines, null, now) catch {};
+            },
+        }
+        self.touchAll();
     }
 };
 

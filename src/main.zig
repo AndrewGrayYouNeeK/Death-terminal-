@@ -302,6 +302,7 @@ fn printHelp() !void {
         \\
         \\FEATURES:
         \\    • AI command suggestions (OpenAI-compatible, local Ollama by default)
+        \\    • Ask the Output (Ctrl+Shift+Q): question about the last command, selection, or screen
         \\    • Built-in SSH (libssh2): profiles, ProxyJump, -L/-R/-D forwards (Ctrl+Shift+S)
         \\    • Vulkan-accelerated rendering
         \\    • Lua plugins: hooks, command palette (Ctrl+Shift+P), status bar, themes
@@ -351,6 +352,7 @@ test {
     _ = @import("app/tabs.zig");
     _ = @import("app/spawn.zig");
     _ = @import("app/session.zig");
+    _ = @import("muscle/session.zig");
     _ = @import("plugins/permissions.zig");
     _ = @import("plugins/value.zig");
     _ = @import("plugins/manifest.zig");
@@ -379,6 +381,12 @@ test {
     _ = @import("ai/engine.zig");
     _ = @import("app/ai_controller.zig");
     _ = @import("app/shell_inject.zig");
+    _ = @import("ghost/match.zig");
+    _ = @import("ghost/expand.zig");
+    _ = @import("ghost/impact.zig");
+    _ = @import("ghost/hold.zig");
+    _ = @import("ghost/explain.zig");
+    _ = @import("ghost/time_travel.zig");
     // The built-in SSH client is Linux-only.
     if (builtin.os.tag == .linux) {
         _ = @import("ssh/forward.zig");

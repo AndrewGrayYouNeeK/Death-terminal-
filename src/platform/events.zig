@@ -71,6 +71,8 @@ pub const Action = enum {
     ai_prev,
     /// Ask the AI to explain (and fix) the last failed command.
     ai_explain,
+    /// Ask a question about the last command's output, the selection, or the screen.
+    ai_ask,
     /// SSH palette: profiles (open in a new window), and this session's
     /// forwards (toggle) and reconnect.
     ssh_palette,
@@ -150,6 +152,7 @@ pub const Action = enum {
             .clear_selection => "Clear selection",
             .reload_config => "Reload config",
             .ai_explain => "AI: explain the last failed command",
+            .ai_ask => "AI: ask about the output",
             .ssh_palette => "SSH: profiles and forwards",
             .toggle_status_bar => "Toggle status bar",
             .new_tab => "Tabs: new tab",
@@ -357,6 +360,7 @@ pub const Bindings = struct {
         "alt+bracketright=ai_next",
         "alt+bracketleft=ai_prev",
         "ctrl+shift+a=ai_explain",
+        "ctrl+shift+q=ai_ask",
         "ctrl+shift+s=ssh_palette",
         "ctrl+shift+p=command_palette",
         "ctrl+shift+b=toggle_status_bar",
@@ -636,6 +640,8 @@ test "keysym mapping" {
 
 test "default bindings and overrides" {
     var b = Bindings.defaults();
+    try std.testing.expectEqual(Action.ai_ask, b.match('q', .{ .ctrl = true, .shift = true }).?);
+    try std.testing.expectEqual(Action.ai_ask, b.match('Q', .{ .ctrl = true, .shift = true }).?);
     try std.testing.expectEqual(Action.copy, b.match('C', .{ .ctrl = true, .shift = true }).?);
     try std.testing.expectEqual(Action.copy, b.match('c', .{ .ctrl = true, .shift = true }).?);
     try std.testing.expect(b.match('c', .{ .ctrl = true }) == null); // plain Ctrl+C goes to the shell

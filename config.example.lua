@@ -79,9 +79,9 @@ config.links.open_command = dt.os == "macos" and "open" or dt.os == "windows" an
 -- scroll_page_down, scroll_line_up, scroll_line_down, scroll_top,
 -- scroll_bottom, zoom_in, zoom_out, zoom_reset, select_all,
 -- clear_selection, reload_config, ai_accept, ai_dismiss, ai_next, ai_prev,
--- ai_explain, ssh_palette (Ctrl+Shift+S), share_pane (Ctrl+Shift+H),
--- share_grant (Ctrl+Shift+G), share_kick (F12), share_stop
--- (Ctrl+Shift+Alt+H), share_join (Ctrl+Shift+J). `false` removes a binding.
+-- ai_explain, ai_ask (Ctrl+Shift+Q), ssh_palette (Ctrl+Shift+S),
+-- share_pane (Ctrl+Shift+H), share_grant (Ctrl+Shift+G), share_kick (F12),
+-- share_stop (Ctrl+Shift+Alt+H), share_join (Ctrl+Shift+J). `false` removes a binding.
 config.default_keybindings = true    -- false = start from an empty table
 -- config.keys["ctrl+shift+t"] = "search"
 -- config.keys["ctrl+shift+c"] = false
@@ -93,6 +93,13 @@ config.shell.args = {}               -- e.g. { "-l" } (restart)
 config.shell.env = {}                -- e.g. { EDITOR = "nvim" } (restart)
 config.shell.cwd = ""                -- "" = inherit; "~" is expanded (restart)
 config.shell.integration = true      -- OSC 133 prompt marks for bash/zsh/fish (restart)
+
+-- Ghost Run (docs/GHOST_RUN.md): Enter on a risky command shows a preview
+-- before the shell sees it. y runs it, n / Esc cancels. Enter does not confirm.
+config.ghost_run.enabled = true
+config.ghost_run.ai_explain = true   -- plain-English note when config.ai is on
+-- Assigning patterns replaces the built-in list (an empty list matches nothing):
+-- config.ghost_run.patterns = { "rm -r", "git reset --hard", "dd", ">" }
 
 -- AI command suggestions (docs/AI.md) --------------------------------------
 config.ai.enabled = true             -- --no-ai overrides
@@ -113,6 +120,14 @@ config.ai.explain_max_tokens = 400   -- per "explain last error" answer
 config.ai.history = 5                -- previous commands (with exit codes) sent as context
 config.ai.output_lines = 20          -- lines of recent output sent as context
 config.ai.accept_key = "tab"         -- accepts the ghost text (Esc dismisses)
+config.ai.ask.enabled = true         -- Ctrl+Shift+Q / Cmd+Shift+Q: ask about the output
+config.ai.ask.max_lines = 200        -- tail of the region sent to the model (1–4000)
+
+-- Muscle memory (local only; see docs/MUSCLE_MEMORY.md) -------------------
+-- Repeated command sequences in one project can be saved as a shortcut.
+config.muscle_memory.enabled = true
+config.muscle_memory.min_repeats = 3 -- same 2..max_len commands, this many times
+config.muscle_memory.max_len = 5     -- longest sequence to notice (2-8)
 
 -- SSH (built in, libssh2; see docs/SSH.md) --------------------------------
 -- `deathterminal --gui --ssh <profile | ~/.ssh/config alias | user@host[:port]>`

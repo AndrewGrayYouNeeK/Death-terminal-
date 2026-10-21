@@ -27,7 +27,7 @@ const share_invite = @import("../share/invite.zig");
 const prelude_src = @embedFile("prelude.lua");
 pub const version = "0.1.0";
 
-pub const Kind = enum { section, boolean, integer, number, string, color, choice, theme, keys, string_map, string_list, palette, ssh_profiles, plugins, layout };
+pub const Kind = enum { section, boolean, integer, number, string, color, choice, theme, keys, string_map, string_list, palette, ssh_profiles, plugins, layout, ghost_patterns };
 
 const Ref = union(enum) {
     boolean: *bool,
@@ -81,6 +81,12 @@ fn checkReasoning(s: []const u8) ?[]const u8 {
     const ok = [_][]const u8{ "low", "medium", "high", "xhigh" };
     for (ok) |v| if (std.ascii.eqlIgnoreCase(s, v)) return null;
     return "expected \"\", \"low\", \"medium\", \"high\" or \"xhigh\" (grok-4.7 cannot turn reasoning off)";
+}
+
+fn ghostPatternError(s: []const u8) ?[]const u8 {
+    if (s.len == 0 or s.len > 200) return "expected 1 to 200 characters";
+    if (std.mem.indexOfAny(u8, s, "\r\n") != null) return "cannot contain a newline";
+    return null;
 }
 
 fn checkChord(s: []const u8) ?[]const u8 {
@@ -191,6 +197,11 @@ pub const schema = [_]Field{
     .{ .path = "shell.cwd", .kind = .string, .ref = ref(.string, "shell_cwd"), .restart = true },
     .{ .path = "shell.integration", .kind = .boolean, .ref = ref(.boolean, "shell_integration"), .restart = true },
 
+    .{ .path = "ghost_run", .kind = .section },
+    .{ .path = "ghost_run.enabled", .kind = .boolean, .ref = ref(.boolean, "ghost_run_enabled") },
+    .{ .path = "ghost_run.ai_explain", .kind = .boolean, .ref = ref(.boolean, "ghost_run_ai") },
+    .{ .path = "ghost_run.patterns", .kind = .ghost_patterns },
+
     .{ .path = "ai", .kind = .section },
     .{ .path = "ai.enabled", .kind = .boolean, .ref = ref(.boolean, "ai_enabled") },
     .{ .path = "ai.endpoint", .kind = .string, .ref = ref(.string, "ai_endpoint"), .check = checkEndpoint },
@@ -204,6 +215,14 @@ pub const schema = [_]Field{
     .{ .path = "ai.history", .kind = .integer, .min = 0, .max = 32, .ref = ref(.u16, "ai_history") },
     .{ .path = "ai.output_lines", .kind = .integer, .min = 0, .max = 200, .ref = ref(.u16, "ai_output_lines") },
     .{ .path = "ai.accept_key", .kind = .string, .ref = ref(.string, "ai_accept_key"), .check = checkChord },
+    .{ .path = "ai.ask", .kind = .section },
+    .{ .path = "ai.ask.enabled", .kind = .boolean, .ref = ref(.boolean, "ai_ask_enabled") },
+    .{ .path = "ai.ask.max_lines", .kind = .integer, .min = 1, .max = 4000, .ref = ref(.u16, "ai_ask_max_lines") },
+
+    .{ .path = "muscle_memory", .kind = .section },
+    .{ .path = "muscle_memory.enabled", .kind = .boolean, .ref = ref(.boolean, "muscle_enabled") },
+    .{ .path = "muscle_memory.min_repeats", .kind = .integer, .min = 2, .max = 50, .ref = ref(.u16, "muscle_min_repeats") },
+    .{ .path = "muscle_memory.max_len", .kind = .integer, .min = 2, .max = 8, .ref = ref(.u16, "muscle_max_len") },
 
     .{ .path = "ssh", .kind = .section },
     .{ .path = "ssh.enabled", .kind = .boolean, .ref = ref(.boolean, "ssh_enabled") },
@@ -430,7 +449,7 @@ fn setValue(ctx: *Ctx, L: *State, path: []const u8, idx: c_int) ?[]const u8 {
             };
             f.ref.?(cfg).string.* = t.name;
         },
-        .keys, .string_map, .palette, .string_list, .ssh_profiles, .plugins, .layout => {
+        .keys, .string_map, .palette, .string_list, .ssh_profiles, .plugins, .layout, .ghost_patterns => {
             if (c.lua_type(L, idx) != c.LUA_TTABLE) {
                 const what = switch (f.kind) {
                     .layout => "a list of tabs like { { split = \"right\", panes = { {}, { command = \"htop\" } } } }",
@@ -439,6 +458,7 @@ fn setValue(ctx: *Ctx, L: *State, path: []const u8, idx: c_int) ?[]const u8 {
                     .ssh_profiles => "a table like { work = { host = \"build.example.com\", user = \"me\" } }",
                     .string_map => "a table like { NAME = \"value\" }",
                     .palette => "a table like { [0] = \"#000000\", [1] = \"#cc0000\" }",
+                    .ghost_patterns => "a list of patterns like { \"rm -r\", \"dd\" }",
                     else => "a list of strings like { \"-l\" }",
                 };
                 return fail(ctx, "{s}: expected {s}, got {s}", .{ path, what, describe(ctx, L, idx) });
@@ -460,6 +480,10 @@ fn setCollection(ctx: *Ctx, L: *State, f: *const Field, idx: c_int) ?[]const u8 
         .ssh_profiles => cfg.ssh_profiles.clearRetainingCapacity(),
         .plugins => cfg.plugins.clearRetainingCapacity(),
         .layout => cfg.startup_layout.clearRetainingCapacity(),
+        .ghost_patterns => {
+            cfg.ghost_patterns.clearRetainingCapacity();
+            cfg.ghost_patterns_set = true;
+        },
         else => unreachable,
     }
     if (f.kind == .layout) {
@@ -493,6 +517,19 @@ fn setCollection(ctx: *Ctx, L: *State, f: *const Field, idx: c_int) ?[]const u8 
             defer lua.pop(L, 1);
             const s = lua.toString(L, -1) orelse return fail(ctx, "{s}[{d}]: expected a string, got {s}", .{ f.path, i, describe(ctx, L, -1) });
             cfg.shell_args.append(cfg.dupe(s) catch return "out of memory") catch return "out of memory";
+        }
+        return null;
+    }
+    if (f.kind == .ghost_patterns) {
+        const n = c.luaL_len(L, t);
+        if (n > 64) return fail(ctx, "{s}: at most 64 patterns", .{f.path});
+        var i: c.lua_Integer = 1;
+        while (i <= n) : (i += 1) {
+            _ = c.lua_rawgeti(L, t, i);
+            defer lua.pop(L, 1);
+            const s = lua.toString(L, -1) orelse return fail(ctx, "{s}[{d}]: expected a string, got {s}", .{ f.path, i, describe(ctx, L, -1) });
+            if (ghostPatternError(s)) |msg| return fail(ctx, "{s}[{d}]: {s}", .{ f.path, i, msg });
+            cfg.ghost_patterns.append(cfg.dupe(s) catch return "out of memory") catch return "out of memory";
         }
         return null;
     }
@@ -566,6 +603,20 @@ fn setItem(ctx: *Ctx, L: *State, path: []const u8, key_idx: c_int, val_idx: c_in
             if (i == n + 1) {
                 cfg.shell_args.append(owned) catch return "out of memory";
             } else cfg.shell_args.items[@intCast(i - 1)] = owned;
+        },
+        .ghost_patterns => {
+            if (c.lua_isinteger(L, key_idx) == 0) return fail(ctx, "{s}: index must be a number", .{path});
+            const i = c.lua_tointegerx(L, key_idx, null);
+            const n: c.lua_Integer = @intCast(cfg.ghost_patterns.items.len);
+            if (i == n + 1 and n >= 64) return fail(ctx, "{s}: at most 64 patterns", .{path});
+            if (i < 1 or i > n + 1) return fail(ctx, "{s}[{d}]: index out of range (1..{d})", .{ path, i, n + 1 });
+            const s = lua.toString(L, val_idx) orelse return fail(ctx, "{s}[{d}]: expected a string, got {s}", .{ path, i, describe(ctx, L, val_idx) });
+            if (ghostPatternError(s)) |msg| return fail(ctx, "{s}[{d}]: {s}", .{ path, i, msg });
+            const owned = cfg.dupe(s) catch return "out of memory";
+            cfg.ghost_patterns_set = true;
+            if (i == n + 1) {
+                cfg.ghost_patterns.append(owned) catch return "out of memory";
+            } else cfg.ghost_patterns.items[@intCast(i - 1)] = owned;
         },
         .palette => {
             const ok_idx = c.lua_isinteger(L, key_idx) != 0;
@@ -1005,6 +1056,13 @@ fn luaGet(Lopt: ?*State) callconv(.C) c_int {
             const i = c.lua_tointegerx(L, 2, null);
             if (i < 1 or i > cfg.shell_args.items.len) return 0;
             lua.pushString(L, cfg.shell_args.items[@intCast(i - 1)]);
+        },
+        .ghost_patterns => {
+            if (!cfg.ghost_patterns_set) return 0;
+            if (!has_key or c.lua_isinteger(L, 2) == 0) return 0;
+            const i = c.lua_tointegerx(L, 2, null);
+            if (i < 1 or i > cfg.ghost_patterns.items.len) return 0;
+            lua.pushString(L, cfg.ghost_patterns.items[@intCast(i - 1)]);
         },
         .keys => {
             const chord = if (has_key) lua.toString(L, 2) orelse return 0 else return 0;

@@ -145,6 +145,10 @@ pub const Config = struct {
     ai_output_lines: u16 = 20,
     /// Chord that accepts the ghost-text suggestion.
     ai_accept_key: []const u8 = "tab",
+    /// Ask the Output (Ctrl+Shift+Q / Cmd+Shift+Q).
+    ai_ask_enabled: bool = true,
+    /// Lines of the output region sent to the model (the tail).
+    ai_ask_max_lines: u16 = 200,
     /// Load the OSC 133 shell integration into bash/zsh/fish.
     shell_integration: bool = true,
     /// Built-in SSH client (docs/SSH.md).
@@ -246,6 +250,20 @@ pub const Config = struct {
     shell_env: std.ArrayList([]const u8),
     /// Starting directory ("" = inherit; "~" is expanded).
     shell_cwd: []const u8 = "",
+    /// Ghost Run: confirm risky commands before Enter reaches the shell.
+    ghost_run_enabled: bool = true,
+    /// Ask the AI engine for a plain-English explanation on the overlay.
+    ghost_run_ai: bool = true,
+    /// `config.ghost_run.patterns`. Empty until a custom list is assigned.
+    ghost_patterns: std.ArrayList([]const u8),
+    /// False uses the built-in patterns. Assigning a list, even `{}`, replaces them.
+    ghost_patterns_set: bool = false,
+    /// Offer a shortcut when the same command sequence repeats in one project.
+    muscle_enabled: bool = true,
+    /// How many times a sequence must repeat before it is offered.
+    muscle_min_repeats: u16 = 3,
+    /// Longest sequence to mine (commands).
+    muscle_max_len: u16 = 5,
 
     pub const Backend = enum { auto, x11, wayland, win32, cocoa };
 
@@ -261,6 +279,7 @@ pub const Config = struct {
             .ssh_profiles = std.ArrayList(SshProfile).init(allocator),
             .startup_layout = std.ArrayList(LayoutTab).init(allocator),
             .plugins = std.ArrayList(PluginConfig).init(allocator),
+            .ghost_patterns = std.ArrayList([]const u8).init(allocator),
         };
     }
 
@@ -271,6 +290,7 @@ pub const Config = struct {
         self.ssh_profiles.deinit();
         self.startup_layout.deinit();
         self.plugins.deinit();
+        self.ghost_patterns.deinit();
         self.arena.deinit();
         self.allocator.destroy(self.arena);
     }
