@@ -14,6 +14,10 @@ const invite = @import("invite.zig");
 const link_mod = @import("link.zig");
 const msg = @import("msg.zig");
 const relay = @import("relay.zig");
+const ws_relay = @import("ws_relay.zig");
+
+const DialMode = enum { direct, tcp, ws };
+const Fallback = enum { none, tcp, ws };
 
 pub const Access = msg.Access;
 
@@ -28,7 +32,6 @@ const Dial = struct {
     err_len: usize = 0,
     thread: std.Thread = undefined,
     joined: bool = false,
-    use_relay: bool = false,
     role: relay.Role = .guest,
     id: [8]u8 = [_]u8{0} ** 8,
     host: [invite.max_host]u8 = undefined,
@@ -37,30 +40,95 @@ const Dial = struct {
     relay_host: [invite.max_relay]u8 = undefined,
     relay_host_len: usize = 0,
     relay_port: u16 = 0,
+    mode: DialMode = .direct,
+    fallback: Fallback = .none,
+    wait_peer: bool = false,
+    ws_url: [invite.max_relay]u8 = undefined,
+    ws_url_len: usize = 0,
 
     fn cancelled(ctx: *anyopaque) bool {
         const self: *Dial = @ptrCast(@alignCast(ctx));
         return self.cancel.load(.seq_cst);
     }
 
-    fn run(self: *Dial) void {
-        const cancel = netdial.CancelFn{ .ctx = self, .f = cancelled };
-        const stream: std.net.Stream = if (self.use_relay)
-            relay.open(self.relay_host[0..self.relay_host_len], self.relay_port, self.role, &self.id, 20000, cancel) catch |err| {
-                self.fail(err);
-                return;
-            }
-        else blk: {
-            const fd = netdial.connect(self.host[0..self.host_len], self.port, 8000, cancel) catch |err| {
-                self.fail(err);
-                return;
-            };
-            break :blk .{ .handle = fd };
-        };
+    fn succeed(self: *Dial, stream: std.net.Stream) void {
         self.mu.lock();
         self.stream = stream;
         self.done = true;
         self.mu.unlock();
+    }
+
+    fn run(self: *Dial) void {
+        const cancel = netdial.CancelFn{ .ctx = self, .f = cancelled };
+        if (self.mode == .direct) {
+            const ms: u32 = if (self.fallback == .none) 8000 else invite.lan_probe_ms;
+            if (netdial.connect(self.host[0..self.host_len], self.port, ms, cancel)) |fd| {
+                self.succeed(.{ .handle = fd });
+                return;
+            } else |err| {
+                if (self.fallback == .none or err == error.Cancelled or cancel.check()) {
+                    self.fail(err);
+                    return;
+                }
+            }
+        }
+        self.relayUntil(cancel);
+    }
+
+    fn relayUntil(self: *Dial, cancel: netdial.CancelFn) void {
+        const kind: DialMode = if (self.mode == .direct) switch (self.fallback) {
+            .none => .direct,
+            .tcp => .tcp,
+            .ws => .ws,
+        } else self.mode;
+        while (true) {
+            if (cancel.check()) {
+                self.fail(error.Cancelled);
+                return;
+            }
+            const opened: ?std.net.Stream = switch (kind) {
+                .direct => null,
+                .tcp => self.openTcp(cancel) catch |err| {
+                    if (!self.retry(err, cancel)) return;
+                    continue;
+                },
+                .ws => ws_relay.open(self.ws_url[0..self.ws_url_len], self.role, &self.id, cancel, self.wait_peer) catch |err| {
+                    if (!self.retry(err, cancel)) return;
+                    continue;
+                },
+            };
+            if (opened) |stream| {
+                self.succeed(stream);
+                return;
+            }
+            self.fail(error.Closed);
+            return;
+        }
+    }
+
+    fn retry(self: *Dial, err: anyerror, cancel: netdial.CancelFn) bool {
+        if (!self.wait_peer or err == error.Cancelled or cancel.check()) {
+            self.fail(err);
+            return false;
+        }
+        var i: u32 = 0;
+        while (i < 20) : (i += 1) {
+            if (cancel.check()) {
+                self.fail(error.Cancelled);
+                return false;
+            }
+            std.time.sleep(50 * std.time.ns_per_ms);
+        }
+        return true;
+    }
+
+    fn openTcp(self: *Dial, cancel: netdial.CancelFn) !std.net.Stream {
+        const fd = try netdial.connect(self.relay_host[0..self.relay_host_len], self.relay_port, 15000, cancel);
+        const stream = std.net.Stream{ .handle = fd };
+        errdefer stream.close();
+        const wait_ms: u32 = if (self.wait_peer) std.math.maxInt(u32) else 20000;
+        try relay.preface(stream, self.role, &self.id, wait_ms, cancel);
+        return stream;
     }
 
     fn fail(self: *Dial, err: anyerror) void {
@@ -104,20 +172,33 @@ const Dial = struct {
 };
 
 fn spawnDial(allocator: std.mem.Allocator, spec: struct {
-    use_relay: bool,
+    mode: DialMode = .direct,
+    fallback: Fallback = .none,
+    wait_peer: bool = false,
     role: relay.Role,
     id: [8]u8,
     host: []const u8,
     port: u16,
     relay_host: []const u8 = "",
     relay_port: u16 = 0,
+    ws_url: []const u8 = "",
 }) !*Dial {
     const d = try allocator.create(Dial);
-    d.* = .{ .use_relay = spec.use_relay, .role = spec.role, .id = spec.id, .port = spec.port, .relay_port = spec.relay_port };
+    d.* = .{
+        .mode = spec.mode,
+        .fallback = spec.fallback,
+        .wait_peer = spec.wait_peer,
+        .role = spec.role,
+        .id = spec.id,
+        .port = spec.port,
+        .relay_port = spec.relay_port,
+    };
     d.host_len = @min(spec.host.len, d.host.len);
     @memcpy(d.host[0..d.host_len], spec.host[0..d.host_len]);
     d.relay_host_len = @min(spec.relay_host.len, d.relay_host.len);
     @memcpy(d.relay_host[0..d.relay_host_len], spec.relay_host[0..d.relay_host_len]);
+    d.ws_url_len = @min(spec.ws_url.len, d.ws_url.len);
+    @memcpy(d.ws_url[0..d.ws_url_len], spec.ws_url[0..d.ws_url_len]);
     d.thread = std.Thread.spawn(.{}, Dial.run, .{d}) catch |err| {
         allocator.destroy(d);
         return err;
@@ -143,6 +224,12 @@ pub const Host = struct {
     phase: Phase = .waiting,
     full: bool = true,
     port_n: u16 = 0,
+    relay_kind: invite.RelayKind = .off,
+    relay_url: [invite.max_relay]u8 = [_]u8{0} ** invite.max_relay,
+    relay_url_len: usize = 0,
+    relay_tcp_host: [invite.max_relay]u8 = [_]u8{0} ** invite.max_relay,
+    relay_tcp_host_len: usize = 0,
+    relay_tcp_port: u16 = 0,
     fail: [48]u8 = [_]u8{0} ** 48,
     fail_len: usize = 0,
 
@@ -188,46 +275,64 @@ pub const Host = struct {
         var code_owned = false;
         errdefer if (code_owned) allocator.free(self.code);
 
-        var use_relay = false;
-        var relay_host: []const u8 = "";
-        var relay_port: u16 = 0;
-        if (relay_url.len > 0) {
-            const r = invite.parseRelay(relay_url) catch return error.BadRelay;
-            use_relay = true;
-            relay_host = r.host;
-            relay_port = r.port;
+        const mode = invite.classifyRelay(relay_url) catch return error.BadRelay;
+        self.relay_kind = mode.kind;
+        if (mode.kind == .ws) {
+            self.relay_url_len = @min(mode.ws_url.len, self.relay_url.len);
+            @memcpy(self.relay_url[0..self.relay_url_len], mode.ws_url[0..self.relay_url_len]);
+        } else if (mode.kind == .tcp) {
+            self.relay_tcp_host_len = @min(mode.tcp_host.len, self.relay_tcp_host.len);
+            @memcpy(self.relay_tcp_host[0..self.relay_tcp_host_len], mode.tcp_host[0..self.relay_tcp_host_len]);
+            self.relay_tcp_port = mode.tcp_port;
         }
 
-        var bound_port = port_n;
-        if (!use_relay) {
-            const addr = std.net.Address.parseIp(bind_ip, port_n) catch return error.BadAddress;
-            const listener = try addr.listen(.{ .reuse_address = true, .force_nonblocking = true });
+        const addr = std.net.Address.parseIp(bind_ip, port_n) catch return error.BadAddress;
+        if (addr.listen(.{ .reuse_address = true, .force_nonblocking = true })) |listener| {
             self.listener = listener;
-            bound_port = listener.listen_address.getPort();
+            self.port_n = listener.listen_address.getPort();
+        } else |err| {
+            if (mode.kind == .off) return err;
+            self.port_n = port_n;
         }
-        self.port_n = bound_port;
         var code_buf: [512]u8 = undefined;
         const code = try invite.encode(&code_buf, .{
             .host = advertise,
-            .port = bound_port,
+            .port = self.port_n,
             .secret = sec,
             .relay = relay_url,
         });
         self.code = try allocator.dupe(u8, code);
         code_owned = true;
-        if (use_relay) {
-            const id = (invite.Invite{ .host = advertise, .port = bound_port, .secret = sec, .relay = relay_url }).relayId();
-            self.dial = try spawnDial(allocator, .{
-                .use_relay = true,
-                .role = .host,
-                .id = id,
-                .host = advertise,
-                .port = bound_port,
-                .relay_host = relay_host,
-                .relay_port = relay_port,
-            });
-        }
+        self.armRelay();
+        if (self.listener == null and self.dial == null) return error.BadAddress;
         return self;
+    }
+
+    fn relayId(self: *const Host) [8]u8 {
+        return (invite.Invite{ .host = "", .port = self.port_n, .secret = self.secret, .relay = "" }).relayId();
+    }
+
+    fn armRelay(self: *Host) void {
+        if (self.relay_kind == .off or self.dial != null) return;
+        const mode: DialMode = switch (self.relay_kind) {
+            .off => return,
+            .tcp => .tcp,
+            .ws => .ws,
+        };
+        self.dial = spawnDial(self.allocator, .{
+            .mode = mode,
+            .wait_peer = true,
+            .role = .host,
+            .id = self.relayId(),
+            .host = "",
+            .port = self.port_n,
+            .relay_host = self.relay_tcp_host[0..self.relay_tcp_host_len],
+            .relay_port = self.relay_tcp_port,
+            .ws_url = self.relay_url[0..self.relay_url_len],
+        }) catch |err| {
+            self.note(@errorName(err));
+            return;
+        };
     }
 
     pub fn fds(self: *Host, out: *[2]io.Fd) usize {
@@ -245,15 +350,35 @@ pub const Host = struct {
 
     pub fn tick(self: *Host) !void {
         if (self.phase == .closed) return;
-        if (self.dial) |d| {
+        if (self.link == null) if (self.listener) |*s| {
+            const conn = s.accept() catch |err| switch (err) {
+                error.WouldBlock, error.ConnectionAborted => null,
+                else => return err,
+            };
+            if (conn) |c| {
+                self.link = link_mod.Link.responder(self.allocator, c.stream, &self.psk) catch |err| {
+                    c.stream.close();
+                    return err;
+                };
+                io.setNonBlocking(self.link.?.stream.handle) catch {};
+                link_mod.setNoDelay(self.link.?.stream);
+                if (self.dial) |d| {
+                    d.finish(self.allocator);
+                    self.dial = null;
+                }
+            }
+        };
+        if (self.link == null) if (self.dial) |d| {
             if (d.errorName()) |name| {
-                self.note(name);
+                const alone = self.listener == null;
                 d.finish(self.allocator);
                 self.dial = null;
-                self.phase = .closed;
-                return;
-            }
-            if (d.take()) |stream| {
+                if (alone) {
+                    self.note(name);
+                    self.phase = .closed;
+                    return;
+                }
+            } else if (d.take()) |stream| {
                 d.finish(self.allocator);
                 self.dial = null;
                 self.link = link_mod.Link.responder(self.allocator, stream, &self.psk) catch |err| {
@@ -261,19 +386,8 @@ pub const Host = struct {
                     return err;
                 };
                 io.setNonBlocking(self.link.?.stream.handle) catch {};
+                link_mod.setNoDelay(self.link.?.stream);
             }
-        }
-        if (self.link == null) if (self.listener) |*s| {
-            const conn = s.accept() catch |err| switch (err) {
-                error.WouldBlock, error.ConnectionAborted => return,
-                else => return err,
-            };
-            self.link = link_mod.Link.responder(self.allocator, conn.stream, &self.psk) catch |err| {
-                conn.stream.close();
-                return err;
-            };
-            io.setNonBlocking(self.link.?.stream.handle) catch {};
-            link_mod.setNoDelay(self.link.?.stream);
         };
         const l = self.link orelse return;
         l.pump() catch |err| {
@@ -378,7 +492,10 @@ pub const Host = struct {
         self.gate_open = true;
         self.has_pointer = false;
         self.pointer = .{};
-        if (self.phase != .closed) self.phase = .waiting;
+        if (self.phase != .closed) {
+            self.phase = .waiting;
+            self.armRelay();
+        }
     }
 
     pub fn failure(self: *const Host) ?[]const u8 {
@@ -424,14 +541,12 @@ pub const Guest = struct {
         var owned = try invite.decodeOwned(allocator, code);
         defer owned.deinit();
         const view = owned.view();
-        const use_relay = view.relay.len > 0;
-        var relay_host: []const u8 = "";
-        var relay_port: u16 = 0;
-        if (use_relay) {
-            const r = invite.parseRelay(view.relay) catch return error.BadRelay;
-            relay_host = r.host;
-            relay_port = r.port;
-        }
+        const mode = invite.classifyRelay(view.relay) catch return error.BadRelay;
+        const fallback: Fallback = switch (mode.kind) {
+            .off => .none,
+            .tcp => .tcp,
+            .ws => .ws,
+        };
         const self = try allocator.create(Guest);
         self.* = .{
             .allocator = allocator,
@@ -444,13 +559,15 @@ pub const Guest = struct {
             allocator.destroy(self);
         }
         self.dial = try spawnDial(allocator, .{
-            .use_relay = use_relay,
+            .mode = .direct,
+            .fallback = fallback,
             .role = .guest,
             .id = view.relayId(),
             .host = view.host,
             .port = view.port,
-            .relay_host = relay_host,
-            .relay_port = relay_port,
+            .relay_host = mode.tcp_host,
+            .relay_port = mode.tcp_port,
+            .ws_url = mode.ws_url,
         });
         return self;
     }
@@ -722,4 +839,79 @@ test "invite code: guest sees the screen and input waits for grant" {
     try guest.sendInput("ls\n");
     try pumpBoth(host, guest);
     try std.testing.expectEqualStrings("ls\n", host.input.items);
+}
+
+fn waitOpen(host: *Host, guest: *Guest) !void {
+    var i: usize = 0;
+    while (i < 400 and (host.phase != .open or guest.phase != .open)) : (i += 1) {
+        try host.tick();
+        try guest.tick();
+        if (guest.failure()) |why| {
+            std.debug.print("join failed: {s}\n", .{why});
+            return error.JoinFailed;
+        }
+        std.time.sleep(5 * std.time.ns_per_ms);
+    }
+    try pumpBoth(host, guest);
+    try std.testing.expectEqual(Phase.open, host.phase);
+    try std.testing.expectEqual(Phase.open, guest.phase);
+}
+
+test "guest uses the relay when the LAN port does not answer" {
+    io.ensureSockets();
+    const mock = try ws_relay.Mock.start(std.testing.allocator);
+    defer mock.deinit();
+    var url_buf: [80]u8 = undefined;
+    const url = try std.fmt.bufPrint(&url_buf, "ws://127.0.0.1:{d}", .{mock.port()});
+    const secret = [_]u8{ 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7 };
+    const host = try Host.listen(std.testing.allocator, "127.0.0.1", 0, "127.0.0.1", url, secret);
+    defer host.deinit();
+    var code_buf: [512]u8 = undefined;
+    const code = try invite.encode(&code_buf, .{
+        .host = "127.0.0.1",
+        .port = 1,
+        .secret = secret,
+        .relay = url,
+    });
+    const guest = try Guest.start(std.testing.allocator, code);
+    defer guest.deinit();
+    try waitOpen(host, guest);
+
+    var rowbuf: [msg.wire_len]u8 = undefined;
+    msg.writeCell(&rowbuf, 'Q', 0xAABBCC, 0x101010, 0);
+    try host.sendRow(.{
+        .rows = 1,
+        .cols = 1,
+        .cursor_row = 0,
+        .cursor_col = 0,
+        .cursor_on = true,
+        .index = 0,
+        .cells = &rowbuf,
+    });
+    // The relay pump is another thread. An empty send buffer only means the
+    // bytes left this process's socket, not that the guest has decrypted them.
+    var saw: usize = 0;
+    while (saw < 80 and guest.grid.items.len < msg.wire_len) : (saw += 1) {
+        try host.tick();
+        try guest.tick();
+        std.time.sleep(5 * std.time.ns_per_ms);
+    }
+    try std.testing.expectEqual(@as(u21, 'Q'), msg.readCell(guest.grid.items[0..msg.wire_len]).cp);
+    try std.testing.expect(mock.forwardedLen() > 0);
+    try std.testing.expect(!mock.contains(&secret));
+    try std.testing.expect(mock.guestCount() >= 1);
+}
+
+test "guest prefers the LAN and does not dial the relay" {
+    io.ensureSockets();
+    const mock = try ws_relay.Mock.start(std.testing.allocator);
+    defer mock.deinit();
+    var url_buf: [80]u8 = undefined;
+    const url = try std.fmt.bufPrint(&url_buf, "ws://127.0.0.1:{d}", .{mock.port()});
+    const host = try Host.listen(std.testing.allocator, "127.0.0.1", 0, "127.0.0.1", url, null);
+    defer host.deinit();
+    const guest = try Guest.start(std.testing.allocator, host.code);
+    defer guest.deinit();
+    try waitOpen(host, guest);
+    try std.testing.expectEqual(@as(usize, 0), mock.guestCount());
 }

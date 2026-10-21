@@ -194,6 +194,11 @@ pub fn setNoDelay(stream: std.net.Stream) void {
     const one: c_int = 1;
     // TCP_NODELAY is 1 on Linux, Windows, and Darwin. `posix.TCP` is that
     // option set on Linux and an IPPROTO number on Darwin, so the literal
-    // is the portable form.
-    std.posix.setsockopt(stream.handle, std.posix.IPPROTO.TCP, 1, std.mem.asBytes(&one)) catch {};
+    // is the portable form. The relay presents a socketpair, where this
+    // option is unsupported; ignore that without treating it as a fault.
+    if (@import("builtin").os.tag == .windows) {
+        _ = std.os.windows.ws2_32.setsockopt(stream.handle, std.posix.IPPROTO.TCP, 1, std.mem.asBytes(&one).ptr, @intCast(@sizeOf(c_int)));
+        return;
+    }
+    _ = std.posix.system.setsockopt(stream.handle, std.posix.IPPROTO.TCP, 1, std.mem.asBytes(&one).ptr, @sizeOf(c_int));
 }

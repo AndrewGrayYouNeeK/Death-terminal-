@@ -18,6 +18,20 @@ pub const link_prefix = "deathterminal://join/";
 pub const secret_len: usize = 16;
 pub const max_host: usize = 63;
 pub const max_relay: usize = 120;
+/// Hosted splice. Both sides dial out; the guest still tries the LAN first.
+pub const default_ws_relay = "wss://relay.youneek.xyz";
+/// How long a guest waits on the LAN address before using the relay.
+pub const lan_probe_ms: u32 = 1000;
+
+pub const RelayKind = enum { off, tcp, ws };
+
+/// Slices point at `text` (or at `default_ws_relay`).
+pub const Classified = struct {
+    kind: RelayKind,
+    tcp_host: []const u8 = "",
+    tcp_port: u16 = 0,
+    ws_url: []const u8 = "",
+};
 
 pub const Invite = struct {
     host: []const u8,
@@ -169,6 +183,47 @@ pub fn parseRelay(text: []const u8) error{BadRelay}!struct { host: []const u8, p
     return .{ .host = rest[0..colon], .port = port };
 }
 
+fn isOff(text: []const u8) bool {
+    const words = [_][]const u8{ "off", "none", "false", "direct" };
+    for (words) |w| {
+        if (text.len != w.len) continue;
+        var same = true;
+        for (text, w) |a, b| {
+            if (std.ascii.toLower(a) != b) {
+                same = false;
+                break;
+            }
+        }
+        if (same) return true;
+    }
+    return false;
+}
+
+/// What an invite's relay field means. Empty is direct. This does not apply
+/// the hosted default; config uses `resolveConfigured` for that.
+pub fn classifyRelay(text: []const u8) error{BadRelay}!Classified {
+    if (text.len == 0 or isOff(text)) return .{ .kind = .off };
+    if (text.len > max_relay) return error.BadRelay;
+    if (std.mem.startsWith(u8, text, "wss://") or std.mem.startsWith(u8, text, "ws://")) {
+        const uri = std.Uri.parse(text) catch return error.BadRelay;
+        const ws = std.ascii.eqlIgnoreCase(uri.scheme, "ws");
+        const wss = std.ascii.eqlIgnoreCase(uri.scheme, "wss");
+        if (!ws and !wss) return error.BadRelay;
+        if (uri.user != null or uri.host == null) return error.BadRelay;
+        if (uri.port) |p| if (p == 0) return error.BadRelay;
+        return .{ .kind = .ws, .ws_url = text };
+    }
+    const tcp = try parseRelay(text);
+    return .{ .kind = .tcp, .tcp_host = tcp.host, .tcp_port = tcp.port };
+}
+
+/// Config value. Empty selects the hosted relay. `off` is LAN only.
+pub fn resolveConfigured(text: []const u8) error{BadRelay}!Classified {
+    if (text.len == 0) return classifyRelay(default_ws_relay);
+    if (isOff(text)) return .{ .kind = .off };
+    return classifyRelay(text);
+}
+
 test "invite roundtrip including a link and a relay" {
     const secret = [_]u8{0xAB} ** secret_len;
     var buf: [400]u8 = undefined;
@@ -207,4 +262,21 @@ test "bad invites are rejected" {
     const ok = try parseRelay("tcp://relay.example:9754");
     try std.testing.expectEqualStrings("relay.example", ok.host);
     try std.testing.expectEqual(@as(u16, 9754), ok.port);
+}
+
+test "relay config: default hosted url, off, or a custom splice" {
+    const def = try resolveConfigured("");
+    try std.testing.expectEqual(RelayKind.ws, def.kind);
+    try std.testing.expectEqualStrings(default_ws_relay, def.ws_url);
+    const off = try resolveConfigured("OFF");
+    try std.testing.expectEqual(RelayKind.off, off.kind);
+    const custom = try resolveConfigured("wss://relay.example/ignored");
+    try std.testing.expectEqualStrings("wss://relay.example/ignored", custom.ws_url);
+    const tcp = try classifyRelay("10.0.0.8:9754");
+    try std.testing.expectEqual(RelayKind.tcp, tcp.kind);
+    try std.testing.expectEqualStrings("10.0.0.8", tcp.tcp_host);
+    try std.testing.expectEqual(@as(u16, 9754), tcp.tcp_port);
+    try std.testing.expectError(error.BadRelay, resolveConfigured("ftp://nope"));
+    const bare = try classifyRelay("");
+    try std.testing.expectEqual(RelayKind.off, bare.kind);
 }

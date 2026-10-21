@@ -557,3 +557,29 @@ test "lua config: layout mistakes are reported" {
     try t.expect(d.contains("layout[5]: index out of range"));
     try t.expectEqual(@as(usize, 1), cfg.startup_layout.items.len);
 }
+
+test "lua config: share.relay accepts off, a wss url, or host:port" {
+    var d = config.Diagnostics.init(t.allocator);
+    defer d.deinit();
+    var off = loadStr("config.share.relay = \"off\"\n", &d);
+    defer off.deinit();
+    try t.expectEqual(@as(usize, 0), d.items.items.len);
+    try t.expectEqualStrings("off", off.share_relay);
+
+    d.clear();
+    var hosted = loadStr("config.share.relay = \"wss://relay.example\"\n", &d);
+    defer hosted.deinit();
+    try t.expectEqual(@as(usize, 0), d.items.items.len);
+    try t.expectEqualStrings("wss://relay.example", hosted.share_relay);
+
+    d.clear();
+    var tcp = loadStr("config.share.relay = \"tcp://10.0.0.8:9754\"\n", &d);
+    defer tcp.deinit();
+    try t.expectEqual(@as(usize, 0), d.items.items.len);
+
+    d.clear();
+    var bad = loadStr("config.share.relay = \"ftp://nope\"\n", &d);
+    defer bad.deinit();
+    try t.expect(d.contains("share.relay"));
+    try t.expect(d.contains("wss://"));
+}

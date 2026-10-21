@@ -127,7 +127,7 @@ config is reloaded.
 | `share.bind` | `"0.0.0.0"` | IPv4 address the host listens on |
 | `share.port` | `0` | Listen port, 0–65535. `0` picks a free port |
 | `share.advertise` | `""` | Host written into the invite. `""` detects a LAN IPv4 (no NAT traversal) |
-| `share.relay` | `""` | `""` is direct TCP. Or `host:port` / `tcp://host:port` for the optional splice ([SHARING.md](SHARING.md#relay)) |
+| `share.relay` | `""` | `""` uses the hosted relay `wss://relay.youneek.xyz` and still listens on the LAN. `"off"` is LAN only. A `wss://` URL (or `ws://` for a local relay) is a custom splice. `host:port` / `tcp://host:port` is the self-hosted TCP rendezvous ([SHARING.md](SHARING.md#relay)) |
 | `tabs.bar` | `"auto"` | Tab bar: `"auto"` (only with 2+ tabs), `"top"`, `"bottom"`, `"hidden"`. `toggle_tab_bar` flips it. See [TABS.md](TABS.md) |
 | `tabs.confirm_close` | `true` | Ask before closing a pane / tab / the window while a program (not just the shell) runs in it |
 | `tabs.dim_inactive` | `0` | 0–0.9: fade the text of panes without the focus (0 = off) |

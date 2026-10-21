@@ -1,0 +1,27 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "youneek-share-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-21",
+  "workers_dev": true,
+  "vars": {
+    "ALLOW_TEST_HOOKS": "1",
+    "MAX_SESSIONS": "1",
+    "MAX_PER_IP": "8",
+    "NEW_PER_IP_PER_HOUR": "100",
+    "SESSION_TTL_MS": "8000",
+    "IDLE_MS": "4000",
+    "WAIT_MS": "1500",
+    "MAX_FRAME": "1024",
+    "MAX_BYTES": "8192"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "SESSION", "class_name": "ShareSession" },
+      { "name": "GATE", "class_name": "RelayGate" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ShareSession", "RelayGate"] }
+  ]
+}

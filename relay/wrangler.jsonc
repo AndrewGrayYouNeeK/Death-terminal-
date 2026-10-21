@@ -1,0 +1,39 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "youneek-share-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-21",
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "redact_query_string": true,
+    "logs": {
+      "enabled": true
+    },
+    "traces": {
+      "enabled": true
+    }
+  },
+  // Production limits. Deploy this file, not wrangler.test.jsonc.
+  // Live custom domain. https://relay.youneek.xyz/health
+  "routes": [{ "pattern": "relay.youneek.xyz", "custom_domain": true }],
+  "vars": {
+    "MAX_SESSIONS": "128",
+    "MAX_PER_IP": "8",
+    "NEW_PER_IP_PER_HOUR": "30",
+    "SESSION_TTL_MS": "7200000",
+    "IDLE_MS": "900000",
+    "WAIT_MS": "1800000",
+    "MAX_FRAME": "65536",
+    "MAX_BYTES": "67108864"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "SESSION", "class_name": "ShareSession" },
+      { "name": "GATE", "class_name": "RelayGate" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ShareSession", "RelayGate"] }
+  ]
+}

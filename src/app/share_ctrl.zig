@@ -135,12 +135,21 @@ pub const Controller = struct {
             self.advertise[0..self.advertise_len]
         else
             invite.detectLanHost(&detected);
+        const relay_cfg = invite.resolveConfigured(self.relay[0..self.relay_len]) catch {
+            self.setErr("bad relay");
+            return;
+        };
+        const relay_url: []const u8 = switch (relay_cfg.kind) {
+            .off => "",
+            .tcp => self.relay[0..self.relay_len],
+            .ws => relay_cfg.ws_url,
+        };
         const host = session.Host.listen(
             self.a,
             self.bind_ip[0..self.bind_len],
             self.port,
             adv,
-            self.relay[0..self.relay_len],
+            relay_url,
             null,
         ) catch |err| {
             self.setErr(@errorName(err));
@@ -808,6 +817,10 @@ test "host invite shows the address, port, and join command" {
     var c = Controller.init(std.testing.allocator);
     defer c.deinit();
     c.setBind("127.0.0.1");
+    // LAN only. An empty relay would dial the hosted default.
+    const off = "off";
+    c.relay_len = off.len;
+    @memcpy(c.relay[0..off.len], off);
     const adv = "127.0.0.1";
     c.advertise_len = adv.len;
     @memcpy(c.advertise[0..adv.len], adv);
