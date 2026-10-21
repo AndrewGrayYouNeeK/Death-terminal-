@@ -95,7 +95,7 @@ The Cocoa backend (`src/platform/cocoa_backend.zig`) loads libobjc, AppKit, Quar
 - **Cmd shortcuts:** map onto the Ctrl+Shift bindings (Cmd+C/V/T/W…), and Cmd+Q quits.
 - **Option:** acts as Meta.
 - **Waiting:** a helper thread `poll()`s the PTY and wake fds and posts an application-defined NSEvent. The main thread sleeps in `nextEventMatchingMask:`.
-- **Vulkan:** needs MoltenVK. The loader resolves paths next to the executable and in `../Frameworks` (`dlopen` does not expand `@executable_path`), then `/opt/homebrew/lib` and `/usr/local/lib`. The release bundle includes `libMoltenVK.dylib` and `MoltenVK_icd.json` in `Contents/Frameworks`. The instance enables `VK_KHR_portability_enumeration` and the device enables `VK_KHR_portability_subset` when offered.
+- **Vulkan:** needs MoltenVK. The loader resolves paths next to the executable and in `../Frameworks` (`dlopen` does not expand `@executable_path`), then `/opt/homebrew/lib` and `/usr/local/lib`. The release workflow bundles `libMoltenVK.dylib` and `MoltenVK_icd.json` in `Contents/Frameworks`. The instance enables `VK_KHR_portability_enumeration` and the device enables `VK_KHR_portability_subset` when offered.
 
 None of this has run on a Mac yet. Expect fixes after a first test, especially in the areas below:
 

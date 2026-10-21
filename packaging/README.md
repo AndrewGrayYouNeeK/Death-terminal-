@@ -34,7 +34,7 @@ Output goes to `zig-out/release/`:
 | `windows/nsis/deathterminal.nsi`, `windows/build-installer.sh` | per-user NSIS setup exe (Start Menu shortcut runs `--gui`). Built on Linux with `makensis` |
 | `windows/winget/` | winget manifests (portable zip; fill in the SHA256). The NSIS exe is a separate release asset |
 | `windows/wix/deathterminal.wxs` | optional WiX v4 MSI (not built by CI) |
-| `macos/Info.plist`, `macos/make-app.sh`, `macos/make-dmg.sh` | `.app` bundle, zip, and `.dmg`. `hdiutil` on a Mac; on Linux an HFS hybrid wrapped as UDIF. Ad-hoc `codesign` only when the tool exists |
+| `macos/Info.plist`, `macos/make-app.sh`, `macos/make-dmg.sh` | `.app` bundle, zip, and `.dmg`. `hdiutil` on a Mac; on Linux an HFS hybrid wrapped as UDIF. Ad-hoc `codesign` only when the tool exists. `MOLTENVK_DIR` copies `libMoltenVK.dylib` and `MoltenVK_icd.json` into `Contents/Frameworks` |
 | `macos/fetch-moltenvk.sh` | Pins MoltenVK 1.4.2 (`MoltenVK-macos.tar` + sha256) for the release workflow |
 | `macos/sign-release.sh`, `macos/entitlements.plist`, `macos/gui-launcher.c` | Release-job signing: Developer ID, hardened runtime, `hdiutil` DMG, notarize, staple. Signs `Contents/Frameworks/libMoltenVK.dylib`. Copies artifacts through unsigned when secrets are absent |
 | `SIGNING.md` | Developer ID setup, notarization, and the Windows/Linux TODOs. No secrets are stored here |

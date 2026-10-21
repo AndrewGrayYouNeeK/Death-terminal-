@@ -9,13 +9,14 @@
 # DeathTerminal-<ver>-<arch>.dmg (see make-dmg.sh). The zip and dmg
 # filenames stay DeathTerminal-* so release asset URLs do not change.
 #
-# Vulkan on macOS goes through MoltenVK. The release workflow points
-# MOLTENVK_DIR at packaging/macos/fetch-moltenvk.sh, which supplies
-# libMoltenVK.dylib and MoltenVK_icd.json. Both are copied into
-# Contents/Frameworks. The loader resolves that directory from the
-# executable (`../Frameworks`); dlopen does not expand @executable_path.
-# Without them the app uses Homebrew's /opt/homebrew/lib, or falls back to
-# the software renderer. The .icns is made with iconutil (macOS only).
+# Vulkan on macOS goes through MoltenVK. If MOLTENVK_DIR is set (the release
+# workflow points it at packaging/macos/fetch-moltenvk.sh), libMoltenVK.dylib
+# and MoltenVK_icd.json are copied into Contents/Frameworks. The loader
+# resolves that directory from the executable (`../Frameworks`); dlopen does
+# not expand @executable_path. Without them the app uses Homebrew's
+# /opt/homebrew/lib, or falls back to the software renderer. The signing job
+# signs that dylib when the Apple secrets are set. The .icns is made with
+# iconutil (macOS only).
 set -euo pipefail
 STAGE=$(cd "${1:?stage dir}" && pwd)
 OUT=$(mkdir -p "${2:?out dir}" && cd "$2" && pwd)
