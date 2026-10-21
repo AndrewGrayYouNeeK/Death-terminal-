@@ -32,6 +32,8 @@ const frame_mod = @import("../renderer/frame.zig");
 const events = @import("../platform/events.zig");
 const color = @import("../terminal/color.zig");
 const config_watch = @import("config_watch.zig");
+const ghost_hold = @import("../ghost/hold.zig");
+const time_travel = @import("../ghost/time_travel.zig");
 
 const Pane = session.Pane;
 const PaneId = session.PaneId;
@@ -118,9 +120,11 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
         .pace = &pace,
         .plugins = &plugins,
         .read_buf = read_buf,
+        .ghost = ghost_hold.Hold.init(a),
         .last_focus = first.id,
         .last_tab = ws.currentTab().id,
     };
+    defer gui.ghost.deinit();
     gui.setupPane(first);
     gui.fitWindow(window.width, window.height);
     if (loop.startup_layout) gui.buildStartupLayout();
@@ -188,6 +192,10 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
             const p = ws.pane(id) orelse continue;
             if (fds.items[3 + 2 * i + 1].revents & io.POLL.IN != 0) {
                 if (try p.ai.onWake(&p.ui, p.term, std.time.milliTimestamp())) gui.touch(p);
+            }
+            if (gui.ghost.open and gui.ghost.pane == id) {
+                const st = p.ai.ghostExplainState();
+                if (gui.ghost.pullAi(st.text, st.done, st.failed)) gui.touchAll();
             }
             p.ai.tick(p.term, std.time.milliTimestamp());
             if (p.ui.tickNotice(std.time.milliTimestamp())) gui.touch(p);
@@ -269,6 +277,8 @@ const Gui = struct {
     pace: *el.Pacer,
     plugins: *plugin_bridge.Bridge,
     read_buf: []u8,
+    /// Risky-command preview. Enter is held until Run, Cancel, or a snapshot.
+    ghost: ghost_hold.Hold,
     window_focused: bool = true,
     need_present: bool = false,
     /// Expose/resize: redraw even if the frame is unchanged.
@@ -306,12 +316,16 @@ const Gui = struct {
     fn present(self: *Gui, force: bool) !bool {
         try self.vk.render();
         const comp = try self.ws.compose(self.chrome);
+        if (self.ghost.open) {
+            const area = self.ws.area;
+            self.ghost.draw(self.ws.cells.items, self.ws.marks.items, self.ws.cols, area.y, area.y + area.h);
+        }
         const fp = self.focusedPane();
         var v = frame_mod.View.fromTerminal(fp.term);
         // Reverse video (DECSCNM) is whole-window: only with one pane shown.
         if (self.ws.visibleCount() > 1) v.reverse_video = false;
         v.focused = self.window_focused;
-        v.cursor_visible = comp.cursor_visible;
+        v.cursor_visible = comp.cursor_visible and !self.ghost.open;
         v.marks = self.ws.marks.items;
         v.palette = self.palette;
         v.selection_bg = self.palette.selection_bg;
@@ -512,6 +526,10 @@ const Gui = struct {
             },
             else => {},
         };
+        if (self.ghost.open and self.ghost.pane == id) {
+            p.ai.cancelGhostExplain();
+            self.ghost.close();
+        }
         if (self.ws.drag == .pane and self.ws.drag.pane == id) self.ws.drag = .none;
         const removed_tab = self.ws.detachPane(id);
         self.plugins.removeTrack(&p.track);
@@ -749,6 +767,10 @@ const Gui = struct {
     }
 
     fn handleInput(self: *Gui, bytes: []const u8) !void {
+        if (self.ghost.open) {
+            try self.answerGhost(self.ghost.answerText(bytes));
+            return;
+        }
         if (self.ws.confirm != null) {
             if (bytes.len == 1) switch (bytes[0]) {
                 'y', 'Y', '\r' => try self.answerConfirm(true),
@@ -774,6 +796,7 @@ const Gui = struct {
         } else {
             // Ctrl+C arrives as 0x03 and goes to the shell like any key.
             _ = fp.ui.userTyped();
+            if (ghost_hold.loneEnter(bytes) and try self.maybeGhost(fp, bytes)) return;
             try fp.term.write(bytes);
             fp.ai.onTyped(&fp.ui, fp.term, bytes, std.time.milliTimestamp());
             self.touch(fp);
@@ -781,6 +804,10 @@ const Gui = struct {
     }
 
     fn handleKey(self: *Gui, key: input.Key, mods: input.Mods) !void {
+        if (self.ghost.open) {
+            try self.answerGhost(self.ghost.answerKey(key));
+            return;
+        }
         if (self.ws.confirm != null) {
             switch (key) {
                 .enter, .kp_enter => try self.answerConfirm(true),
@@ -806,9 +833,90 @@ const Gui = struct {
         } else {
             _ = fp.ui.userTyped();
             const seq = input.encodeKey(key, mods, fp.term.modes);
+            if (submitsLine(key, mods, fp.term.modes) and try self.maybeGhost(fp, seq.constSlice())) return;
             try fp.term.write(seq.constSlice());
             fp.ai.onKeystroke(&fp.ui, std.time.milliTimestamp());
             self.touch(fp);
+        }
+    }
+
+    /// Unmodified Enter submits the shell line. Keypad Enter does too,
+    /// unless application keypad mode turned it into SS3 M.
+    fn submitsLine(key: input.Key, mods: input.Mods, modes: terminal.Modes) bool {
+        if (mods.any()) return false;
+        return switch (key) {
+            .enter => true,
+            .kp_enter => !modes.app_keypad,
+            else => false,
+        };
+    }
+
+    fn maybeGhost(self: *Gui, fp: *Pane, enter: []const u8) !bool {
+        if (!self.cfg.ghost_run_enabled) return false;
+        const want_ai = self.cfg.ghost_run_ai and fp.ai.engine != null;
+        const armed = self.ghost.consider(.{
+            .term = fp.term,
+            .enter = enter,
+            .patterns = ghost_hold.patternList(self.cfg.ghost_patterns_set, self.cfg.ghost_patterns.items),
+            .remote = fp.ssh_display.len > 0,
+            .pane = fp.id,
+            .want_ai = want_ai,
+        }) catch return false;
+        if (!armed) return false;
+        if (want_ai) {
+            const impact = self.ghost.impactText(self.a) catch "";
+            defer if (impact.len > 0) self.a.free(impact);
+            fp.ai.requestGhostExplain(self.ghost.command, impact, self.ghost.cwd) catch {
+                self.ghost.ai_pending = false;
+            };
+        }
+        self.touchAll();
+        self.force_present = true;
+        return true;
+    }
+
+    fn answerGhost(self: *Gui, ans: ghost_hold.Answer) !void {
+        if (!self.ghost.open) return;
+        switch (ans) {
+            .ignore => {},
+            .cancel => try self.finishGhost(false),
+            .run => try self.finishGhost(true),
+            .snapshot => try self.snapshotGhost(),
+        }
+    }
+
+    fn snapshotGhost(self: *Gui) !void {
+        const result = time_travel.snapshot(.{
+            .cwd = self.ghost.cwd,
+            .command = self.ghost.command,
+            .pane = self.ghost.pane,
+        });
+        switch (result) {
+            .ok => try self.finishGhost(true),
+            .unavailable => {
+                self.ghost.setNotice("Time Travel is not available.");
+                self.touchAll();
+            },
+            .failed => |why| {
+                self.ghost.setNotice(why);
+                self.touchAll();
+            },
+        }
+    }
+
+    /// `send` writes the held Enter. Cancel drops it. The preview
+    /// never ran the command itself.
+    fn finishGhost(self: *Gui, send: bool) !void {
+        const pane = self.ghost.pane;
+        const enter = if (send) self.a.dupe(u8, self.ghost.enter) catch return else &.{};
+        defer if (enter.len > 0) self.a.free(enter);
+        if (self.ws.pane(pane)) |p| p.ai.cancelGhostExplain();
+        self.ghost.close();
+        self.touchAll();
+        if (enter.len == 0) return;
+        if (self.ws.pane(pane)) |p| {
+            try p.term.write(enter);
+            self.touch(p);
         }
     }
 
@@ -826,7 +934,7 @@ const Gui = struct {
     fn handleAction(self: *Gui, a: events.ActionEvent) !void {
         const act = a.action;
         // While a prompt is up only the palettes stay reachable.
-        if ((self.ws.confirm != null or self.ws.rename != null) and act != .command_palette) return self.keyFallback(a);
+        if ((self.ws.confirm != null or self.ws.rename != null or self.ghost.open) and act != .command_palette) return self.keyFallback(a);
         if (self.chrome.palette != null and act != .command_palette and act != .ssh_palette) return self.keyFallback(a);
         const fp = self.focusedPane();
         const now = std.time.milliTimestamp();
@@ -927,7 +1035,7 @@ const Gui = struct {
 
     fn handleMouse(self: *Gui, m: events.MouseInput) !void {
         const ws = self.ws;
-        if (self.chrome.palette != null or ws.confirm != null) return;
+        if (self.chrome.palette != null or ws.confirm != null or self.ghost.open) return;
         const cw: i32 = @intCast(self.cellW());
         const ch: i32 = @intCast(self.cellH());
         const col: u16 = @intCast(std.math.clamp(@divFloor(m.x, cw), 0, @as(i32, ws.cols) - 1));

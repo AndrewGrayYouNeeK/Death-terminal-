@@ -356,6 +356,12 @@ test {
     _ = @import("ai/engine.zig");
     _ = @import("app/ai_controller.zig");
     _ = @import("app/shell_inject.zig");
+    _ = @import("ghost/match.zig");
+    _ = @import("ghost/expand.zig");
+    _ = @import("ghost/impact.zig");
+    _ = @import("ghost/hold.zig");
+    _ = @import("ghost/explain.zig");
+    _ = @import("ghost/time_travel.zig");
     // The built-in SSH client is Linux-only.
     if (builtin.os.tag == .linux) {
         _ = @import("ssh/forward.zig");

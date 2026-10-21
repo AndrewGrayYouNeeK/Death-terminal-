@@ -93,6 +93,9 @@ config is reloaded.
 | `shell.env` | `{}` | Extra environment, e.g. `{ EDITOR = "nvim" }`. These values beat inherited ones and even `TERM` (**restart**) |
 | `shell.cwd` | `""` | Starting directory. `""` inherits it; a leading `~` means `$HOME` (**restart**) |
 | `shell.integration` | `true` | Load the OSC 133 prompt marks for bash/zsh/fish so AI suggestions know the typed command, history and exit codes ([AI.md](AI.md#shell-integration-osc-133)) (**restart**) |
+| `ghost_run.enabled` | `true` | Intercept Enter on a risky command and show a read-only impact preview ([GHOST_RUN.md](GHOST_RUN.md)) |
+| `ghost_run.ai_explain` | `true` | Add a plain-English explanation when `ai.enabled` is on. The preview itself stays local |
+| `ghost_run.patterns` | built-in | List of patterns. Assigning one, even `{}`, replaces the built-in list instead of extending it |
 | `ai.enabled` | `true` | AI command suggestions on/off (`--no-ai` overrides). See [AI.md](AI.md) |
 | `ai.endpoint` | `"http://localhost:11434/v1"` | Base URL (http/https). Ollama and other OpenAI-compatible servers use `/chat/completions`. `api.x.ai` and `us.api.x.ai` use `/responses` (Grok 4.7) |
 | `ai.model` | `"qwen2.5-coder:0.5b"` | Model name (`grok-4.7` on xAI) |

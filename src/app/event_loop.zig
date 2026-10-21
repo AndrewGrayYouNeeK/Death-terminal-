@@ -23,6 +23,8 @@ const ui_mod = @import("ui.zig");
 const color = @import("../terminal/color.zig");
 const config_watch = @import("config_watch.zig");
 const gui_mod = @import("gui.zig");
+const ghost_hold = @import("../ghost/hold.zig");
+const time_travel = @import("../ghost/time_travel.zig");
 const io = @import("../platform/io.zig");
 const win_misc = if (builtin.os.tag == .windows) @import("../platform/win_misc.zig") else struct {};
 
@@ -104,8 +106,6 @@ pub const EventLoop = struct {
         vulkan_renderer: *renderer.VulkanRenderer,
         term: *terminal.Terminal,
     ) !void {
-        _ = self;
-
         const pty_fd = term.getPtyFd() orelse return error.NoPty;
         try setNonBlocking(pty_fd);
 
@@ -125,6 +125,8 @@ pub const EventLoop = struct {
         const read_buf = try std.heap.page_allocator.alloc(u8, READ_BUFFER_SIZE);
         defer std.heap.page_allocator.free(read_buf);
         var input_buf: [4096]u8 = undefined;
+        var ghost = ghost_hold.Hold.init(self.allocator);
+        defer ghost.deinit();
         // Redraw only after output, at most every 16 ms while it streams.
         var dirty = true;
         var last_draw: u64 = 0;
@@ -181,12 +183,57 @@ pub const EventLoop = struct {
 
                 if (n == 0) break;
 
-                _ = try term.write(input_buf[0..n]);
+                try self.headlessInput(term, &ghost, input_buf[0..n]);
             }
         }
 
         try renderHeadless(term, vulkan_renderer);
         std.debug.print("\n", .{});
+    }
+
+    /// Lone Enter on a risky command opens a text prompt. The command is
+    /// not run until `y`. A paste that already contains the newline is
+    /// not inspected (the line is not on screen yet).
+    fn headlessInput(self: *EventLoop, term: *terminal.Terminal, ghost: *ghost_hold.Hold, bytes: []const u8) !void {
+        if (ghost.open) {
+            if (bytes.len != 1) return;
+            switch (ghost.answerText(bytes)) {
+                .ignore => {},
+                .cancel => ghost.close(),
+                .run => {
+                    _ = try term.write(ghost.enter);
+                    ghost.close();
+                },
+                .snapshot => switch (time_travel.snapshot(.{
+                    .cwd = ghost.cwd,
+                    .command = ghost.command,
+                    .pane = ghost.pane,
+                })) {
+                    .ok => {
+                        _ = try term.write(ghost.enter);
+                        ghost.close();
+                    },
+                    .unavailable => std.debug.print("\nGhost Run: Time Travel is not available. The command was not run.\n", .{}),
+                    .failed => |why| std.debug.print("\nGhost Run: snapshot failed ({s}). The command was not run.\n", .{why}),
+                },
+            }
+            return;
+        }
+        if (self.cfg.ghost_run_enabled and ghost_hold.loneEnter(bytes)) {
+            const armed = ghost.consider(.{
+                .term = term,
+                .enter = bytes,
+                .patterns = ghost_hold.patternList(self.cfg.ghost_patterns_set, self.cfg.ghost_patterns.items),
+                .remote = self.ssh_remote.len > 0,
+                .pane = 0,
+                .want_ai = false,
+            }) catch false;
+            if (armed) {
+                ghost.logPreview();
+                return;
+            }
+        }
+        _ = try term.write(bytes);
     }
 };
 

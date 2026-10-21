@@ -41,6 +41,11 @@ Context-aware, not just history-based.
 - Secrets (tokens, keys, passwords, env assignments) are redacted before anything is sent; offline endpoints just show a small "AI offline" badge
 - bash/zsh/fish OSC 133 shell integration, injected automatically (see [docs/AI.md](docs/AI.md))
 
+### 👻 Ghost Run
+- Enter on a risky command (`rm -r` / `-rf`, `git reset --hard`, `git clean`, `git push --force`, `dd`, `mkfs`, `chmod -R`, `chown -R`, `mv` over an existing path, `find -delete`, truncating redirects, `curl | sh`, and the rest of the built-in list) is held back
+- A local read-only preview estimates the impact (directory walks, `git diff` / `git clean -n`) and can add a plain-English AI note. The command is not executed to build that preview
+- `y` runs it, `n` or Esc cancels, and `t` runs it after a Time Travel snapshot when that feature is registered (see [docs/GHOST_RUN.md](docs/GHOST_RUN.md))
+
 ### ⚡ GPU Rendering (Vulkan)
 - Vulkan swapchain + SPIR-V glyph pipeline, with a software fallback
 - FreeType + HarfBuzz text (ligatures), dynamic glyph atlas. CJK and colour emoji come from fontconfig on Linux; Windows and macOS scan font folders (COLR emoji — bitmap emoji fonts are not loaded yet)

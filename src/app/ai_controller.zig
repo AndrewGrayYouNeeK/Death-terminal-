@@ -11,6 +11,7 @@ const config = @import("../config/config.zig");
 const ui_mod = @import("ui.zig");
 const engine_mod = @import("../ai/engine.zig");
 const context = @import("../ai/context.zig");
+const ghost_explain = @import("../ghost/explain.zig");
 const si = terminal.shell_integration;
 
 const Terminal = terminal.Terminal;
@@ -71,6 +72,12 @@ pub const Controller = struct {
     suggest_anchor: ?si.Mark = null,
     explain_gen: u64 = 0,
     explain_title: std.ArrayList(u8),
+    /// Ghost Run explanation. `onWake` stores it here so `take` cannot
+    /// drop it before the overlay reads it. Not shown as the error notice.
+    ghost_gen: u64 = 0,
+    ghost_text: std.ArrayList(u8),
+    ghost_done: bool = false,
+    ghost_failed: bool = false,
     shown_status: ?engine_mod.Status = null,
     /// Plugins' `ai_suggestion` hook (set by the event loop).
     filter: ?Filter = null,
@@ -94,6 +101,7 @@ pub const Controller = struct {
             .settings = settings,
             .suggest_input = std.ArrayList(u8).init(allocator),
             .explain_title = std.ArrayList(u8).init(allocator),
+            .ghost_text = std.ArrayList(u8).init(allocator),
         };
         self.startEngine();
         return self;
@@ -103,6 +111,7 @@ pub const Controller = struct {
         if (self.engine) |e| e.deinit();
         self.suggest_input.deinit();
         self.explain_title.deinit();
+        self.ghost_text.deinit();
     }
 
     fn startEngine(self: *Controller) void {
@@ -124,6 +133,9 @@ pub const Controller = struct {
             ui.clearGhost();
             ui.setAiStatus(null);
             self.shown_status = null;
+            self.ghost_gen = 0;
+            self.ghost_done = true;
+            self.ghost_failed = true;
             return;
         }
         if (self.engine) |e| {
@@ -288,6 +300,40 @@ pub const Controller = struct {
         try ui.setAiNotice(self.explain_title.items, "thinking\u{2026}", now_ms);
     }
 
+    /// Plain-English Ghost Run note. Does not use the "explain last error" notice.
+    /// The command has not run. `impact` is the local read-only estimate.
+    pub fn requestGhostExplain(self: *Controller, command: []const u8, impact: []const u8, cwd: []const u8) !void {
+        const e = self.engine orelse return;
+        self.due_ms = null;
+        self.suggest_anchor = null;
+        var arena_state = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_state.deinit();
+        const msgs = try ghost_explain.messages(arena_state.allocator(), command, impact, cwd);
+        self.ghost_text.clearRetainingCapacity();
+        self.ghost_done = false;
+        self.ghost_failed = false;
+        self.ghost_gen = try e.submit(.ghost_explain, msgs, self.settings.explain_max_tokens, 6);
+    }
+
+    pub fn cancelGhostExplain(self: *Controller) void {
+        if (self.ghost_gen == 0) return;
+        self.ghost_gen = 0;
+        self.ghost_done = false;
+        self.ghost_failed = false;
+        self.ghost_text.clearRetainingCapacity();
+        if (self.engine) |e| e.cancelAll();
+    }
+
+    pub const GhostExplain = struct {
+        text: []const u8,
+        done: bool,
+        failed: bool,
+    };
+
+    pub fn ghostExplainState(self: *const Controller) GhostExplain {
+        return .{ .text = self.ghost_text.items, .done = self.ghost_done, .failed = self.ghost_failed };
+    }
+
     /// The engine signalled: collect streamed text. Returns whether the
     /// UI changed.
     pub fn onWake(self: *Controller, ui: *Ui, term: *const Terminal, now_ms: i64) !bool {
@@ -295,23 +341,33 @@ pub const Controller = struct {
         var changed = false;
         while (try e.take(self.allocator)) |u| {
             defer self.allocator.free(u.text);
-            if (u.kind == .suggest and u.gen == self.suggest_gen) {
-                changed = try self.showSuggestion(ui, term, u) or changed;
-            } else if (u.kind == .explain and u.gen == self.explain_gen) {
-                // Only while our answer is still the notice on screen.
-                if (ui.notice == null or ui.notice.?.kind != .ai) continue;
-                if (u.failed) |_| {
-                    var buf: [96]u8 = undefined;
-                    const why = e.statusText(&buf);
-                    var line_buf: [160]u8 = undefined;
-                    const line = std.fmt.bufPrint(&line_buf, "The AI endpoint is not available ({s}). Check config.ai.endpoint / that Ollama is running.", .{if (why.len > 0) why else "error"}) catch "The AI endpoint is not available.";
-                    try ui.setAiNotice(self.explain_title.items, line, now_ms);
-                } else {
-                    const body = if (u.done) u.text else try std.fmt.allocPrint(self.allocator, "{s}\u{2026}", .{u.text});
-                    defer if (!u.done) self.allocator.free(body);
-                    try ui.setAiNotice(self.explain_title.items, if (body.len > 0) body else "(no answer)", now_ms);
-                }
-                changed = true;
+            switch (u.kind) {
+                .suggest => if (u.gen == self.suggest_gen) {
+                    changed = try self.showSuggestion(ui, term, u) or changed;
+                },
+                .explain => if (u.gen == self.explain_gen) {
+                    // Only while our answer is still the notice on screen.
+                    if (ui.notice == null or ui.notice.?.kind != .ai) continue;
+                    if (u.failed) |_| {
+                        var buf: [96]u8 = undefined;
+                        const why = e.statusText(&buf);
+                        var line_buf: [160]u8 = undefined;
+                        const line = std.fmt.bufPrint(&line_buf, "The AI endpoint is not available ({s}). Check config.ai.endpoint / that Ollama is running.", .{if (why.len > 0) why else "error"}) catch "The AI endpoint is not available.";
+                        try ui.setAiNotice(self.explain_title.items, line, now_ms);
+                    } else {
+                        const body = if (u.done) u.text else try std.fmt.allocPrint(self.allocator, "{s}\u{2026}", .{u.text});
+                        defer if (!u.done) self.allocator.free(body);
+                        try ui.setAiNotice(self.explain_title.items, if (body.len > 0) body else "(no answer)", now_ms);
+                    }
+                    changed = true;
+                },
+                .ghost_explain => if (u.gen == self.ghost_gen and self.ghost_gen != 0) {
+                    self.ghost_text.clearRetainingCapacity();
+                    self.ghost_text.appendSlice(u.text) catch {};
+                    self.ghost_done = u.done;
+                    self.ghost_failed = u.failed != null;
+                    changed = true;
+                },
             }
         }
         changed = self.syncStatus(ui) or changed;
