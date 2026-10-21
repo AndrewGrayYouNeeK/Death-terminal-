@@ -54,8 +54,12 @@ pub const Controller = struct {
     prompt: ?std.ArrayList(u8) = null,
     pending: [480]u8 = undefined,
     pending_len: usize = 0,
-    announce: ?[]u8 = null,
     announce_pending: bool = false,
+    /// "ip:port\ndeathterminal --join <code>\n" while hosting. Clipboard and overlay.
+    invite: [640]u8 = undefined,
+    invite_len: usize = 0,
+    addr: [80]u8 = undefined,
+    addr_len: usize = 0,
     err: [160]u8 = undefined,
     err_len: usize = 0,
     err_pending: bool = false,
@@ -120,6 +124,11 @@ pub const Controller = struct {
             self.setErr("sharing is disabled in config");
             return;
         }
+        if (self.host != null and self.bound and self.pane == pane and self.invite_len > 0) {
+            self.announce_pending = true;
+            self.rebuildBanner();
+            return;
+        }
         self.stop();
         var detected: [64]u8 = undefined;
         const adv: []const u8 = if (self.advertise_len > 0)
@@ -140,15 +149,25 @@ pub const Controller = struct {
         self.host = host;
         self.pane = pane;
         self.bound = true;
-        self.announce = self.a.dupe(u8, host.code) catch null;
-        self.announce_pending = self.announce != null;
+        const addr = std.fmt.bufPrint(&self.addr, "{s}:{d}", .{ adv, host.port() }) catch adv;
+        self.addr_len = addr.len;
+        const inv = std.fmt.bufPrint(&self.invite, "{s}:{d}\ndeathterminal --join {s}\n", .{ adv, host.port(), host.code }) catch
+            std.fmt.bufPrint(&self.invite, "deathterminal --join {s}\n", .{host.code}) catch "";
+        self.invite_len = inv.len;
+        self.announce_pending = self.invite_len > 0;
         self.saw_cursor = false;
         self.a.free(self.fp);
         self.fp = &.{};
         self.fp_rows = 0;
         self.fp_cols = 0;
         self.rebuildBanner();
-        std.debug.print("Shared Haunting\n  deathterminal --join {s}\n", .{host.code});
+        std.debug.print("share: listening\n{s}", .{self.invite[0..self.invite_len]});
+    }
+
+    /// The text copied to the clipboard: LAN address, port, and join command.
+    pub fn inviteText(self: *const Controller) ?[]const u8 {
+        if (self.invite_len == 0) return null;
+        return self.invite[0..self.invite_len];
     }
 
     pub fn join(self: *Controller, pane: u32) void {
@@ -183,9 +202,9 @@ pub const Controller = struct {
         self.host = null;
         self.guest = null;
         self.bound = false;
-        if (self.announce) |s| self.a.free(s);
-        self.announce = null;
         self.announce_pending = false;
+        self.invite_len = 0;
+        self.addr_len = 0;
         self.banner_len = 0;
         self.a.free(self.fp);
         self.fp = &.{};
@@ -307,9 +326,9 @@ pub const Controller = struct {
     }
 
     pub fn takeAnnounce(self: *Controller) ?[]const u8 {
-        if (!self.announce_pending) return null;
+        if (!self.announce_pending or self.invite_len == 0) return null;
         self.announce_pending = false;
-        return self.announce;
+        return self.invite[0..self.invite_len];
     }
 
     pub fn takeError(self: *Controller) ?[]const u8 {
@@ -540,8 +559,13 @@ pub const Controller = struct {
             };
             self.paintPointer(cells, marks, stride, x, y, w, h, p);
         }
-        if (self.banner_len == 0) return;
-        self.paintBar(cells, marks, stride, x, y, w, self.banner[0..self.banner_len], self.barColors());
+        if (self.banner_len > 0) {
+            self.paintBar(cells, marks, stride, x, y, w, self.banner[0..self.banner_len], self.barColors());
+        }
+        if (self.host != null and self.invite_len > 0 and h > 1) {
+            const rows = @min(h - 1, 6);
+            self.paintWrapped(cells, marks, stride, x, y + 1, w, rows, self.invite[0..self.invite_len]);
+        }
     }
 
     fn paintPrompt(self: *Controller, cells: []Cell, marks: []Mark, stride: u16, x: u16, y: u16, w: u16) void {
@@ -577,6 +601,45 @@ pub const Controller = struct {
         }
     }
 
+    fn paintWrapped(self: *Controller, cells: []Cell, marks: []Mark, stride: u16, x: u16, y: u16, w: u16, h: u16, text: []const u8) void {
+        if (w == 0 or h == 0) return;
+        var row: u16 = 0;
+        var col: u16 = 0;
+        var line_started = false;
+        for (text) |ch| {
+            if (row >= h) break;
+            if (ch == '\n') {
+                if (line_started) {
+                    while (col < w) : (col += 1) self.putOverlay(cells, marks, stride, x, y, row, col, ' ');
+                }
+                row += 1;
+                col = 0;
+                line_started = false;
+                continue;
+            }
+            if (col >= w) {
+                row += 1;
+                col = 0;
+                if (row >= h) break;
+            }
+            self.putOverlay(cells, marks, stride, x, y, row, col, ch);
+            col += 1;
+            line_started = true;
+        }
+    }
+
+    fn putOverlay(self: *Controller, cells: []Cell, marks: []Mark, stride: u16, x: u16, y: u16, row: u16, col: u16, ch: u8) void {
+        _ = self;
+        const at = @as(usize, y + row) * stride + (x + col);
+        if (at >= cells.len) return;
+        var cell = Cell.init();
+        cell.fg_color = paint_waiting.fg;
+        cell.bg_color = paint_waiting.bg;
+        cell.char = ch;
+        cells[at] = cell;
+        if (at < marks.len) marks[at] = .none;
+    }
+
     fn paintBar(self: *Controller, cells: []Cell, marks: []Mark, stride: u16, x: u16, y: u16, w: u16, text: []const u8, colors: BarPaint) void {
         _ = self;
         var i: u16 = 0;
@@ -603,24 +666,75 @@ pub const Controller = struct {
     }
 
     fn rebuildBanner(self: *Controller) void {
-        const text: []const u8 = if (self.guest) |g| blk: {
-            if (g.kicked) break :blk " KICKED by the host";
-            if (g.phase == .waiting) break :blk " JOINING shared haunting...";
-            if (g.access == .control) break :blk " WATCHING | you have CONTROL | keys go to the host";
-            break :blk " WATCHING | read-only | arrows move your cursor";
-        } else if (self.host) |h| blk: {
-            break :blk hostBanner(builtin.os.tag == .macos, h.phase, h.access);
-        } else "";
+        if (self.guest) |g| {
+            const text: []const u8 = if (g.kicked)
+                " KICKED by the host"
+            else if (g.phase == .waiting)
+                " JOINING shared haunting..."
+            else if (g.access == .control)
+                " WATCHING | you have CONTROL | keys go to the host"
+            else
+                " WATCHING | read-only | arrows move your cursor";
+            self.banner_len = @min(text.len, self.banner.len);
+            @memcpy(self.banner[0..self.banner_len], text[0..self.banner_len]);
+            return;
+        }
+        const h = self.host orelse {
+            self.banner_len = 0;
+            return;
+        };
+        const status = hostBanner(builtin.os.tag == .macos, h.phase, h.access);
+        if (self.addr_len == 0) {
+            self.copyBanner(status);
+            return;
+        }
+        const formatted = if (h.phase == .waiting)
+            std.fmt.bufPrint(&self.banner, " SHARING {s} | waiting for a guest | invite copied | F12 stop", .{self.addr[0..self.addr_len]})
+        else
+            std.fmt.bufPrint(&self.banner, "{s} | {s}", .{ status, self.addr[0..self.addr_len] });
+        if (formatted) |t| {
+            self.banner_len = t.len;
+        } else |_| self.copyBanner(status);
+    }
+
+    fn copyBanner(self: *Controller, text: []const u8) void {
         self.banner_len = @min(text.len, self.banner.len);
         @memcpy(self.banner[0..self.banner_len], text[0..self.banner_len]);
     }
 
     fn setErr(self: *Controller, text: []const u8) void {
-        self.err_len = @min(text.len, self.err.len);
-        @memcpy(self.err[0..self.err_len], text[0..self.err_len]);
+        const shown = explainFailure(text);
+        const n = @min(shown.len, self.err.len);
+        if (self.err_len == n and std.mem.eql(u8, self.err[0..n], shown[0..n])) {
+            self.err_pending = true;
+            return;
+        }
+        self.err_len = n;
+        @memcpy(self.err[0..n], shown[0..n]);
         self.err_pending = true;
+        std.debug.print("share: {s}\n", .{self.err[0..self.err_len]});
     }
 };
+
+/// Plain-language share failures. Zig error names stay in the log via the caller
+/// only when they are already a sentence (they contain a space).
+fn explainFailure(name: []const u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, name, ' ') != null) return name;
+    if (std.mem.eql(u8, name, "BadInvite")) return "bad invite code";
+    if (std.mem.eql(u8, name, "Refused") or std.mem.eql(u8, name, "ConnectionRefused")) {
+        return "connection refused - the host is not listening, or the firewall blocked it";
+    }
+    if (std.mem.eql(u8, name, "Timeout")) return "timed out - the host did not answer (check the address and the firewall)";
+    if (std.mem.eql(u8, name, "Unreachable") or std.mem.eql(u8, name, "NetworkUnreachable")) {
+        return "cannot reach the host - check the address and the firewall";
+    }
+    if (std.mem.eql(u8, name, "Handshake") or std.mem.eql(u8, name, "BadFrame")) return "handshake failed - the invite does not match the host";
+    if (std.mem.eql(u8, name, "PermissionDenied")) return "cannot listen - permission denied (the firewall or the port blocked it)";
+    if (std.mem.eql(u8, name, "AddressInUse")) return "that share port is already in use";
+    if (std.mem.eql(u8, name, "BadAddress")) return "bad share bind address";
+    if (std.mem.eql(u8, name, "Unexpected")) return "could not connect - the firewall may be blocking it";
+    return name;
+}
 
 /// Host banner. `mac` selects the chord that reaches a Mac (Cmd+Shift+G).
 /// Ctrl+Shift+G is the binding everywhere else.
@@ -678,6 +792,50 @@ fn cellFromWire(w: msg.WireCell) Cell {
     if (w.flags & msg.flag_wide != 0) cell.width = 2;
     if (w.flags & msg.flag_spacer != 0) cell.width = 0;
     return cell;
+}
+
+test "share failures are sentences a guest can read" {
+    try std.testing.expectEqualStrings("bad invite code", explainFailure("BadInvite"));
+    try std.testing.expect(std.mem.indexOf(u8, explainFailure("Refused"), "connection refused") != null);
+    try std.testing.expect(std.mem.indexOf(u8, explainFailure("Refused"), "firewall") != null);
+    try std.testing.expect(std.mem.indexOf(u8, explainFailure("Timeout"), "timed out") != null);
+    try std.testing.expect(std.mem.indexOf(u8, explainFailure("Timeout"), "firewall") != null);
+    try std.testing.expect(std.mem.indexOf(u8, explainFailure("Unreachable"), "firewall") != null);
+    try std.testing.expectEqualStrings("sharing is disabled in config", explainFailure("sharing is disabled in config"));
+}
+
+test "host invite shows the address, port, and join command" {
+    var c = Controller.init(std.testing.allocator);
+    defer c.deinit();
+    c.setBind("127.0.0.1");
+    const adv = "127.0.0.1";
+    c.advertise_len = adv.len;
+    @memcpy(c.advertise[0..adv.len], adv);
+    c.startHost(7);
+    const text = c.inviteText() orelse return error.NoInvite;
+    try std.testing.expect(std.mem.startsWith(u8, text, "127.0.0.1:"));
+    try std.testing.expect(std.mem.indexOf(u8, text, "\ndeathterminal --join dt1.") != null);
+    try std.testing.expect(c.takeAnnounce() != null);
+    try std.testing.expect(std.mem.indexOf(u8, c.banner[0..c.banner_len], "127.0.0.1:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, c.banner[0..c.banner_len], "invite copied") != null);
+    try std.testing.expect(std.mem.indexOf(u8, c.banner[0..c.banner_len], "F12 stop") != null);
+
+    const again = try std.testing.allocator.dupe(u8, c.inviteText().?);
+    defer std.testing.allocator.free(again);
+    c.startHost(7);
+    try std.testing.expectEqualStrings(again, c.inviteText().?);
+
+    const cols: usize = 48;
+    const rows: usize = 5;
+    var cells = [_]Cell{Cell.init()} ** (cols * rows);
+    var marks = [_]Mark{.none} ** (cols * rows);
+    c.paint(&cells, &marks, @intCast(cols), 0, 0, @intCast(cols), @intCast(rows));
+    var flat: [cols * rows]u8 = undefined;
+    for (cells, 0..) |cell, i| {
+        flat[i] = if (cell.char < 128) @intCast(cell.char) else ' ';
+    }
+    try std.testing.expect(std.mem.indexOf(u8, &flat, "127.0.0.1:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, &flat, "deathterminal --join dt1.") != null);
 }
 
 test "host banner names the Mac grant chord" {

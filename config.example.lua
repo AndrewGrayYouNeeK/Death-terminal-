@@ -83,7 +83,8 @@ config.links.open_command = dt.os == "macos" and "open" or dt.os == "windows" an
 -- share_pane (Ctrl+Shift+H; macOS Cmd+Shift+H, Cmd+H is Hide),
 -- share_grant (Ctrl+Shift+G; macOS Cmd+Shift+G), share_kick (F12),
 -- share_stop (Ctrl+Shift+Alt+H; macOS Cmd+Shift+Option+H),
--- share_join (Ctrl+Shift+J; macOS Cmd+Shift+J). `false` removes a binding.
+-- share_join (Ctrl+Shift+J; macOS Cmd+Shift+J), share_copy (palette: "Share: copy invite").
+-- Command palette is Ctrl+Shift+P (macOS Cmd+Shift+P). `false` removes a binding.
 config.default_keybindings = true    -- false = start from an empty table
 -- config.keys["ctrl+shift+t"] = "search"
 -- config.keys["ctrl+shift+c"] = false

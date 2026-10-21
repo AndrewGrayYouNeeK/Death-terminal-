@@ -50,7 +50,7 @@ CLIPBOARD.
 | Ctrl+= / Ctrl+- / Ctrl+0 | `zoom_in` / `zoom_out` / `zoom_reset` |
 | Ctrl+Shift+R | `reload_config` (see [CONFIG.md](CONFIG.md)) |
 | Ctrl+Shift+S | `ssh_palette`: SSH forwards and profiles (see [SSH.md](SSH.md)) |
-| Ctrl+Shift+P | `command_palette`: built-in actions and plugin commands (see [PLUGINS.md](PLUGINS.md)) |
+| Ctrl+Shift+P | `command_palette`: built-in actions and plugin commands (macOS: Cmd+Shift+P). See [PLUGINS.md](PLUGINS.md) |
 | Ctrl+Shift+B | `toggle_status_bar` |
 | Ctrl+Shift+T / Ctrl+Shift+Alt+W | `new_tab` / `close_tab` (see [TABS.md](TABS.md)) |
 | Ctrl+PgDn / Ctrl+PgUp (Ctrl+Tab / Ctrl+Shift+Tab) | `next_tab` / `prev_tab` |

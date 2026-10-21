@@ -673,3 +673,53 @@ test "live session gates input, shares a cell, then kick sticks" {
     host.tick() catch {};
     try std.testing.expectEqual(before, host.input.items.len);
 }
+
+test "invite code: guest sees the screen and input waits for grant" {
+    io.ensureSockets();
+    const host = try Host.listen(std.testing.allocator, "127.0.0.1", 0, "127.0.0.1", "", null);
+    defer host.deinit();
+    const guest = try Guest.start(std.testing.allocator, host.code);
+    defer guest.deinit();
+
+    var i: usize = 0;
+    while (i < 200 and (host.phase != .open or guest.phase != .open)) : (i += 1) {
+        try host.tick();
+        try guest.tick();
+        if (guest.failure()) |why| {
+            std.debug.print("join failed: {s}\n", .{why});
+            return error.JoinFailed;
+        }
+        std.time.sleep(5 * std.time.ns_per_ms);
+    }
+    try pumpBoth(host, guest);
+    try std.testing.expectEqual(Phase.open, host.phase);
+    try std.testing.expectEqual(Phase.open, guest.phase);
+    try std.testing.expectEqual(Access.read_only, guest.access);
+
+    var rowbuf: [msg.wire_len]u8 = undefined;
+    msg.writeCell(&rowbuf, 'Z', 0xAABBCC, 0x101010, 0);
+    try host.sendRow(.{
+        .rows = 1,
+        .cols = 1,
+        .cursor_row = 0,
+        .cursor_col = 0,
+        .cursor_on = true,
+        .index = 0,
+        .cells = &rowbuf,
+    });
+    try pumpBoth(host, guest);
+    try std.testing.expect(guest.dirty);
+    try std.testing.expectEqual(@as(u21, 'Z'), msg.readCell(guest.grid.items[0..msg.wire_len]).cp);
+
+    try guest.sendInput("rm -rf /");
+    try pumpBoth(host, guest);
+    try std.testing.expectEqual(@as(usize, 0), host.input.items.len);
+    try std.testing.expect(host.dropped >= 1);
+
+    try host.setControl(true);
+    try pumpBoth(host, guest);
+    try std.testing.expectEqual(Access.control, guest.access);
+    try guest.sendInput("ls\n");
+    try pumpBoth(host, guest);
+    try std.testing.expectEqualStrings("ls\n", host.input.items);
+}

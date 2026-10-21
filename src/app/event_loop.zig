@@ -79,6 +79,8 @@ pub const EventLoop = struct {
     startup_layout: bool = false,
     /// `deathterminal --join <code>`: show that host's pane instead of a shell.
     join_code: ?[]const u8 = null,
+    /// `deathterminal --share`: host this terminal and print the invite.
+    share_now: bool = false,
 
     fn aiSettings(self: *const EventLoop) ai_controller.Settings {
         var s = ai_controller.Settings.fromConfig(self.cfg);
@@ -96,6 +98,10 @@ pub const EventLoop = struct {
 
         if (self.join_code != null and self.cfg.headless) {
             try self.runGuestHeadless(vulkan_renderer, term);
+            return;
+        }
+        if (self.share_now and self.cfg.headless) {
+            try self.runHostHeadless(vulkan_renderer, term);
             return;
         }
         if (self.cfg.headless) {
@@ -272,6 +278,114 @@ pub const EventLoop = struct {
                 dirty = false;
             }
         }
+    }
+
+    /// Headless host: the local shell keeps running, and the invite is printed
+    /// so a guest can `deathterminal --join` it.
+    fn runHostHeadless(
+        self: *EventLoop,
+        vulkan_renderer: *renderer.VulkanRenderer,
+        term: *terminal.Terminal,
+    ) !void {
+        var share = share_ctrl.Controller.init(self.allocator);
+        defer share.deinit();
+        share.configure(self.cfg);
+        share.startHost(0);
+        const inv = share.inviteText() orelse {
+            const why = share.takeError() orelse "could not listen";
+            std.debug.print("share failed: {s}\n", .{why});
+            std.process.exit(1);
+        };
+        std.io.getStdOut().writeAll(inv) catch {};
+        std.debug.print("Hosting. The guest runs the command above. Exit the shell to stop.\n", .{});
+        if (builtin.os.tag == .macos) {
+            std.debug.print("If macOS asks to allow incoming connections, allow them, or the guest cannot connect.\n", .{});
+        }
+        if (builtin.os.tag != .windows and posix.isatty(std.io.getStdOut().handle) and posix.isatty(posix.STDIN_FILENO)) {
+            std.debug.print("Press Enter to continue. Copy the invite above first.\n", .{});
+            var line: [64]u8 = undefined;
+            _ = io.read(posix.STDIN_FILENO, &line) catch {};
+        }
+
+        const pty_fd = term.getPtyFd() orelse return error.NoPty;
+        try setNonBlocking(pty_fd);
+        var stdin_raw = false;
+        if (builtin.os.tag != .windows) {
+            stdin_raw = try enableRawMode();
+        } else {
+            stdin_raw = win_misc.enableRawConsole();
+        }
+        defer if (stdin_raw) {
+            if (builtin.os.tag == .windows) win_misc.restoreConsole() else disableRawMode() catch {};
+        };
+        const stdin_fd: io.Fd = if (builtin.os.tag == .windows) win_misc.stdinSocket() catch io.none else posix.STDIN_FILENO;
+        try installSignalHandlers();
+
+        const read_buf = try std.heap.page_allocator.alloc(u8, READ_BUFFER_SIZE);
+        defer std.heap.page_allocator.free(read_buf);
+        var input_buf: [4096]u8 = undefined;
+        var ghost = ghost_hold.Hold.init(self.allocator);
+        defer ghost.deinit();
+        var dirty = true;
+
+        while (!shutdown_requested.load(.seq_cst)) {
+            var extra = [_]io.Fd{ io.none, io.none };
+            const nfd = share.fillPoll(&extra);
+            var poll_fds = [_]io.PollFd{
+                io.pollFd(pty_fd, io.POLL.IN),
+                io.pollFd(stdin_fd, io.POLL.IN),
+                io.pollFd(if (nfd > 0) extra[0] else io.none, io.POLL.IN),
+                io.pollFd(if (nfd > 1) extra[1] else io.none, io.POLL.IN),
+            };
+            _ = io.poll(&poll_fds, if (dirty) 16 else HEADLESS_POLL_MS);
+
+            if (poll_fds[0].revents & posix.POLL.IN == 0 and
+                poll_fds[0].revents & (posix.POLL.HUP | posix.POLL.ERR) != 0)
+            {
+                std.debug.print("\nShell exited.\n", .{});
+                break;
+            }
+            if (poll_fds[0].revents & posix.POLL.IN != 0) {
+                const n = io.read(pty_fd, read_buf) catch |err| switch (err) {
+                    error.WouldBlock => 0,
+                    error.InputOutput => {
+                        std.debug.print("\nShell exited.\n", .{});
+                        break;
+                    },
+                    else => return err,
+                };
+                if (n == 0) {
+                    std.debug.print("\nShell exited.\n", .{});
+                    break;
+                }
+                try term.processOutput(read_buf[0..n]);
+                dirty = true;
+            }
+            if (poll_fds[1].revents & posix.POLL.IN != 0) {
+                const n = io.read(stdin_fd, &input_buf) catch |err| switch (err) {
+                    error.WouldBlock => 0,
+                    else => return err,
+                };
+                if (n == 0) break;
+                try self.headlessInput(term, &ghost, input_buf[0..n]);
+                dirty = true;
+            }
+
+            share.tick();
+            var guest_in: [1024]u8 = undefined;
+            const gn = share.takeInput(&guest_in);
+            if (gn > 0) {
+                try term.write(guest_in[0..gn]);
+                dirty = true;
+            }
+            share.flushGrid(term);
+            if (dirty) {
+                try renderHeadless(term, vulkan_renderer);
+                dirty = false;
+            }
+        }
+        try renderHeadless(term, vulkan_renderer);
+        std.debug.print("\n", .{});
     }
 
     /// Lone Enter on a risky command opens a text prompt. The command is
