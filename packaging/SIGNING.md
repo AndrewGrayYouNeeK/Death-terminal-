@@ -22,8 +22,10 @@ TODO, once a Developer ID Application certificate is available:
 3. Notarize the DMG: `xcrun notarytool submit DeathTerminal-*.dmg --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait`.
 4. Staple the ticket: `xcrun stapler staple DeathTerminal-*.dmg`.
 
-MoltenVK, if bundled via `MOLTENVK_DIR`, has to be signed in the same pass.
-Do not commit the certificate or the app-specific password.
+The release workflow downloads MoltenVK 1.4.2 and copies `libMoltenVK.dylib`
+and `MoltenVK_icd.json` into `Contents/Frameworks`. Sign that dylib in the
+same pass as the app (hardened runtime, same Developer ID). Do not commit
+the certificate or the app-specific password.
 
 ## Windows
 
