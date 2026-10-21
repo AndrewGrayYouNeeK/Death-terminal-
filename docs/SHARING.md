@@ -33,9 +33,15 @@ incoming connections. Allow them. If you deny the prompt, the guest times out
 or the connection is refused. The same prompt can appear for `deathterminal
 --share`. A failed relay dial does not exit that process. Hosting stays on
 the LAN and the log prints the real reason (`share: relay failed (...);
-hosting on the LAN only`). An HTTP 403 from the edge is that kind of
-failure: the hostname answered, but a Cloudflare managed challenge is not
-the Worker, so the client cannot complete `wss://`. macOS loads trust
+hosting on the LAN only`). `relay.youneek.xyz` can answer the WebSocket
+upgrade with an empty HTTP 404, or with a 403 challenge, before the Worker
+runs. `/health` can still be ok. That response is not `parseSessionId` (a
+Worker miss body is `not found`) and it is not the per-IP gate (429 `full`,
+`ip`, or `rate`). The client dials the same Worker at
+`wss://youneek-share-relay.youneekartifacts.workers.dev` and the session id
+is unchanged, so the host and the guest still meet. `--join` prints
+`join failed: ...` and returns when the relay cannot be reached. It does not
+exit with `error: Unexpected` when stdin is not a terminal. macOS loads trust
 anchors from the Security framework, then a PEM file, then the roots
 bundled in the binary. It does not read the system keychain file.
 
@@ -143,9 +149,12 @@ relay, the guest dials the relay. The host is already waiting there. Both
 sockets are outbound, so a guest NAT and a host NAT do not need a forwarded
 port. IPv6 is not in the invite.
 
-The default invite names `wss://relay.youneek.xyz`, which is live
-(`https://relay.youneek.xyz/health`). A guest off the LAN uses that relay.
-`"off"` keeps the share on the LAN. See [Deploy the hosted relay](#deploy-the-hosted-relay).
+The default invite names `wss://relay.youneek.xyz`
+(`https://relay.youneek.xyz/health`, and
+`https://youneek-share-relay.youneekartifacts.workers.dev/health`). A guest
+off the LAN uses that relay. An empty 404 or a 403 on the custom domain is
+retried on the workers.dev hostname above. `"off"` keeps the share on the
+LAN. See [Deploy the hosted relay](#deploy-the-hosted-relay).
 
 ## Invite
 
@@ -253,9 +262,13 @@ deployed):
 Over the cap, the socket closes with `4001` (expiry, idle, wait, or byte
 cap), `1009` (frame too big), `1008` (busy guest), or `4000` (the host was
 replaced). `GET /health` returns `{ "ok": true, "service": "youneek-share-relay" }`.
-Logs record the first 8 hex characters of the id and a reason. They do not
-record payloads. Observability redacts the query string, which is where
-`role` sits.
+A bad path is HTTP 404 with body `not found`. A missing `Upgrade: websocket`
+is 426 `websocket required`. The gate is 429 with body `full`, `ip`, or
+`rate`. An empty 404 is the Cloudflare edge in front of the custom domain
+(WebSockets turned off for the zone, or a bot challenge), not this router.
+`workers.dev` is the same Worker and accepts the upgrade. Logs record the
+first 8 hex characters of the id and a reason. They do not record payloads.
+Observability redacts the query string, which is where `role` sits.
 
 ### Deploy the hosted relay
 
@@ -274,8 +287,14 @@ npx wrangler deploy
 
 `npm ci` uses `relay/.npmrc` (`legacy-peer-deps=true`). Do not deploy
 `relay/wrangler.test.jsonc`. Do not put an API token in the repo.
-`npx wrangler deploy --dry-run` checks the config without publishing. A
-`workers.dev` URL still works if you set `config.share.relay` to it.
+`npx wrangler deploy --dry-run` checks the config without publishing. Keep
+`workers_dev` true: that hostname is the fallback when
+`relay.youneek.xyz` returns an empty 404 or a 403 on the WebSocket upgrade.
+To make the custom domain itself return 101, turn WebSockets on for the
+`youneek.xyz` zone (Network → WebSockets) and do not challenge non-browser
+clients on `relay.youneek.xyz`. That is a zone setting. Redeploying the
+Worker does not change it. The route pattern `relay.youneek.xyz` with
+`custom_domain: true` already sends every path to this Worker.
 
 `npx wrangler dev` in `relay/` speaks the same WebSocket protocol on
 localhost. The Zig tests use an in-process `ws://` mock instead of that
