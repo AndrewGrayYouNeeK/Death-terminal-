@@ -110,6 +110,37 @@ Context-aware, not just history-based.
 | SSH        | libssh2 1.11.1 (Linux)                 |
 | Scripting  | Lua 5.4                                |
 
+## Install
+
+Windows (x64 or ARM64), in PowerShell. No administrator prompt:
+
+```powershell
+irm https://raw.githubusercontent.com/AndrewGrayYouNeeK/Death-terminal-/main/install.ps1 | iex
+```
+
+That installs `%LOCALAPPDATA%\DeathTerminal\bin\deathterminal.exe`, adds the folder to your user PATH, and creates a Start Menu shortcut that runs `deathterminal --gui`.
+
+macOS (Apple Silicon and Intel) and Linux (x86_64 and aarch64):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/AndrewGrayYouNeeK/Death-terminal-/main/install.sh | sh
+```
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+deathterminal --gui
+```
+
+Run either command again to update. Uninstall:
+
+```powershell
+$env:DEATHTERMINAL_UNINSTALL='1'; irm https://raw.githubusercontent.com/AndrewGrayYouNeeK/Death-terminal-/main/install.ps1 | iex
+```
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/AndrewGrayYouNeeK/Death-terminal-/main/install.sh | sh -s -- --uninstall
+```
+
 ## ⚡ Quick Start
 
 ```bash
