@@ -160,6 +160,12 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
     };
     gui.startPlugins();
     if (loop.join_code) |code| gui.share.joinCode(gui.focusedPane().id, code);
+    if (loop.share_now) {
+        std.debug.print("gui: --share\n", .{});
+        gui.share.startHost(gui.focusedPane().id);
+        try gui.showShare();
+        if (gui.share.inviteText()) |t| std.io.getStdOut().writeAll(t) catch {};
+    }
     if (gui.focusedPane().ai.engine != null) std.debug.print("  → AI: {s} via {s}\n", .{ cfg.ai_model, cfg.ai_endpoint });
     std.debug.print("GUI terminal active ({s}, scale={d:.2}). Close the window or exit the shell to quit.\n", .{ @tagName(window.backend), window.scale });
 
@@ -1245,8 +1251,19 @@ const Gui = struct {
             .zoom_pane => if (ws.toggleZoom()) self.relayout(),
             .equalize_panes => if (ws.equalize()) self.relayout(),
             .share_pane => {
+                std.debug.print("gui: share_pane\n", .{});
                 self.share.startHost(fp.id);
                 try self.showShare();
+                self.touchAll();
+            },
+            .share_copy => {
+                if (self.share.inviteText()) |t| {
+                    self.window.setClipboard(.clipboard, t);
+                    try fp.ui.setNotice(.info, "Share: invite copied", &.{}, NOTICE_MS, now);
+                    std.debug.print("gui: share_copy\n", .{});
+                } else {
+                    try fp.ui.setNotice(.err, "Share", &.{"not sharing - start a share first"}, 6000, now);
+                }
                 self.touchAll();
             },
             .share_grant => {
@@ -1692,8 +1709,10 @@ const Gui = struct {
 
     fn showShare(self: *Gui) !void {
         var dirty = false;
-        if (self.share.takeAnnounce()) |code| {
-            try self.focusedPane().ui.setNotice(.info, "Shared Haunting — deathterminal --join", &.{code}, null, std.time.milliTimestamp());
+        if (self.share.takeAnnounce()) |text| {
+            self.window.setClipboard(.clipboard, text);
+            try self.focusedPane().ui.setNotice(.info, "Shared Haunting — invite copied", &.{}, null, std.time.milliTimestamp());
+            std.debug.print("gui: invite copied to the clipboard\n", .{});
             dirty = true;
         }
         if (self.share.takeError()) |text| {

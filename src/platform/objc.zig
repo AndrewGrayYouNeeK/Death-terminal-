@@ -54,6 +54,9 @@ pub const Runtime = struct {
     msgSend_fpret: ?*const anyopaque = null,
     poolPush: *const fn () callconv(.C) ?*anyopaque = undefined,
     poolPop: *const fn (?*anyopaque) callconv(.C) void = undefined,
+    allocateClassPair: *const fn (Class, [*:0]const u8, usize) callconv(.C) Class = undefined,
+    addMethod: *const fn (Class, Sel, *const anyopaque, [*:0]const u8) callconv(.C) BOOL = undefined,
+    registerClassPair: *const fn (Class) callconv(.C) void = undefined,
 };
 
 pub var rt: Runtime = .{};
@@ -77,6 +80,9 @@ pub fn load() !void {
     }
     rt.poolPush = rt.objc.sym(@TypeOf(rt.poolPush), "objc_autoreleasePoolPush") orelse return error.NoObjcRuntime;
     rt.poolPop = rt.objc.sym(@TypeOf(rt.poolPop), "objc_autoreleasePoolPop") orelse return error.NoObjcRuntime;
+    rt.allocateClassPair = rt.objc.sym(@TypeOf(rt.allocateClassPair), "objc_allocateClassPair") orelse return error.NoObjcRuntime;
+    rt.addMethod = rt.objc.sym(@TypeOf(rt.addMethod), "class_addMethod") orelse return error.NoObjcRuntime;
+    rt.registerClassPair = rt.objc.sym(@TypeOf(rt.registerClassPair), "objc_registerClassPair") orelse return error.NoObjcRuntime;
     loaded = true;
 }
 
@@ -86,6 +92,19 @@ pub fn class(name: [:0]const u8) Id {
 
 pub fn sel(name: [:0]const u8) Sel {
     return rt.registerName(name.ptr);
+}
+
+/// `objc_allocateClassPair`. `extra` bytes are added to each instance.
+pub fn allocateClassPair(super: Id, name: [:0]const u8) Id {
+    return rt.allocateClassPair(super, name.ptr, @as(usize, 0));
+}
+
+pub fn addMethod(cls: Id, name: [:0]const u8, imp: *const anyopaque, types: [:0]const u8) bool {
+    return isTrue(rt.addMethod(cls, sel(name), imp, types.ptr));
+}
+
+pub fn registerClassPair(cls: Id) void {
+    rt.registerClassPair(cls);
 }
 
 /// Global `NSString *const` exported by a framework (e.g.

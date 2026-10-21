@@ -126,6 +126,9 @@ pub const Action = enum {
     share_kick,
     share_stop,
     share_join,
+    /// Copy the current invite (address, port, and code) to the clipboard.
+    /// Palette only; the invite is already copied when sharing starts.
+    share_copy,
 
     /// goto_tab_N -> N-1.
     pub fn gotoIndex(self: Action) ?usize {
@@ -187,6 +190,7 @@ pub const Action = enum {
             .share_kick => "Share: kick the guest",
             .share_stop => "Share: stop sharing",
             .share_join => "Share: join a haunting",
+            .share_copy => "Share: copy invite",
             // Listed as "Go to tab N: <title>" entries instead.
             .goto_tab_1, .goto_tab_2, .goto_tab_3, .goto_tab_4, .goto_tab_5, .goto_tab_6, .goto_tab_7, .goto_tab_8, .goto_tab_9 => null,
             .none, .ai_accept, .ai_dismiss, .ai_next, .ai_prev, .command_palette, .plugin_binding => null,
@@ -696,6 +700,7 @@ test "default bindings and overrides" {
     try std.testing.expectEqual(Action.share_join, b.match('j', .{ .ctrl = true, .shift = true }).?);
     try std.testing.expectEqual(Action.share_stop, b.match('h', .{ .ctrl = true, .shift = true, .alt = true }).?);
     try std.testing.expectEqualStrings("Share: share this pane", Action.share_pane.title().?);
+    try std.testing.expectEqualStrings("Share: copy invite", Action.share_copy.title().?);
     try std.testing.expectEqual(Action.ai_ask, b.match('Q', .{ .ctrl = true, .shift = true }).?);
     try std.testing.expectEqual(Action.copy, b.match('C', .{ .ctrl = true, .shift = true }).?);
     try std.testing.expectEqual(Action.copy, b.match('c', .{ .ctrl = true, .shift = true }).?);

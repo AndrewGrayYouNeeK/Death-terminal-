@@ -92,6 +92,18 @@ Run without a GUI window (the default).
 .B \-\-gui
 Open a native window (Wayland, X11, Win32 or Cocoa); falls back to headless.
 .TP
+.B \-\-share
+Host this terminal and print the invite (LAN IP, port, and code). Stays up
+until the shell exits. See
+.IR docs/SHARING.md .
+.TP
+.BI \-\-join " invite"
+Watch that shared pane. \fIinvite\fP is the code printed by
+.B \-\-share
+or a
+.I deathterminal://join/
+link.
+.TP
 .BI \-\-scale " n"
 UI scale 1\(en4 (default: from DPI, compositor or environment).
 .TP
@@ -133,7 +145,8 @@ Split right / split down / close pane.
 Move focus between panes / resize the focused pane.
 .TP
 .B Ctrl+Shift+P
-Command palette.
+Command palette. On macOS this is
+.BR Cmd+Shift+P .
 .TP
 .B Ctrl+Shift+S
 SSH palette (profiles and forwards).

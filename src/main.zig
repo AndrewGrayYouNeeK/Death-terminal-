@@ -59,6 +59,11 @@ pub fn main() !void {
         }
     }
 
+    if (hasFlag(args, "--share") and joinArg(args) != null) {
+        std.debug.print("deathterminal: --share and --join cannot be used together\n", .{});
+        std.process.exit(2);
+    }
+
     // `--share-relay [host:]port`: rendezvous only, no window.
     for (args[1..], 1..) |a, i| {
         if (std.mem.eql(u8, a, "--share-relay")) {
@@ -152,6 +157,7 @@ pub fn main() !void {
         .spawn_ctx = spawn_ctx,
         .startup_layout = use_layout,
         .join_code = joinArg(args),
+        .share_now = hasFlag(args, "--share"),
     };
     try loop.run(&vulkan_renderer, &term, &lua);
 }
@@ -208,6 +214,17 @@ fn sshCtl(args: []const []const u8) u8 {
     };
     std.io.getStdOut().writeAll(r) catch {};
     return if (std.mem.startsWith(u8, r, "error")) 1 else 0;
+}
+
+test "--share is not --share-relay, and --join takes the invite" {
+    const share_only = [_][]const u8{ "deathterminal", "--share" };
+    try std.testing.expect(hasFlag(&share_only, "--share"));
+    const relay = [_][]const u8{ "deathterminal", "--share-relay", "9754" };
+    try std.testing.expect(!hasFlag(&relay, "--share"));
+    const joined = [_][]const u8{ "deathterminal", "--join", "dt1.abc" };
+    try std.testing.expectEqualStrings("dt1.abc", joinArg(&joined).?);
+    const eq = [_][]const u8{ "deathterminal", "--join=dt1.xyz" };
+    try std.testing.expectEqualStrings("dt1.xyz", joinArg(&eq).?);
 }
 
 fn joinArg(args: []const []const u8) ?[]const u8 {
@@ -280,7 +297,8 @@ fn printHelp() !void {
         \\    --ssh-session <target> [-L|-R|-D spec]...  Run the SSH client in this terminal
         \\    --ssh-ctl <pid> <cmd>   Control a running session: status, list, toggle <n>,
         \\                     on <n>, off <n>, add <spec>, reconnect
-        \\    --join <code>    Watch another terminal's pane (invite code or deathterminal://join/ link)
+        \\    --share          Host this terminal and print the invite (LAN IP, port, and code)
+        \\    --join <invite>  Watch that shared pane (invite code, or a deathterminal://join/ link)
         \\    --share-relay <host:port|port>  Run the optional rendezvous (see docs/SHARING.md)
         \\    --plugins list | enable <name> | disable <name>
         \\                     Show installed plugins (and their permissions), or switch
@@ -305,9 +323,10 @@ fn printHelp() !void {
         \\    • Ask the Output (Ctrl+Shift+Q; macOS Cmd+Shift+Q, Cmd+Q still quits): question about the last command, selection, or screen
         \\    • Built-in SSH (libssh2): profiles, ProxyJump, -L/-R/-D forwards (Ctrl+Shift+S)
         \\    • Vulkan-accelerated rendering
-        \\    • Lua plugins: hooks, command palette (Ctrl+Shift+P), status bar, themes
+        \\    • Lua plugins: hooks, command palette (Ctrl+Shift+P; macOS Cmd+Shift+P), status bar, themes
         \\    • Time Travel: snapshot the working tree before each command (Ctrl+Alt+T; macOS Cmd+Option+T)
-        \\    • Shared Haunting: share the focused pane (Ctrl+Shift+H; macOS Cmd+Shift+H, Cmd+H is Hide)
+        \\    • Shared Haunting: share the focused pane (Ctrl+Shift+H; macOS Cmd+Shift+H, Cmd+H is Hide).
+        \\      --share prints the invite. The window also shows it and copies it.
         \\    • Brutalist, high-performance design
         \\
         \\For more information, visit: https://github.com/AndrewGrayYouNeeK/Death-terminal-
