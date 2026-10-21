@@ -142,6 +142,24 @@ fn addShellIntegration(b: *std.Build, step: *std.Build.Step.Compile) void {
     step.root_module.addAnonymousImport("shell_scripts", .{ .root_source_file = mod });
 }
 
+/// YouNeeK Time plugin sources. `@embedFile` cannot leave `src/`, so the
+/// build copies `plugins/youneek-time` next to a tiny module.
+fn addYouneekPlugin(b: *std.Build, step: *std.Build.Step.Compile) void {
+    const wf = b.addWriteFiles();
+    _ = wf.addCopyFile(b.path("plugins/youneek-time/manifest.lua"), "manifest.lua");
+    _ = wf.addCopyFile(b.path("plugins/youneek-time/init.lua"), "init.lua");
+    _ = wf.addCopyFile(b.path("plugins/youneek-time/lib/clock.lua"), "lib/clock.lua");
+    _ = wf.addCopyFile(b.path("plugins/youneek-time/lib/moon.lua"), "lib/moon.lua");
+    const mod = wf.add("youneek_plugin.zig",
+        \\pub const manifest = @embedFile("manifest.lua");
+        \\pub const init = @embedFile("init.lua");
+        \\pub const clock = @embedFile("lib/clock.lua");
+        \\pub const moon = @embedFile("lib/moon.lua");
+        \\
+    );
+    step.root_module.addAnonymousImport("youneek_plugin", .{ .root_source_file = mod });
+}
+
 /// Bundled default font (JetBrains Mono, SIL OFL 1.1), embedded with
 /// `@embedFile("jbm_regular")` etc.
 fn addFonts(b: *std.Build, step: *std.Build.Step.Compile) void {
@@ -174,6 +192,7 @@ fn addApp(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin
     });
     addPlatform(b, exe, target);
     addFonts(b, exe);
+    addYouneekPlugin(b, exe);
     addLua(b, exe, target);
     addLibssh2(b, exe, target);
     addDefaultConfig(b, exe);
@@ -374,6 +393,7 @@ pub fn build(b: *std.Build) void {
     });
     addPlatform(b, unit_tests, target);
     addFonts(b, unit_tests);
+    addYouneekPlugin(b, unit_tests);
     addLua(b, unit_tests, target);
     addLibssh2(b, unit_tests, target);
     addDefaultConfig(b, unit_tests);

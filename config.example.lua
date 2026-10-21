@@ -138,9 +138,9 @@ config.ssh.keepalive_s = 30          -- seconds; 0 = off
 -- }
 
 -- Status bar ---------------------------------------------------------------
--- One row under the grid for plugin segments (git branch, theme, ...).
+-- One row under the grid for plugin segments (YouNeeK Time, git branch, ...).
 -- Ctrl+Shift+B toggles it at runtime.
-config.status_bar.enabled = false
+config.status_bar.enabled = true
 
 -- Tabs and split panes (see docs/TABS.md) ---------------------------------
 config.tabs.bar = "auto"             -- "auto" (shown with 2+ tabs), "top", "bottom", "hidden"
@@ -169,6 +169,17 @@ config.plugins_dir = ""              -- "" = $XDG_CONFIG_HOME/death-terminal/plu
 --   weather = { allow = { "network" }, hosts = { "wttr.in" }, cpu_ms = 50 },
 --   noisy = { enabled = false },
 -- }
+-- YouNeeK Time is bundled (plugins/youneek-time) and on unless you disable it.
+-- These settings are the defaults the plugin uses when the block is absent.
+config.plugins["youneek-time"] = {
+  enabled = true,                     -- false hides the clock
+  settings = {
+    mode = "youneek",                 -- "youneek" (100 minutes per hour) or "regular"
+    hours = 24,                       -- 12 or 24; the hour only, in either mode
+    timezone = "",                    -- "" = local, "UTC", or an offset like "-05:00"
+    chime = false,                    -- toast on the hour (plugins cannot play a sound)
+  },
+}
 
 -- Lua tricks ---------------------------------------------------------------
 -- if os.getenv("SSH_CONNECTION") then config.theme = "death" end

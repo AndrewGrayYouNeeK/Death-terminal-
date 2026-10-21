@@ -109,7 +109,7 @@ config is reloaded.
 | `ssh.config_file` | `"~/.ssh/config"` | OpenSSH config to read Host aliases from (`""` = none) |
 | `ssh.keepalive_s` | `30` | Default keepalive interval, 0–3600 (0 = off); profiles can override |
 | `ssh.known_hosts` | `"~/.ssh/known_hosts"` | Host keys file (shared with OpenSSH; appended to, never rewritten) |
-| `status_bar.enabled` | `false` | A one-row status bar under the grid for plugin segments. Ctrl+Shift+B (`toggle_status_bar`) toggles it |
+| `status_bar.enabled` | `true` | A one-row status bar under the grid for plugin segments (the bundled YouNeeK Time clock uses it). Ctrl+Shift+B (`toggle_status_bar`) toggles it |
 | `tabs.bar` | `"auto"` | Tab bar: `"auto"` (only with 2+ tabs), `"top"`, `"bottom"`, `"hidden"`. `toggle_tab_bar` flips it. See [TABS.md](TABS.md) |
 | `tabs.confirm_close` | `true` | Ask before closing a pane / tab / the window while a program (not just the shell) runs in it |
 | `tabs.dim_inactive` | `0` | 0–0.9: fade the text of panes without the focus (0 = off) |

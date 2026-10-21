@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Bundled `youneek-time` plugin: a YouNeeK Time status segment (civil hour, 100 minutes per hour, `#7CFF6B`, local suncalc moon phase). The status bar is on by default. `config.plugins["youneek-time"]` can disable it, switch to regular `HH:MM`, pick 12/24h, set a timezone, and turn on an hourly toast (`settings.chime`, off by default)
 - Installable desktop packages from `zig build release -Dpackages=true`: macOS `.app` plus `.dmg` (`packaging/macos/make-dmg.sh`; `hdiutil` on a Mac, HFS-hybrid UDIF on Linux), Windows NSIS setup exe with the app icon and a Start Menu shortcut (`packaging/windows/build-installer.sh`), alongside the existing Linux AppImage, `.deb` (installs `deathterminal.desktop`) and `.rpm`. The tag release workflow uploads them. Code signing stays a documented TODO (`packaging/SIGNING.md`)
 - `docs/MOBILE.md`: iOS/Android plan. No mobile target is built
 - Grok 4.7 on `api.x.ai` and `us.api.x.ai` (the model Grok Bot uses) goes through the Responses API: `reasoning.effort` defaults to `low` (`config.ai.reasoning`: `low` / `medium` / `high` / `xhigh`), live search is off, responses are not stored, and reasoning text is not shown as the suggestion. `ai.max_tokens` is sent as `max_output_tokens`, which caps the visible answer. Other endpoints stay on chat/completions. xAI requests wait at least 15s; `ai.timeout_ms` now allows up to 600000
