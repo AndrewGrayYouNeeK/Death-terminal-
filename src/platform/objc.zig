@@ -112,6 +112,16 @@ fn usesStret(comptime R: type) bool {
     };
 }
 
+fn requireConcreteArgs(comptime Args: type) void {
+    const info = @typeInfo(Args);
+    if (info != .Struct) @compileError("objc msg arguments must be a tuple");
+    inline for (info.Struct.fields) |f| {
+        if (f.type == comptime_int or f.type == comptime_float) {
+            @compileError("objc msg argument has type " ++ @typeName(f.type) ++ "; cast it to a concrete integer or float. A comptime number is not passed in a register, so every later argument moves into the wrong arm64 register");
+        }
+    }
+}
+
 fn FnType(comptime R: type, comptime Args: type) type {
     const fields = @typeInfo(Args).Struct.fields;
     var params: [fields.len + 2]std.builtin.Type.Fn.Param = undefined;
@@ -127,10 +137,17 @@ fn FnType(comptime R: type, comptime Args: type) type {
     } });
 }
 
-/// `[target name args...]` returning R. Argument types must be concrete
-/// (no comptime_int / comptime_float).
+/// `[target name args...]` returning R.
+///
+/// Every argument must be a runtime type. A `comptime_int` / `comptime_float`
+/// parameter is erased from the C ABI (it is a compile-time value, not a
+/// register), so the arguments after it slide left. On arm64 that is fatal:
+/// `nextEventMatchingMask:untilDate:inMode:dequeue:` then sees the BOOL `YES`
+/// (the integer 1) in the `inMode:` NSString slot and dereferences 0x1.
 pub fn msg(comptime R: type, target: Id, name: [:0]const u8, args: anytype) R {
-    const F = FnType(R, @TypeOf(args));
+    const Args = @TypeOf(args);
+    comptime requireConcreteArgs(Args);
+    const F = FnType(R, Args);
     const raw = if (usesStret(R)) rt.msgSend_stret.? else if (builtin.cpu.arch == .x86_64 and (R == f64 or R == f32)) rt.msgSend_fpret orelse rt.msgSend else rt.msgSend;
     const f: F = @ptrCast(@alignCast(raw));
     return @call(.auto, f, .{ target, sel(name) } ++ args);
@@ -163,4 +180,30 @@ test "objc: function type construction" {
     const info = @typeInfo(@typeInfo(F).Pointer.child).Fn;
     try std.testing.expectEqual(@as(usize, 4), info.params.len);
     try std.testing.expect(!usesStret(NSPoint));
+}
+
+test "objc: comptime_int is not an arm64 argument slot" {
+    // `std.math.maxInt` is a comptime_int. Used raw as the NSEventMask, it
+    // is omitted from the objc_msgSend call and the BOOL (1) lands in x4,
+    // which AppKit reads as the run-loop mode and dereferences.
+    const until: Id = null;
+    const mode: Id = null;
+    const bad = @typeInfo(@TypeOf(.{ std.math.maxInt(u64), until, mode, YES })).Struct.fields;
+    try std.testing.expect(bad[0].type == comptime_int);
+    try std.testing.expect(bad[0].is_comptime);
+
+    const good = @typeInfo(@TypeOf(.{ @as(u64, std.math.maxInt(u64)), until, mode, YES })).Struct.fields;
+    try std.testing.expect(good[0].type == u64);
+    try std.testing.expect(good[1].type == Id);
+    try std.testing.expect(good[2].type == Id);
+    try std.testing.expect(good[3].type == BOOL);
+
+    const F = FnType(Id, @TypeOf(.{ @as(u64, std.math.maxInt(u64)), until, mode, YES }));
+    const params = @typeInfo(@typeInfo(F).Pointer.child).Fn.params;
+    // self, _cmd, mask, untilDate, mode, dequeue
+    try std.testing.expectEqual(@as(usize, 6), params.len);
+    try std.testing.expect(params[2].type.? == u64);
+    try std.testing.expect(params[3].type.? == Id);
+    try std.testing.expect(params[4].type.? == Id);
+    try std.testing.expect(params[5].type.? == BOOL);
 }

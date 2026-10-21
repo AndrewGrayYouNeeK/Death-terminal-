@@ -53,6 +53,10 @@ const Flag = struct {
 /// Subtype marking our own wake-up events.
 const wake_subtype: i16 = 0x4454; // "DT"
 
+/// `NSEventMaskAny`. A bare `std.math.maxInt(u64)` is a `comptime_int`,
+/// which is erased from the C ABI; the mask must occupy its own register.
+const any_event_mask: u64 = @as(u64, std.math.maxInt(u64));
+
 pub const State = struct {
     allocator: std.mem.Allocator = undefined,
     app: Id = null,
@@ -232,7 +236,7 @@ pub fn wait(st: *State, fds: []io.PollFd, timeout_ms: i32) usize {
             msg(Id, objc.class("NSDate"), "distantFuture", .{})
         else
             msg(Id, objc.class("NSDate"), "dateWithTimeIntervalSinceNow:", .{@as(f64, @floatFromInt(timeout_ms)) / 1000.0});
-        const ev = msg(Id, st.app, "nextEventMatchingMask:untilDate:inMode:dequeue:", .{ std.math.maxInt(u64), until, st.run_mode, objc.YES });
+        const ev = msg(Id, st.app, "nextEventMatchingMask:untilDate:inMode:dequeue:", .{ any_event_mask, until, st.run_mode, objc.YES });
         if (ev != null) handleEvent(st, ev);
     }
 
@@ -359,7 +363,7 @@ fn pump(st: *State) void {
     const past = msg(Id, objc.class("NSDate"), "distantPast", .{});
     var n: usize = 0;
     while (n < 256) : (n += 1) {
-        const ev = msg(Id, st.app, "nextEventMatchingMask:untilDate:inMode:dequeue:", .{ std.math.maxInt(u64), past, st.run_mode, objc.YES });
+        const ev = msg(Id, st.app, "nextEventMatchingMask:untilDate:inMode:dequeue:", .{ any_event_mask, past, st.run_mode, objc.YES });
         if (ev == null) break;
         handleEvent(st, ev);
     }
