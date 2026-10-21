@@ -112,6 +112,12 @@ config.ai.history = 5                -- previous commands (with exit codes) sent
 config.ai.output_lines = 20          -- lines of recent output sent as context
 config.ai.accept_key = "tab"         -- accepts the ghost text (Esc dismisses)
 
+-- Muscle memory (local only; see docs/MUSCLE_MEMORY.md) -------------------
+-- Repeated command sequences in one project can be saved as a shortcut.
+config.muscle_memory.enabled = true
+config.muscle_memory.min_repeats = 3 -- same 2..max_len commands, this many times
+config.muscle_memory.max_len = 5     -- longest sequence to notice (2-8)
+
 -- SSH (built in, libssh2; see docs/SSH.md) --------------------------------
 -- `deathterminal --gui --ssh <profile | ~/.ssh/config alias | user@host[:port]>`
 -- or Ctrl+Shift+S in a window to pick a profile.

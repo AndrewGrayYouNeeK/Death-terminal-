@@ -185,6 +185,11 @@ pub const schema = [_]Field{
     .{ .path = "ai.output_lines", .kind = .integer, .min = 0, .max = 200, .ref = ref(.u16, "ai_output_lines") },
     .{ .path = "ai.accept_key", .kind = .string, .ref = ref(.string, "ai_accept_key"), .check = checkChord },
 
+    .{ .path = "muscle_memory", .kind = .section },
+    .{ .path = "muscle_memory.enabled", .kind = .boolean, .ref = ref(.boolean, "muscle_enabled") },
+    .{ .path = "muscle_memory.min_repeats", .kind = .integer, .min = 2, .max = 50, .ref = ref(.u16, "muscle_min_repeats") },
+    .{ .path = "muscle_memory.max_len", .kind = .integer, .min = 2, .max = 8, .ref = ref(.u16, "muscle_max_len") },
+
     .{ .path = "ssh", .kind = .section },
     .{ .path = "ssh.enabled", .kind = .boolean, .ref = ref(.boolean, "ssh_enabled") },
     .{ .path = "ssh.config_file", .kind = .string, .ref = ref(.string, "ssh_config_file") },

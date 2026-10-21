@@ -21,7 +21,7 @@ pub const Item = struct {
     arg: usize = 0,
     on: bool = false,
 
-    pub const Kind = enum { forward, reconnect, profile, alias, action, command, tab };
+    pub const Kind = enum { forward, reconnect, profile, alias, action, command, tab, muscle };
 };
 
 pub const Mode = enum { ssh, commands };
@@ -38,6 +38,8 @@ pub const Pick = union(enum) {
     command: usize,
     /// Go to this tab (id).
     tab: usize,
+    /// A muscle-memory shortcut action (`muscle.pack` value).
+    muscle: usize,
 };
 
 pub const Where = enum { tab, split, window };
@@ -158,6 +160,7 @@ pub const Palette = struct {
             .action => .{ .pick = .{ .action = it.arg } },
             .command => .{ .pick = .{ .command = it.arg } },
             .tab => .{ .pick = .{ .tab = it.arg } },
+            .muscle => .{ .pick = .{ .muscle = it.arg } },
             .reconnect => .{ .pick = .reconnect },
             .profile, .alias => .{ .pick = .{ .open = .{ .name = try self.allocator.dupe(u8, it.name), .where = where } } },
         };
@@ -299,6 +302,7 @@ pub const Palette = struct {
                 .action => col += put(line[col..], "› ", lfg, lbg),
                 .tab => col += put(line[col..], "⇥ ", lfg, lbg),
                 .command => col += put(line[col..], "◆ ", if (selected) sel_fg else accent, lbg),
+                .muscle => col += put(line[col..], "» ", lfg, lbg),
             }
             col += put(line[col..], it.name, lfg, lbg);
             col += 2;
@@ -426,6 +430,10 @@ test "command palette picks actions and plugin commands" {
     try t.expectEqual(@as(usize, 3), (try p.handleText("\r")).pick.command);
     _ = try p.handleText("\x15");
     try t.expectEqual(@as(usize, 1), (try p.handleKey(.enter, .{})).pick.action);
+    try p.addItem(.muscle, "ship", "app · git status → git diff", 0x01000002, false);
+    _ = try p.handleText("\x15");
+    _ = try p.handleText("ship");
+    try t.expectEqual(@as(usize, 0x01000002), (try p.handleText("\r")).pick.muscle);
     const cells = try t.allocator.alloc(Cell, 24 * 80);
     defer t.allocator.free(cells);
     @memset(cells, Cell.init());

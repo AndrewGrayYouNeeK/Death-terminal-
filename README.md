@@ -41,6 +41,11 @@ Context-aware, not just history-based.
 - Secrets (tokens, keys, passwords, env assignments) are redacted before anything is sent; offline endpoints just show a small "AI offline" badge
 - bash/zsh/fish OSC 133 shell integration, injected automatically (see [docs/AI.md](docs/AI.md))
 
+### 🔁 Muscle Memory
+- Local only: repeated command sequences in one project (the same 2–5 commands, three or more times) raise “You run these together a lot. Make it a shortcut?”
+- Accepting asks for a name and writes `~/.config/death-terminal/shortcuts.lua`. Typing that name, or picking it in the command palette, runs the sequence and stops on the first failure
+- Per-project shortcuts (cwd / git root) and global ones. List, rename, and delete from the palette. Commands that contain secrets are skipped with the AI redaction pass (see [docs/MUSCLE_MEMORY.md](docs/MUSCLE_MEMORY.md))
+
 ### ⚡ GPU Rendering (Vulkan)
 - Vulkan swapchain + SPIR-V glyph pipeline, with a software fallback
 - FreeType + HarfBuzz text (ligatures), dynamic glyph atlas. CJK and colour emoji come from fontconfig on Linux; Windows and macOS scan font folders (COLR emoji — bitmap emoji fonts are not loaded yet)
@@ -132,6 +137,7 @@ in [docs/MOBILE.md](docs/MOBILE.md) and is not built.
 - Lua 5.4 config (`~/.config/death-terminal/config.lua`, or `%APPDATA%\death-terminal\config.lua` on Windows; vendored Lua, sandboxed): typed options with file:line errors shown in the window, bundled themes, key bindings, shell/env/cwd, live reload on save or Ctrl+Shift+R; `deathterminal --print-default-config` (see [docs/CONFIG.md](docs/CONFIG.md))
 - Built-in SSH (libssh2, Linux only): profiles + `~/.ssh/config`, ProxyJump, agent/key/keyboard-interactive/password auth, known_hosts checks, remote PTY with resize, `-L/-R/-D` forwards togglable at runtime (Ctrl+Shift+S), keepalive/reconnect; `zig build test-ssh` against a local sshd (see [docs/SSH.md](docs/SSH.md))
 - Lua plugins: sandboxed per-plugin states, permission grants in config.lua, hooks, command palette (Ctrl+Shift+P), status bar (on by default), toasts, timers, themes, four example plugins including the bundled YouNeeK Time clock (see [docs/PLUGINS.md](docs/PLUGINS.md))
+- Muscle memory: local mining of repeated command sequences, project and global shortcuts in `shortcuts.lua`, palette list/rename/delete, stop on the first failing command (see [docs/MUSCLE_MEMORY.md](docs/MUSCLE_MEMORY.md))
 - Tabs and split panes: layout tree, keyboard/mouse resize and focus, zoom, equalize, tab bar, confirm-close for running programs, startup layouts, plugin tab/pane events and actions (see [docs/TABS.md](docs/TABS.md))
 - CI: Linux build + unit tests, Windows and macOS cross-compiles; a `v*` tag opens a draft GitHub release
 - Packaging: `zig build release -Dpackages=true` builds an AppImage, `.deb` (with a `.desktop` file) and `.rpm`, a Windows zip plus NSIS installer, and a macOS `.app` plus `.dmg`. A `v*` tag publishes them. Signing is not done yet ([packaging/SIGNING.md](packaging/SIGNING.md))

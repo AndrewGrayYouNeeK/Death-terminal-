@@ -105,6 +105,9 @@ config is reloaded.
 | `ai.history` | `5` | Previous commands (with exit codes) sent as context, 0–32 |
 | `ai.output_lines` | `20` | Lines of recent output sent as context, 0–200 |
 | `ai.accept_key` | `"tab"` | Chord that accepts the ghost text |
+| `muscle_memory.enabled` | `true` | Notice repeated command sequences and offer to save them as shortcuts. See [MUSCLE_MEMORY.md](MUSCLE_MEMORY.md) |
+| `muscle_memory.min_repeats` | `3` | How many times the same sequence must run in one project before it is offered, 2–50 |
+| `muscle_memory.max_len` | `5` | Longest sequence to notice, in commands, 2–8 |
 | `ssh.enabled` | `true` | Built-in SSH client (`--ssh`, Ctrl+Shift+S). See [SSH.md](SSH.md) |
 | `ssh.config_file` | `"~/.ssh/config"` | OpenSSH config to read Host aliases from (`""` = none) |
 | `ssh.keepalive_s` | `30` | Default keepalive interval, 0–3600 (0 = off); profiles can override |

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Muscle memory: repeated command sequences in one project (2–5 commands, 3+ times by default) offer “You run these together a lot. Make it a shortcut?”. A name saves the sequence to `shortcuts.lua` (project, keyed by git root or cwd, or global). Typing the name or picking it in the command palette runs it and stops on the first non-zero exit. The palette lists, renames, and deletes shortcuts. Commands that contain secrets are skipped with the AI redaction pass. `config.muscle_memory.enabled` / `min_repeats` / `max_len`. See [docs/MUSCLE_MEMORY.md](docs/MUSCLE_MEMORY.md)
 - Bundled `youneek-time` plugin: a YouNeeK Time status segment (civil hour, 100 minutes per hour, `#7CFF6B`, local suncalc moon phase). The status bar is on by default. `config.plugins["youneek-time"]` can disable it, switch to regular `HH:MM`, pick 12/24h, set a timezone, and turn on an hourly toast (`settings.chime`, off by default)
 - Installable desktop packages from `zig build release -Dpackages=true`: macOS `.app` plus `.dmg` (`packaging/macos/make-dmg.sh`; `hdiutil` on a Mac, HFS-hybrid UDIF on Linux), Windows NSIS setup exe with the app icon and a Start Menu shortcut (`packaging/windows/build-installer.sh`), alongside the existing Linux AppImage, `.deb` (installs `deathterminal.desktop`) and `.rpm`. The tag release workflow uploads them. Code signing stays a documented TODO (`packaging/SIGNING.md`)
 - `docs/MOBILE.md`: iOS/Android plan. No mobile target is built

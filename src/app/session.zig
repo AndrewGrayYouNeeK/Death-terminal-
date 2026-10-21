@@ -55,6 +55,8 @@ pub const Pane = struct {
     seen_bells: u32 = 0,
     /// Command counters last drawn in the tab bar.
     bar_seen: u64 = 0,
+    /// `term.shell.finished` last handed to muscle memory.
+    muscle_finished: u64 = 0,
     /// Where the pane is drawn (empty when its tab is hidden or another
     /// pane is zoomed).
     rect: Rect = .{},
@@ -78,6 +80,7 @@ pub const Pane = struct {
             .marks = std.ArrayList(Mark).init(a),
             .track = .{ .term = term, .pane = id },
             .seen_bells = term.bell_count,
+            .muscle_finished = term.shell.finished,
         };
         return p;
     }
@@ -129,7 +132,6 @@ pub const Pane = struct {
         return self.term.shell.started > self.term.shell.finished;
     }
 };
-
 
 pub const BarMode = enum {
     auto,
