@@ -968,6 +968,7 @@ fn explainFailure(name: []const u8) []const u8 {
     if (std.mem.eql(u8, name, "AddressInUse")) return "that share port is already in use";
     if (std.mem.eql(u8, name, "BadAddress")) return "bad share bind address";
     if (std.mem.eql(u8, name, "Unexpected")) return "could not connect - the firewall may be blocking it";
+    if (std.mem.eql(u8, name, "Cancelled")) return "the relay connection was cancelled before the session opened";
     return name;
 }
 
@@ -1037,6 +1038,8 @@ test "share failures are sentences a guest can read" {
     try std.testing.expect(std.mem.indexOf(u8, explainFailure("Timeout"), "firewall") != null);
     try std.testing.expect(std.mem.indexOf(u8, explainFailure("Unreachable"), "firewall") != null);
     try std.testing.expectEqualStrings("sharing is disabled in config", explainFailure("sharing is disabled in config"));
+    try std.testing.expect(std.mem.indexOf(u8, explainFailure("Cancelled"), "cancelled") != null);
+    try std.testing.expect(std.mem.indexOf(u8, explainFailure("Unexpected"), "could not connect") != null);
 }
 
 test "host invite shows the address, port, and join command" {

@@ -216,10 +216,15 @@ pub const EventLoop = struct {
         share.joinCode(0, self.join_code orelse return);
 
         const pty_fd = term.getPtyFd() orelse return error.NoPty;
-        try setNonBlocking(pty_fd);
+        setNonBlocking(pty_fd) catch |err| {
+            std.debug.print("join: pty nonblocking failed ({s}); continuing\n", .{@errorName(err)});
+        };
         var stdin_raw = false;
         if (builtin.os.tag != .windows) {
-            stdin_raw = try enableRawMode();
+            stdin_raw = enableRawMode() catch |err| blk: {
+                std.debug.print("join: terminal raw mode failed ({s}); keys may be cooked\n", .{@errorName(err)});
+                break :blk false;
+            };
         } else {
             stdin_raw = win_misc.enableRawConsole();
         }
@@ -227,9 +232,14 @@ pub const EventLoop = struct {
             if (builtin.os.tag == .windows) win_misc.restoreConsole() else disableRawMode() catch {};
         };
         const stdin_fd: io.Fd = if (builtin.os.tag == .windows) win_misc.stdinSocket() catch io.none else posix.STDIN_FILENO;
-        try installSignalHandlers();
+        installSignalHandlers() catch |err| {
+            std.debug.print("join: signal handlers failed ({s}); continuing\n", .{@errorName(err)});
+        };
 
-        const deadline = std.time.milliTimestamp() + 8000;
+        // Long enough for the LAN probe plus a custom-domain reject and the
+        // workers.dev retry. A relay failure prints here and returns. It does
+        // not leave main as error.Unexpected.
+        const deadline = std.time.milliTimestamp() + 20000;
         while (std.time.milliTimestamp() < deadline) {
             share.tick();
             const g = share.guest orelse break;
@@ -274,7 +284,9 @@ pub const EventLoop = struct {
                 break;
             };
             if (dirty) {
-                try renderHeadless(term, vulkan_renderer);
+                renderHeadless(term, vulkan_renderer) catch |err| {
+                    std.debug.print("join: redraw failed ({s})\n", .{@errorName(err)});
+                };
                 dirty = false;
             }
         }

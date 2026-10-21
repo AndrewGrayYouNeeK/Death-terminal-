@@ -43,6 +43,7 @@ const Dial = struct {
     mode: DialMode = .direct,
     fallback: Fallback = .none,
     wait_peer: bool = false,
+    used_fallback: bool = false,
     ws_url: [invite.max_relay]u8 = undefined,
     ws_url_len: usize = 0,
 
@@ -94,6 +95,7 @@ const Dial = struct {
                     continue;
                 },
                 .ws => ws_relay.open(self.ws_url[0..self.ws_url_len], self.role, &self.id, cancel, self.wait_peer) catch |err| {
+                    if (err != error.Cancelled and !cancel.check() and self.useHostedFallback()) continue;
                     self.remember(err);
                     if (!self.retry(err, cancel)) return;
                     continue;
@@ -106,6 +108,23 @@ const Dial = struct {
             self.fail(error.Closed);
             return;
         }
+    }
+
+    /// `relay.youneek.xyz` can answer an empty 404 or a 403 before the Worker
+    /// runs. The session id is the Durable Object name, so the workers.dev
+    /// hostname of the same Worker pairs with a peer that took the same path.
+    fn useHostedFallback(self: *Dial) bool {
+        if (self.used_fallback) return false;
+        if (!invite.isDefaultHostedRelay(self.ws_url[0..self.ws_url_len])) return false;
+        const detail = ws_relay.takeDetail();
+        if (!invite.edgeRejectedUpgrade(detail)) return false;
+        const next = invite.hosted_ws_fallback;
+        if (next.len > self.ws_url.len) return false;
+        self.used_fallback = true;
+        @memcpy(self.ws_url[0..next.len], next);
+        self.ws_url_len = next.len;
+        std.debug.print("share: relay.youneek.xyz rejected the WebSocket ({s}); dialing {s}\n", .{ detail, next });
+        return true;
     }
 
     fn retry(self: *Dial, err: anyerror, cancel: netdial.CancelFn) bool {
@@ -926,8 +945,8 @@ test "guest uses the relay when the LAN port does not answer" {
     try std.testing.expect(mock.guestCount() >= 1);
 }
 
-fn hostedRelayReachable() bool {
-    var stream = std.net.tcpConnectToHost(std.testing.allocator, "relay.youneek.xyz", 443) catch return false;
+fn relayTcpUp(host: []const u8) bool {
+    var stream = std.net.tcpConnectToHost(std.testing.allocator, host, 443) catch return false;
     stream.close();
     return true;
 }
@@ -939,14 +958,6 @@ fn waitOpenFor(host: *Host, guest: *Guest, rounds: usize, step_ms: u64) !void {
         try guest.tick();
         if (guest.failure()) |why| {
             std.debug.print("join failed: {s}\n", .{why});
-            // The TCP port answered, but the edge did not hand the request to
-            // the Worker (managed challenge, or a 404 generated at the edge).
-            // A Worker 404 includes the body "not found" and still fails.
-            if (std.mem.indexOf(u8, why, "not found") == null and
-                (std.mem.indexOf(u8, why, "403") != null or std.mem.indexOf(u8, why, "404") != null))
-            {
-                return error.EdgeChallenge;
-            }
             return error.JoinFailed;
         }
         if (host.phase == .closed) return error.JoinFailed;
@@ -957,19 +968,14 @@ fn waitOpenFor(host: *Host, guest: *Guest, rounds: usize, step_ms: u64) !void {
     try std.testing.expectEqual(Phase.open, guest.phase);
 }
 
-test "hosted relay: guest sees the screen and types after the grant" {
-    io.ensureSockets();
-    if (!hostedRelayReachable()) return;
+fn proveHostedSession(relay_url: []const u8) !void {
     // 192.0.2.1 is TEST-NET. The guest cannot prefer the LAN, so both sides
     // meet on the deployed relay. The listener stays on loopback.
-    const host = try Host.listen(std.testing.allocator, "127.0.0.1", 0, "192.0.2.1", "wss://relay.youneek.xyz", null);
+    const host = try Host.listen(std.testing.allocator, "127.0.0.1", 0, "192.0.2.1", relay_url, null);
     defer host.deinit();
     const guest = try Guest.start(std.testing.allocator, host.code);
     defer guest.deinit();
-    waitOpenFor(host, guest, 400, 50) catch |err| switch (err) {
-        error.EdgeChallenge => return,
-        else => return err,
-    };
+    try waitOpenFor(host, guest, 400, 50);
 
     var rowbuf: [msg.wire_len]u8 = undefined;
     msg.writeCell(&rowbuf, 'R', 0xAABBCC, 0x101010, 0);
@@ -1018,6 +1024,19 @@ test "hosted relay: guest sees the screen and types after the grant" {
         std.time.sleep(50 * std.time.ns_per_ms);
     }
     try std.testing.expectEqualStrings("hi\n", host.input.items);
+    std.debug.print("hosted session ok via {s}\n", .{relay_url});
+}
+
+test "workers.dev relay: guest sees the screen and types after the grant" {
+    io.ensureSockets();
+    if (!relayTcpUp("youneek-share-relay.youneekartifacts.workers.dev")) return;
+    try proveHostedSession(invite.hosted_ws_fallback);
+}
+
+test "custom domain edge reject falls back to the workers.dev relay" {
+    io.ensureSockets();
+    if (!relayTcpUp("youneek-share-relay.youneekartifacts.workers.dev")) return;
+    try proveHostedSession(invite.default_ws_relay);
 }
 
 test "guest prefers the LAN and does not dial the relay" {

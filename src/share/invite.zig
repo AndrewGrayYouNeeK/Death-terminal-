@@ -20,6 +20,9 @@ pub const max_host: usize = 63;
 pub const max_relay: usize = 120;
 /// Hosted splice. Both sides dial out; the guest still tries the LAN first.
 pub const default_ws_relay = "wss://relay.youneek.xyz";
+/// Same Worker as `default_ws_relay`. `workers.dev` accepts the WebSocket
+/// upgrade when the custom domain's edge answers 403 or an empty 404.
+pub const hosted_ws_fallback = "wss://youneek-share-relay.youneekartifacts.workers.dev";
 /// How long a guest waits on the LAN address before using the relay.
 pub const lan_probe_ms: u32 = 1000;
 
@@ -217,6 +220,28 @@ pub fn classifyRelay(text: []const u8) error{BadRelay}!Classified {
     return .{ .kind = .tcp, .tcp_host = tcp.host, .tcp_port = tcp.port };
 }
 
+/// True for the hosted custom domain, not for a user-supplied `wss://` relay.
+pub fn isDefaultHostedRelay(url: []const u8) bool {
+    const host = "wss://relay.youneek.xyz";
+    if (!std.mem.startsWith(u8, url, host)) return false;
+    if (url.len == host.len) return true;
+    return switch (url[host.len]) {
+        '/', '?', ':' => true,
+        else => false,
+    };
+}
+
+/// Cloudflare's edge in front of the custom domain. A Worker miss includes the
+/// body `not found` (the status line's `Not Found` does not). The gate answers
+/// 429. An empty 404 or a 403 challenge never reached `parseSessionId`.
+pub fn edgeRejectedUpgrade(detail: []const u8) bool {
+    if (std.mem.indexOf(u8, detail, "not found") != null) return false;
+    if (std.mem.indexOf(u8, detail, "429") != null) return false;
+    if (std.mem.indexOf(u8, detail, "404") != null) return true;
+    if (std.mem.indexOf(u8, detail, "403") != null) return true;
+    return false;
+}
+
 /// Config value. Empty selects the hosted relay. `off` is LAN only.
 pub fn resolveConfigured(text: []const u8) error{BadRelay}!Classified {
     if (text.len == 0) return classifyRelay(default_ws_relay);
@@ -279,4 +304,13 @@ test "relay config: default hosted url, off, or a custom splice" {
     try std.testing.expectError(error.BadRelay, resolveConfigured("ftp://nope"));
     const bare = try classifyRelay("");
     try std.testing.expectEqual(RelayKind.off, bare.kind);
+    try std.testing.expect(isDefaultHostedRelay(default_ws_relay));
+    try std.testing.expect(isDefaultHostedRelay("wss://relay.youneek.xyz/v1/aa"));
+    try std.testing.expect(!isDefaultHostedRelay(hosted_ws_fallback));
+    try std.testing.expect(!isDefaultHostedRelay("wss://relay.youneek.xyz.evil"));
+    try std.testing.expect(edgeRejectedUpgrade("HTTP/1.1 404 Not Found body  req GET /v1/b92b84c8744352e7?role=host"));
+    try std.testing.expect(edgeRejectedUpgrade("HTTP/1.1 403 Forbidden body <!DOCTYPE html>"));
+    try std.testing.expect(!edgeRejectedUpgrade("HTTP/1.1 404 Not Found body not found req GET /v1/zz"));
+    try std.testing.expect(!edgeRejectedUpgrade("HTTP/1.1 429 Too Many Requests body ip"));
+    try std.testing.expect(!edgeRejectedUpgrade("Cancelled"));
 }

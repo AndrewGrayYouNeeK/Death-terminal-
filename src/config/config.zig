@@ -180,7 +180,7 @@ pub const Config = struct {
     share_port: u16 = 0,
     /// Host name or IP written into the invite. Empty = the LAN address.
     share_advertise: []const u8 = "",
-    /// Relay for guests off the LAN. "" = wss://relay.youneek.xyz.
+    /// Relay for guests off the LAN. "" = wss://relay.youneek.xyz, then the workers.dev fallback if that edge rejects the upgrade.
     /// "off" is LAN only. Or a wss:// URL, or "host:port" / "tcp://host:port".
     share_relay: []const u8 = "",
     /// Tab bar: "auto" (only with 2+ tabs), "top", "bottom", "hidden".
