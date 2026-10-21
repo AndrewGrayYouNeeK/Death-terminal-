@@ -163,8 +163,9 @@ pub const Config = struct {
     plugins_dir: []const u8 = "",
     /// `config.plugins.<name>` grants and settings.
     plugins: std.ArrayList(PluginConfig),
-    /// One-row status bar at the bottom (plugin segments; off by default).
-    status_bar: bool = false,
+    /// One-row status bar at the bottom (plugin segments). On so the bundled
+    /// YouNeeK Time clock is visible without a config file.
+    status_bar: bool = true,
     /// Tab bar: "auto" (only with 2+ tabs), "top", "bottom", "hidden".
     tab_bar: []const u8 = "auto",
     /// Ask before closing a pane / tab / window whose shell runs a program.
