@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YouNeeK Death Terminal</title>
+  <meta name="description" content="YouNeeK Death Terminal. A brutalist, GPU-accelerated terminal with AI-native command workflows.">
+  <meta name="application-name" content="YouNeeK Death Terminal">
+  <meta property="og:title" content="YouNeeK Death Terminal">
+  <meta property="og:description" content="A brutalist, GPU-accelerated terminal with AI-native command workflows.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://andrewgrayyouneek.github.io/Death-terminal-/">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="YouNeeK Death Terminal">
+  <meta name="twitter:description" content="A brutalist, GPU-accelerated terminal with AI-native command workflows.">
+  <link rel="canonical" href="https://andrewgrayyouneek.github.io/Death-terminal-/">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <h1>YouNeeK<br>Death<br>Terminal</h1>
+      <a class="github" href="https://github.com/AndrewGrayYouNeeK/Death-terminal-">GitHub</a>
+    </header>
+
+    <section class="hero" aria-labelledby="download-heading">
+      <h2 id="download-heading">Download</h2>
+      <p class="tagline">A brutalist, GPU-accelerated terminal with AI-native command workflows.</p>
+      <p class="sub">Fast. Minimal. Unapologetically powerful.</p>
+      <p class="note">Actively in development. Not a daily-driver terminal yet.</p>
+
+      <a class="download-primary" id="download-primary" href="https://github.com/AndrewGrayYouNeeK/Death-terminal-/releases">
+        <span class="label">Download</span>
+        <span class="file"></span>
+      </a>
+      <p class="detect" id="detect-line">Detecting this machine…</p>
+      <p class="status" id="release-status" aria-live="polite">Checking the latest GitHub release…</p>
+      <noscript>
+        <p>JavaScript is off. Every button opens the Releases page. Packages show up there once a release is published.</p>
+      </noscript>
+
+      <div class="builds" id="downloads">
+        <a id="btn-macosArm" href="https://github.com/AndrewGrayYouNeeK/Death-terminal-/releases">
+          <span class="label">macOS · Apple Silicon .dmg</span>
+          <span class="file">Releases page</span>
+        </a>
+        <a id="btn-macosIntel" href="https://github.com/AndrewGrayYouNeeK/Death-terminal-/releases">
+          <span class="label">macOS · Intel .dmg</span>
+          <span class="file">Releases page</span>
+        </a>
+        <a id="btn-windows" href="https://github.com/AndrewGrayYouNeeK/Death-terminal-/releases">
+          <span class="label">Windows · setup .exe</span>
+          <span class="file">Releases page</span>
+        </a>
+        <a id="btn-appimage" href="https://github.com/AndrewGrayYouNeeK/Death-terminal-/releases">
+          <span class="label">Linux · AppImage</span>
+          <span class="file">Releases page</span>
+        </a>
+        <a id="btn-deb" href="https://github.com/AndrewGrayYouNeeK/Death-terminal-/releases">
+          <span class="label">Linux · .deb</span>
+          <span class="file">Releases page</span>
+        </a>
+        <a id="btn-rpm" href="https://github.com/AndrewGrayYouNeeK/Death-terminal-/releases">
+          <span class="label">Linux · .rpm</span>
+          <span class="file">Releases page</span>
+        </a>
+      </div>
+    </section>
+
+    <section class="features" aria-labelledby="features-heading">
+      <h2 id="features-heading">Features</h2>
+      <ul>
+        <li><strong>AI autocomplete.</strong> Ghost text from local Ollama or Grok (<code>grok-4.7</code> on <code>api.x.ai</code>). Tab accepts, Esc dismisses. Nothing is inserted until you accept.</li>
+        <li><strong>Vulkan GPU rendering.</strong> Swapchain and a glyph atlas, with a software fallback. No animations.</li>
+        <li><strong>SSH.</strong> <code>deathterminal --ssh</code>, Lua profiles, <code>~/.ssh/config</code>, and live forwards. Linux only.</li>
+        <li><strong>Lua themes and plugins.</strong> Sandboxed Lua 5.4, live reload, command palette.</li>
+        <li><strong>Tabs and splits.</strong> Each pane has its own shell, scrollback, selection, and AI context.</li>
+      </ul>
+    </section>
+
+    <section class="install" aria-labelledby="install-heading">
+      <h2 id="install-heading">Install</h2>
+
+      <h3>macOS</h3>
+      <p>Open the .dmg and drag YouNeeK Death Terminal to Applications. That is the app bundle name. The binary is <code>deathterminal</code>.</p>
+      <p>When the Apple signing secrets are set, the release .dmg is notarized. Otherwise Gatekeeper blocks the first open.</p>
+      <ol>
+        <li>Open YouNeeK Death Terminal. macOS says it cannot check the app for malicious software.</li>
+        <li>System Settings → Privacy &amp; Security. Find the YouNeeK Death Terminal block and click <strong>Open Anyway</strong>.</li>
+        <li>Confirm Open.</li>
+      </ol>
+      <p>Right-click the app → Open → Open hits the same gate.</p>
+
+      <h3>Windows</h3>
+      <p>Run the setup .exe. Per-user install. The Start Menu shortcut launches the GUI. The exe is unsigned, so SmartScreen can warn until signing lands.</p>
+
+      <h3>Linux</h3>
+      <p>x86_64 packages.</p>
+      <pre><code>chmod +x deathterminal-*-x86_64.AppImage
+./deathterminal-*-x86_64.AppImage</code></pre>
+      <p>No FUSE: add <code>--appimage-extract-and-run</code>.</p>
+      <pre><code>sudo apt install ./deathterminal_*_amd64.deb
+sudo dnf install ./deathterminal-*.x86_64.rpm</code></pre>
+    </section>
+
+    <section class="closing" aria-labelledby="verify-heading">
+      <h2 id="verify-heading">Verify</h2>
+      <p>Check the file against <a id="sha256" href="https://github.com/AndrewGrayYouNeeK/Death-terminal-/releases">SHA256SUMS</a> from the same release.</p>
+      <pre><code>sha256sum -c SHA256SUMS</code></pre>
+      <p><a href="https://github.com/AndrewGrayYouNeeK/Death-terminal-/releases">Releases</a> · <a href="https://github.com/AndrewGrayYouNeeK/Death-terminal-">GitHub</a></p>
+      <p class="note">The terminal you don't outgrow.</p>
+    </section>
+  </div>
+  <script src="release.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

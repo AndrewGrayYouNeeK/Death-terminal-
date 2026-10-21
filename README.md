@@ -4,6 +4,8 @@
 
 Fast. Minimal. Unapologetically powerful.
 
+Download: https://andrewgrayyouneek.github.io/Death-terminal-/
+
 ## ⚡ Why YouNeeK Death Terminal?
 
 Most terminals are either:
@@ -38,6 +40,7 @@ Context-aware, not just history-based.
 - `api.x.ai` and `us.api.x.ai` (model `grok-4.7`) use the Responses API: `config.ai.reasoning` is `low` / `medium` / `high` / `xhigh` (empty means `low`; it cannot be turned off), live search is off, responses are not stored, and the wait is at least 15s
 - Dim ghost text after the cursor: Tab accepts, Esc dismisses, Alt+] / Alt+[ cycle alternatives; nothing is inserted unless you accept
 - Ctrl+Shift+A explains the last failed command and suggests a fix
+- Ctrl+Shift+Q (Cmd+Shift+Q on macOS; Cmd+Q still quits) asks a question about the selection, the last command's output, or the screen. The answer cites lines, which are highlighted; Down and Enter jump between them. Long output is truncated with a note. `config.ai.ask.enabled` and `config.ai.ask.max_lines` control it
 - Secrets (tokens, keys, passwords, env assignments) are redacted before anything is sent; offline endpoints just show a small "AI offline" badge
 - bash/zsh/fish OSC 133 shell integration, injected automatically (see [docs/AI.md](docs/AI.md))
 
@@ -114,6 +117,10 @@ See [QUICKSTART.md](QUICKSTART.md) and [DEVELOPMENT.md](DEVELOPMENT.md) for deta
 
 ### Install (0.1.0)
 
+Prebuilt packages: https://andrewgrayyouneek.github.io/Death-terminal-/
+
+That page links the latest published GitHub release (macOS Apple Silicon and Intel `.dmg`, Windows setup `.exe`, Linux AppImage / `.deb` / `.rpm`, and `SHA256SUMS`). With no published release it links the [Releases](https://github.com/AndrewGrayYouNeeK/Death-terminal-/releases) page.
+
 `zig build release` writes versioned archives to `zig-out/release/`.
 `zig build release -Dpackages=true` also builds the installable packages:
 AppImage, `.deb` and `.rpm` on Linux; an NSIS setup exe on Windows; a
@@ -140,7 +147,7 @@ in [docs/MOBILE.md](docs/MOBILE.md) and is not built.
 - Muscle memory: local mining of repeated command sequences, project and global shortcuts in `shortcuts.lua`, palette list/rename/delete, stop on the first failing command (see [docs/MUSCLE_MEMORY.md](docs/MUSCLE_MEMORY.md))
 - Tabs and split panes: layout tree, keyboard/mouse resize and focus, zoom, equalize, tab bar, confirm-close for running programs, startup layouts, plugin tab/pane events and actions (see [docs/TABS.md](docs/TABS.md))
 - CI: Linux build + unit tests, Windows and macOS cross-compiles; a `v*` tag opens a draft GitHub release
-- Packaging: `zig build release -Dpackages=true` builds an AppImage, `.deb` (with a `.desktop` file) and `.rpm`, a Windows zip plus NSIS installer, and a macOS `.app` plus `.dmg`. A `v*` tag publishes them. Signing is not done yet ([packaging/SIGNING.md](packaging/SIGNING.md))
+- Packaging: `zig build release -Dpackages=true` builds an AppImage, `.deb` (with a `.desktop` file) and `.rpm`, a Windows zip plus NSIS installer, and a macOS `.app` plus `.dmg`. A `v*` tag publishes them as a draft. macOS signing and notarization run when the Apple secrets in [packaging/SIGNING.md](packaging/SIGNING.md) are set; otherwise those artifacts stay unsigned. Windows signing is still a TODO
 - 80/132-column DECCOLM: headless grids resize; GUI panes keep their width and only clear, home, and reset margins
 
 **Not done yet** (tracked in [ISSUES.md](ISSUES.md))
