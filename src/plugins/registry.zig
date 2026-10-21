@@ -9,7 +9,12 @@
 //! Locations (XDG):
 //!   plugins     $XDG_CONFIG_HOME/death-terminal/plugins   (config.plugins_dir)
 //!   data        $XDG_DATA_HOME/death-terminal/plugins/<name>
+//!   bundled     $XDG_DATA_HOME/death-terminal/bundled-plugins/<name>
 //!   state, log  $XDG_STATE_HOME/death-terminal/plugins.json, plugins.log
+//!
+//! `youneek-time` is embedded in the binary. `plan` materialises it under
+//! `bundled` and loads it when the user directory has no plugin of that name.
+//! A copy in the user directory wins. `planAt` does not add it (tests).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -19,6 +24,7 @@ const permissions = @import("permissions.zig");
 const PluginConfig = @import("plugin_config.zig").PluginConfig;
 const plugin_config = @import("plugin_config.zig");
 const host = @import("host.zig");
+const bundled = @import("bundled.zig");
 
 pub const Paths = struct {
     plugins_dir: []const u8,
@@ -68,6 +74,8 @@ pub const Found = struct {
     problem: ?[]const u8 = null,
     /// init.lua + manifest.lua modification times, for "did it change?".
     mtime: i128 = 0,
+    /// Shipped inside the binary, not installed under `plugins_dir`.
+    bundled: bool = false,
 };
 
 /// Every subdirectory of `dir`, sorted by name (memory from `a`, an arena).
@@ -198,11 +206,41 @@ pub const Plan = struct {
 
 pub fn plan(a: std.mem.Allocator, plugins_dir_cfg: []const u8, configs: []const PluginConfig) !Plan {
     const paths = try Paths.resolve(a, plugins_dir_cfg);
-    return planAt(a, paths, configs);
+    const user = try discover(a, paths.plugins_dir);
+    const found = try mergeBundled(a, paths, user);
+    return planFound(a, paths, configs, found);
 }
 
 pub fn planAt(a: std.mem.Allocator, paths: Paths, configs: []const PluginConfig) !Plan {
     const found = try discover(a, paths.plugins_dir);
+    return planFound(a, paths, configs, found);
+}
+
+fn containsName(found: []const Found, name: []const u8) bool {
+    for (found) |f| if (std.mem.eql(u8, f.name, name)) return true;
+    return false;
+}
+
+/// Append embedded plugins the user has not installed. A filesystem failure
+/// leaves `user` unchanged so the terminal still starts.
+fn mergeBundled(a: std.mem.Allocator, paths: Paths, user: []Found) ![]Found {
+    if (containsName(user, bundled.youneek_name)) return user;
+    const root = try bundled.rootFromData(a, paths.data_root);
+    bundled.materialize(root) catch return user;
+    const extra = discover(a, root) catch return user;
+    if (extra.len == 0) return user;
+    var list = std.ArrayList(Found).init(a);
+    try list.appendSlice(user);
+    for (extra) |f| {
+        if (containsName(user, f.name)) continue;
+        var copy = f;
+        copy.bundled = true;
+        try list.append(copy);
+    }
+    return list.items;
+}
+
+fn planFound(a: std.mem.Allocator, paths: Paths, configs: []const PluginConfig, found: []Found) !Plan {
     const state = StateFile.load(a, paths.state_file);
     var specs = std.ArrayList(host.Spec).init(a);
     var h = std.hash.Wyhash.init(0x9e3779b9);
@@ -221,6 +259,7 @@ pub fn planAt(a: std.mem.Allocator, paths: Paths, configs: []const PluginConfig)
             .config = cfg,
         });
         h.update(f.name);
+        h.update(if (f.bundled) "b" else "u");
         h.update(std.mem.asBytes(&f.mtime));
         h.update(std.mem.asBytes(&m.permissions.bits.mask));
         cfg.hash(&h);
@@ -285,7 +324,7 @@ fn printList(p: Plan, configs: []const PluginConfig, plugins_on: bool, out: anyt
             continue;
         };
         const d = decide(f.name, configs, state);
-        try out.print("\n  {s} {s}  {s}\n", .{ f.name, m.version, d.describe() });
+        try out.print("\n  {s} {s}  {s}{s}\n", .{ f.name, m.version, d.describe(), if (f.bundled) "  (bundled)" else "" });
         if (m.description.len > 0) try out.print("      {s}\n", .{m.description});
         if (f.problem) |why| try out.print("      BROKEN: {s}\n", .{why});
         const allow = if (plugin_config.find(configs, f.name)) |pc| pc.allow else permissions.Set.initEmpty();
@@ -413,4 +452,47 @@ test "paths follow XDG" {
     try std.testing.expectEqualStrings("/var/st/death-terminal/plugins.json", p.state_file);
     const q = try Paths.resolveEnv(arena.allocator(), "~/dt", env);
     try std.testing.expectEqualStrings("/home/u/dt", q.plugins_dir);
+}
+
+test "bundled youneek-time loads when the user has no copy" {
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = try @import("../testutil.zig").tmpPath(a, &tmp, ".");
+    const paths = Paths{
+        .plugins_dir = try std.fs.path.join(a, &.{ root, "plugins" }),
+        .data_root = try std.fs.path.join(a, &.{ root, "data" }),
+        .state_file = try std.fs.path.join(a, &.{ root, "state.json" }),
+        .log_file = try std.fs.path.join(a, &.{ root, "plugins.log" }),
+    };
+    const user = try discover(a, paths.plugins_dir);
+    try std.testing.expectEqual(@as(usize, 0), user.len);
+    const found = try mergeBundled(a, paths, user);
+    try std.testing.expectEqual(@as(usize, 1), found.len);
+    try std.testing.expectEqualStrings("youneek-time", found[0].name);
+    try std.testing.expect(found[0].bundled);
+    try std.testing.expect(found[0].problem == null);
+    try std.testing.expectEqualStrings("1.0.0", found[0].manifest.?.version);
+    const p = try planFound(a, paths, &.{}, found);
+    try std.testing.expectEqual(@as(usize, 1), p.specs.len);
+    try std.testing.expectEqualStrings("youneek-time", p.specs[0].name);
+
+    const off = [_]PluginConfig{.{ .name = "youneek-time", .enabled = false }};
+    const disabled = try planFound(a, paths, &off, found);
+    try std.testing.expectEqual(@as(usize, 0), disabled.specs.len);
+
+    try tmp.dir.makePath("plugins/youneek-time");
+    try tmp.dir.writeFile(.{ .sub_path = "plugins/youneek-time/manifest.lua", .data = "return { name = 'youneek-time', version = '9.9.9' }" });
+    try tmp.dir.writeFile(.{ .sub_path = "plugins/youneek-time/init.lua", .data = "" });
+    const user2 = try discover(a, paths.plugins_dir);
+    const found2 = try mergeBundled(a, paths, user2);
+    try std.testing.expectEqual(@as(usize, 1), found2.len);
+    try std.testing.expect(!found2[0].bundled);
+    try std.testing.expectEqualStrings("9.9.9", found2[0].manifest.?.version);
+
+    var out = std.ArrayList(u8).init(a);
+    try printList(p, &.{}, true, out.writer());
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "youneek-time 1.0.0  enabled (default)  (bundled)") != null);
 }

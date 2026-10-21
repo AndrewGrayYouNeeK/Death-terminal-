@@ -20,13 +20,13 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "CompanyName", "DeathTerminal"
-            VALUE "FileDescription", "DeathTerminal - Brutalist Terminal Emulator"
+            VALUE "CompanyName", "YouNeeK Death Terminal"
+            VALUE "FileDescription", "YouNeeK Death Terminal - Brutalist Terminal Emulator"
             VALUE "FileVersion", "0.1.0"
             VALUE "InternalName", "deathterminal"
             VALUE "LegalCopyright", "Public domain (The Unlicense)"
             VALUE "OriginalFilename", "deathterminal.exe"
-            VALUE "ProductName", "DeathTerminal"
+            VALUE "ProductName", "YouNeeK Death Terminal"
             VALUE "ProductVersion", "0.1.0"
         END
     END

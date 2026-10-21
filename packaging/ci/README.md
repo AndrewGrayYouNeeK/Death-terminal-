@@ -35,4 +35,4 @@ cp packaging/ci/ci.yml packaging/ci/release.yml .github/workflows/
   job then signs that dylib and the app when the Apple secrets are set.
 
 `release.yml` uses `softprops/action-gh-release@v2` and needs
-`permissions: contents: write`. The release is created as a draft for review.
+`permissions: contents: write`. The release is created as a draft titled `YouNeeK Death Terminal` plus the ref, for review.

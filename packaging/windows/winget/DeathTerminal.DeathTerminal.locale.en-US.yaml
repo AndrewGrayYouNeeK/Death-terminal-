@@ -2,13 +2,13 @@
 PackageIdentifier: DeathTerminal.DeathTerminal
 PackageVersion: 0.1.0
 PackageLocale: en-US
-Publisher: DeathTerminal
+Publisher: YouNeeK Death Terminal
 PublisherUrl: https://github.com/AndrewGrayYouNeeK
-PackageName: DeathTerminal
+PackageName: YouNeeK Death Terminal
 PackageUrl: https://github.com/AndrewGrayYouNeeK/Death-terminal-
 License: Unlicense
 LicenseUrl: https://github.com/AndrewGrayYouNeeK/Death-terminal-/blob/main/LICENSE
-ShortDescription: Brutalist GPU terminal emulator with AI suggestions, built-in SSH and Lua plugins
+ShortDescription: YouNeeK Death Terminal, a brutalist GPU terminal emulator with AI suggestions, built-in SSH and Lua plugins
 Tags:
   - terminal
   - console

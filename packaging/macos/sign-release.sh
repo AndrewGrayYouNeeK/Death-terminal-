@@ -180,9 +180,9 @@ sign_one() {
   WORK=$(mktemp -d)
   mkdir -p "$WORK/unz"
   ditto -x -k "$zip" "$WORK/unz"
-  app="$WORK/unz/DeathTerminal.app"
+  app="$WORK/unz/YouNeeK Death Terminal.app"
   if [ ! -d "$app" ]; then
-    echo "zip has no DeathTerminal.app: $zip" >&2
+    echo "zip has no YouNeeK Death Terminal.app: $zip" >&2
     exit 1
   fi
   mkdir -p "$app/Contents/Frameworks" "$app/Contents/MacOS"
@@ -197,7 +197,7 @@ sign_one() {
 
   molten="$app/Contents/Frameworks/libMoltenVK.dylib"
   if [ ! -f "$molten" ]; then
-    echo "DeathTerminal.app is missing Contents/Frameworks/libMoltenVK.dylib" >&2
+    echo "YouNeeK Death Terminal.app is missing Contents/Frameworks/libMoltenVK.dylib" >&2
     exit 1
   fi
   # Bundled Mach-O, including this dylib, is signed inside out. Sign MoltenVK
@@ -219,7 +219,7 @@ sign_one() {
   xcrun stapler staple "$app"
 
   rm -f "$OUT/$stem.zip"
-  (cd "$WORK/unz" && ditto -c -k --keepParent DeathTerminal.app "$OUT/$stem.zip")
+  (cd "$WORK/unz" && ditto -c -k --keepParent "YouNeeK Death Terminal.app" "$OUT/$stem.zip")
   rm -rf "$WORK"
   WORK=""
   echo "signed and notarized $stem"

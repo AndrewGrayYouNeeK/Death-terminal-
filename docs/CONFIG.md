@@ -1,6 +1,6 @@
 # Configuration (config.lua)
 
-DeathTerminal is configured with a Lua 5.4 file. Lua is vendored
+YouNeeK Death Terminal is configured with a Lua 5.4 file. Lua is vendored
 (`vendor/lua-5.4.7`) and compiled into the binary, so there's nothing to install.
 
 ```sh
@@ -46,7 +46,7 @@ Reading an option gives you its current value: `config.font.size + 2`.
 
 | | |
 |---|---|
-| `dt.version` | DeathTerminal version string |
+| `dt.version` | YouNeeK Death Terminal version string |
 | `dt.os` | `"linux"`, `"macos"`, `"windows"`, … |
 | `dt.themes` | List of bundled theme names |
 | `dt.theme(name)` | Copy of a theme's colours (`foreground`, `background`, `cursor`, `cursor_text`, `selection_background`, `selection_foreground`, `palette[0..15]`). Use it to copy and tweak a theme: `config.colors = dt.theme("nord")` |
@@ -68,7 +68,7 @@ config is reloaded.
 | `font.line_height` | `1.0` | Cell height multiplier, 0.5–3 |
 | `font.ligatures` | `true` | HarfBuzz calt/liga/dlig |
 | `font.retro` | `false` | Built-in 8×8 bitmap font |
-| `theme` | `"default"` | `default`, `death`, `dracula`, `gruvbox-dark`, `nord`, `solarized-dark`, `solarized-light` |
+| `theme` | `"death"` | `death` when unset, plus `default` (classic ANSI), `dracula`, `gruvbox-dark`, `nord`, `solarized-dark`, `solarized-light` |
 | `colors.foreground`, `colors.background` | theme | `"#rrggbb"`, `"#rgb"` or `0xRRGGBB` |
 | `colors.cursor`, `colors.cursor_text` | theme | `"none"` inverts the cell under the cursor |
 | `colors.selection_background` | theme | |
@@ -109,7 +109,7 @@ config is reloaded.
 | `ssh.config_file` | `"~/.ssh/config"` | OpenSSH config to read Host aliases from (`""` = none) |
 | `ssh.keepalive_s` | `30` | Default keepalive interval, 0–3600 (0 = off); profiles can override |
 | `ssh.known_hosts` | `"~/.ssh/known_hosts"` | Host keys file (shared with OpenSSH; appended to, never rewritten) |
-| `status_bar.enabled` | `false` | A one-row status bar under the grid for plugin segments. Ctrl+Shift+B (`toggle_status_bar`) toggles it |
+| `status_bar.enabled` | `true` | A one-row status bar under the grid for plugin segments (the bundled YouNeeK Time clock uses it). Ctrl+Shift+B (`toggle_status_bar`) toggles it |
 | `tabs.bar` | `"auto"` | Tab bar: `"auto"` (only with 2+ tabs), `"top"`, `"bottom"`, `"hidden"`. `toggle_tab_bar` flips it. See [TABS.md](TABS.md) |
 | `tabs.confirm_close` | `true` | Ask before closing a pane / tab / the window while a program (not just the shell) runs in it |
 | `tabs.dim_inactive` | `0` | 0–0.9: fade the text of panes without the focus (0 = off) |

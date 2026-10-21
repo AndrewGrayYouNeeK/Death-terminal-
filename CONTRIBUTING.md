@@ -1,6 +1,6 @@
-# Contributing to DeathTerminal
+# Contributing to YouNeeK Death Terminal
 
-First off, thank you for considering contributing to DeathTerminal! It's people like you that make DeathTerminal such a great tool.
+First off, thank you for considering contributing to YouNeeK Death Terminal! It's people like you that make YouNeeK Death Terminal such a great tool.
 
 ## Code of Conduct
 
@@ -278,7 +278,7 @@ pub fn myFunction(allocator: std.mem.Allocator, value: i32) !ReturnType {
 
 ## Performance Considerations
 
-DeathTerminal is designed to be brutally fast:
+YouNeeK Death Terminal is designed to be brutally fast:
 
 - **Profile before optimizing** - Use `perf`, `Instruments`, or `VTune`
 - **Minimize allocations** - Reuse buffers, use arenas where appropriate
@@ -288,7 +288,7 @@ DeathTerminal is designed to be brutally fast:
 
 ## Security Considerations
 
-DeathTerminal handles sensitive data:
+YouNeeK Death Terminal handles sensitive data:
 
 - **Never log credentials** - SSH keys, passwords, tokens
 - **Validate all input** - Escape sequences, SSH data, user input
@@ -315,8 +315,8 @@ Feel free to:
 
 ## License
 
-By contributing to DeathTerminal, you agree that your contributions will be licensed under the MIT License.
+By contributing to YouNeeK Death Terminal, you agree that your contributions will be licensed under the MIT License.
 
 ---
 
-**Thank you for contributing to DeathTerminal! 💀**
+**Thank you for contributing to YouNeeK Death Terminal! 💀**

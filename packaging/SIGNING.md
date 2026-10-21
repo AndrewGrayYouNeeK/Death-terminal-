@@ -28,7 +28,7 @@ When every secret below is set, that script:
    compiles `packaging/macos/gui-launcher.c` over that script. The stub
    execs `deathterminal --gui`.
 3. Signs bundled `*.dylib` files, then the other Mach-O binaries, then
-   `DeathTerminal.app`, inside out. Each signature uses `CODESIGN_IDENTITY`,
+   `YouNeeK Death Terminal.app`, inside out. Each signature uses `CODESIGN_IDENTITY`,
    `--options runtime`, and a secure timestamp. The app and executables
    get `packaging/macos/entitlements.plist`. `--deep` is not used.
 4. Builds a new `.dmg` with `hdiutil` (`packaging/macos/make-dmg.sh`).

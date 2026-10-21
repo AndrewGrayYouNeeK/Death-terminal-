@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Quick development script for DeathTerminal
+# Quick development script for YouNeeK Death Terminal
 
 set -e
 
@@ -43,7 +43,7 @@ format() {
 
 # Build the project
 build() {
-    info "Building DeathTerminal..."
+    info "Building YouNeeK Death Terminal..."
     local optimize="${1:-Debug}"
 
     case "$optimize" in
@@ -83,7 +83,7 @@ clean() {
 
 # Run the application
 run() {
-    info "Running DeathTerminal..."
+    info "Running YouNeeK Death Terminal..."
     zig build run -- "$@"
 }
 
@@ -112,7 +112,7 @@ watch() {
 # Show help
 help() {
     cat << EOF
-DeathTerminal Development Script
+YouNeeK Death Terminal Development Script
 
 Usage: ./dev.sh <command> [options]
 

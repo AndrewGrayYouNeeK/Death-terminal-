@@ -1,4 +1,4 @@
-# Death Terminal shell integration for zsh.
+# YouNeeK Death Terminal shell integration for zsh.
 #
 # Emits OSC 133 prompt/command marks and OSC 7 (working directory); see
 # bash.sh for what they mean. Injected automatically through ZDOTDIR when

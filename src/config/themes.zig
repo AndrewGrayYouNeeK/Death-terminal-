@@ -1,5 +1,7 @@
 //! Bundled colour themes. `theme = "<name>"` in config.lua selects one;
 //! `colors.*` keys override individual entries on top of it.
+//! When `config.theme` is unset, `default_name` ("death") is used.
+//! The theme named "default" is the classic ANSI palette and stays selectable.
 
 const std = @import("std");
 const color = @import("../terminal/color.zig");
@@ -112,11 +114,23 @@ pub const all = [_]Theme{
     },
 };
 
+/// Applied when `config.theme` is unset.
+pub const default_name = "death";
+
 pub fn find(name: []const u8) ?*const Theme {
     for (&all) |*t| {
         if (std.ascii.eqlIgnoreCase(t.name, name)) return t;
     }
     return null;
+}
+
+/// Theme used when `config.theme` is unset.
+pub fn defaultTheme() *const Theme {
+    return find(default_name) orelse unreachable;
+}
+
+comptime {
+    if (find(default_name) == null) @compileError("bundled default theme \"" ++ default_name ++ "\" is missing");
 }
 
 test "themes: lookup and palette" {
@@ -127,6 +141,16 @@ test "themes: lookup and palette" {
     // The 256-colour cube is untouched by themes.
     try std.testing.expectEqual(color.palette256(196), p.resolve(color.indexed(196)));
     try std.testing.expect(find("nope") == null);
-    // Default theme matches the built-in palette.
-    try std.testing.expectEqual(color.default_palette.hash(), find("default").?.palette().hash());
+    // Unset config.theme uses the death palette.
+    const death = defaultTheme();
+    try std.testing.expectEqualStrings("death", death.name);
+    const dp = death.palette();
+    try std.testing.expectEqual(@as(u32, 0xE0E0E0), dp.fg);
+    try std.testing.expectEqual(@as(u32, 0x000000), dp.bg);
+    try std.testing.expectEqual(@as(u32, 0xFF0033), dp.cursor);
+    try std.testing.expectEqual(@as(u32, 0xFF0033), dp.resolve(color.indexed(1)));
+    // The theme named "default" is still selectable and matches the built-in palette.
+    const classic = find("default").?;
+    try std.testing.expectEqualStrings("default", classic.name);
+    try std.testing.expectEqual(color.default_palette.hash(), classic.palette().hash());
 }

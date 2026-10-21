@@ -81,7 +81,7 @@ pub fn main() !void {
     var watch_buf: [std.fs.max_path_bytes]u8 = undefined;
     const watch_path: ?[]const u8 = if (src) |s| s.path else config.userConfigPath(&watch_buf);
 
-    std.debug.print("Initializing DeathTerminal...\n", .{});
+    std.debug.print("Initializing YouNeeK Death Terminal...\n", .{});
 
     // Initialize subsystems
     std.debug.print("[1/5] Initializing Vulkan renderer...\n", .{});
@@ -125,7 +125,7 @@ pub fn main() !void {
 
     std.debug.print("[5/5] SSH: built-in client (libssh2 {s}){s}\n", .{ ssh_client.libssh2Version(), if (cfg.ssh_enabled) "" else " disabled" });
 
-    std.debug.print("\n✓ DeathTerminal initialized successfully\n", .{});
+    std.debug.print("\n✓ YouNeeK Death Terminal initialized successfully\n", .{});
 
     var loop = event_loop.EventLoop{
         .allocator = allocator,
@@ -233,14 +233,14 @@ fn printBanner() !void {
 }
 
 fn printVersion() !void {
-    std.debug.print("DeathTerminal v{s}\n", .{VERSION});
+    std.debug.print("YouNeeK Death Terminal v{s}\n", .{VERSION});
     std.debug.print("Built with Zig {s}\n", .{builtin.zig_version_string});
     std.debug.print("Target: {s}-{s}\n", .{ @tagName(builtin.cpu.arch), @tagName(builtin.os.tag) });
 }
 
 fn printHelp() !void {
     const help_text =
-        \\DeathTerminal - Brutalist Terminal Emulator
+        \\YouNeeK Death Terminal - Brutalist Terminal Emulator
         \\
         \\USAGE:
         \\    deathterminal [OPTIONS]
