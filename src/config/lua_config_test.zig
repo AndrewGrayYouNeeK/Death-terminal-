@@ -209,7 +209,7 @@ test "lua config: config.example.lua is valid and matches the defaults" {
     try t.expectEqual(@as(usize, 0), d.items.items.len);
     var def = config.Config.init(t.allocator);
     defer def.deinit();
-    inline for (.{ "rows", "cols", "scale", "backend", "headless", "font_size", "line_height", "font_retro", "font_ligatures", "cursor_shape", "max_fps", "read_budget_kb", "scrollback_lines", "scrollbar", "scroll_lines", "copy_on_select", "paste_confirm", "default_keybindings", "ai_enabled", "ai_timeout_ms", "ai_debounce_ms", "ai_max_tokens", "ai_explain_max_tokens", "ai_history", "ai_output_lines", "shell_integration", "ssh_enabled", "ssh_keepalive_s", "confirm_close", "dim_inactive", "inherit_cwd", "allow_column_switch", "status_bar", "ghost_run_enabled", "ghost_run_ai" }) |name| {
+    inline for (.{ "rows", "cols", "scale", "backend", "headless", "font_size", "line_height", "font_retro", "font_ligatures", "cursor_shape", "max_fps", "read_budget_kb", "scrollback_lines", "scrollbar", "scroll_lines", "copy_on_select", "paste_confirm", "default_keybindings", "ai_enabled", "ai_timeout_ms", "ai_debounce_ms", "ai_max_tokens", "ai_explain_max_tokens", "ai_history", "ai_output_lines", "ai_ask_enabled", "ai_ask_max_lines", "shell_integration", "muscle_enabled", "muscle_min_repeats", "muscle_max_len", "ssh_enabled", "ssh_keepalive_s", "confirm_close", "dim_inactive", "inherit_cwd", "allow_column_switch", "status_bar", "ghost_run_enabled", "ghost_run_ai" }) |name| {
         try t.expectEqual(@field(def, name), @field(cfg, name));
     }
     inline for (.{ "font_family", "theme", "present_mode", "osc52", "word_chars", "url_open_command", "shell_program", "shell_cwd", "ai_endpoint", "ai_model", "ai_reasoning", "ai_api_key_env", "ai_accept_key", "ssh_config_file", "ssh_known_hosts", "tab_bar" }) |name| {
@@ -304,6 +304,22 @@ test "lua config: ai options are validated" {
     defer ok.deinit();
     try t.expectEqual(@as(usize, 0), d2.errorCount());
     try t.expectEqualStrings("OPENAI_API_KEY", ok.ai_api_key_env);
+}
+
+test "lua config: ai.ask enabled and max_lines" {
+    var d = config.Diagnostics.init(t.allocator);
+    defer d.deinit();
+    var bad = loadStr("config.ai.ask.max_lines = 0\n", &d);
+    defer bad.deinit();
+    try t.expect(d.errorCount() >= 1);
+    try t.expectEqual(@as(u16, 200), bad.ai_ask_max_lines);
+    try t.expect(bad.ai_ask_enabled);
+    d.clear();
+    var ok = loadStr("config.ai.ask.enabled = false\nconfig.ai.ask.max_lines = 40\n", &d);
+    defer ok.deinit();
+    try t.expectEqual(@as(usize, 0), d.errorCount());
+    try t.expect(!ok.ai_ask_enabled);
+    try t.expectEqual(@as(u16, 40), ok.ai_ask_max_lines);
 }
 
 test "lua config: ai.reasoning is low/medium/high/xhigh" {

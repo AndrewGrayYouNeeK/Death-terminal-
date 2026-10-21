@@ -10,6 +10,7 @@ const std = @import("std");
 const terminal = @import("../terminal/terminal.zig");
 const selection = @import("../terminal/selection.zig");
 const search = @import("../terminal/search.zig");
+const ask_ui = @import("ask_ui.zig");
 pub const palette_mod = @import("palette.zig");
 const urls = @import("../terminal/urls.zig");
 const input = @import("../terminal/input.zig");
@@ -145,6 +146,8 @@ pub const Ui = struct {
     last_click_ms: i64 = 0,
     last_click: Point = .{ .line = std.math.minInt(i64), .col = 0 },
     search: ?SearchState = null,
+    /// Ask the Output prompt (Ctrl+Shift+Q). See `ask_ui.zig`.
+    ask: ask_ui.Bar = .{},
     prompt: ?Prompt = null,
     effects: std.ArrayList(Effect),
     last_total: u64 = 0,
@@ -180,6 +183,7 @@ pub const Ui = struct {
         self.status_left.deinit(self.allocator);
         self.status_right.deinit(self.allocator);
         self.closeSearch();
+        self.ask.close();
         self.clearNotice();
         self.clearGhost();
         self.setAiStatus(null);
@@ -592,6 +596,13 @@ pub const Ui = struct {
             };
             return true;
         }
+        if (self.ask.live) {
+            switch (self.ask.handleText(bytes)) {
+                .jump => |line| self.ensureVisible(term, line),
+                else => {},
+            }
+            return true;
+        }
         if (self.search) |*st| {
             if (bytes.len == 2 and bytes[0] == 0x1b) {
                 switch (bytes[1]) {
@@ -642,6 +653,13 @@ pub const Ui = struct {
             switch (key) {
                 .enter, .kp_enter => try self.answerPrompt(true),
                 .escape => try self.answerPrompt(false),
+                else => {},
+            }
+            return true;
+        }
+        if (self.ask.live) {
+            switch (self.ask.handleKey(key, mods)) {
+                .jump => |line| self.ensureVisible(term, line),
                 else => {},
             }
             return true;
@@ -905,7 +923,53 @@ pub const Ui = struct {
     }
 
     pub fn overlayActive(self: *const Ui) bool {
-        return self.prompt != null or self.search != null;
+        return self.prompt != null or self.search != null or self.ask.live;
+    }
+
+    pub fn askIsOpen(self: *const Ui) bool {
+        return self.ask.live;
+    }
+
+    pub fn openAsk(self: *Ui, source_label: []const u8) !void {
+        self.closeSearch();
+        try self.ask.open(self.allocator, source_label);
+    }
+
+    pub fn closeAsk(self: *Ui) void {
+        self.ask.close();
+    }
+
+    pub fn askQuery(self: *const Ui) []const u8 {
+        return self.ask.queryText();
+    }
+
+    pub fn takeAskSubmit(self: *Ui) bool {
+        if (!self.ask.pending_submit) return false;
+        self.ask.pending_submit = false;
+        return true;
+    }
+
+    pub fn takeAskCancel(self: *Ui) bool {
+        if (!self.ask.pending_cancel) return false;
+        self.ask.pending_cancel = false;
+        return true;
+    }
+
+    pub fn askMarkWaiting(self: *Ui) void {
+        self.ask.markWaiting();
+    }
+
+    pub fn askMarkEdit(self: *Ui) void {
+        self.ask.markEdit();
+    }
+
+    pub fn askMarkOffline(self: *Ui) void {
+        self.ask.markOffline();
+    }
+
+    /// Copies `matches` into the ask bar and scrolls the first one into view.
+    pub fn setAskMatches(self: *Ui, term: *const Terminal, matches: []const search.Match) void {
+        if (self.ask.setMatches(matches)) |line| self.ensureVisible(term, line);
     }
 
     // ------------------------------------------------------------ palette
@@ -1080,6 +1144,7 @@ pub const Ui = struct {
     // ------------------------------------------------------------ search
 
     fn openSearch(self: *Ui, term: *const Terminal) !void {
+        if (self.ask.live) _ = self.ask.requestClose();
         if (self.search != null) return;
         self.search = .{
             .query = std.ArrayList(u8).init(self.allocator),
@@ -1236,6 +1301,8 @@ pub const Ui = struct {
             }
         }
 
+        self.ask.paint(top, rows, cols, marks.items);
+
         const cur_row: i64 = @as(i64, term.cursor_row) + @as(i64, @intCast(@min(self.scroll, rows))) - self.viewShift(term);
         var out = Composed{
             .cursor_row = @intCast(std.math.clamp(cur_row, 0, @as(i64, rows))),
@@ -1348,6 +1415,11 @@ pub const Ui = struct {
             fg = 0xFFFFFF;
             bg = 0xAF1F1F;
             try text.writer().print(" Paste {d} line{s} into a program without bracketed paste?  [Enter/y] paste  [Esc/n] cancel", .{ p.lines + 1, if (p.lines == 0) "" else "s" });
+        } else if (self.ask.live) {
+            fg = 0xFFFFFF;
+            bg = 0x1F3A5F;
+            var bar_buf: [240]u8 = undefined;
+            try text.appendSlice(self.ask.barText(&bar_buf));
         } else if (self.search) |st| {
             try text.writer().print(" Find: {s}\u{2588}  ", .{st.query.items});
             if (st.bad_regex) {

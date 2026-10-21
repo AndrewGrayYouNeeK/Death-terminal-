@@ -6,8 +6,9 @@
 # macOS: hdiutil writes a compressed UDZO image.
 # Linux: genisoimage writes an HFS hybrid, then libdmg-hfsplus (downloaded
 # into packaging/.cache, GPL-3, not linked into the app) wraps it as a
-# zlib UDIF .dmg. Finder can open that image. It is not signed or
-# notarized; see packaging/SIGNING.md.
+# zlib UDIF .dmg. Finder can open that image. Developer ID signing and
+# notarization are the release job's, when the Apple secrets are set
+# (packaging/SIGNING.md).
 set -euo pipefail
 
 APP=$(cd "${1:?app bundle}" && pwd)
@@ -23,7 +24,12 @@ STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 VOLNAME="YouNeeK Death Terminal"
 APP_IN_DMG="YouNeeK Death Terminal.app"
-cp -a "$APP" "$STAGE/$APP_IN_DMG"
+# ditto keeps the code signature; cp -a is the Linux fallback.
+if command -v ditto >/dev/null 2>&1; then
+  ditto "$APP" "$STAGE/$APP_IN_DMG"
+else
+  cp -a "$APP" "$STAGE/$APP_IN_DMG"
+fi
 ln -s /Applications "$STAGE/Applications"
 
 if command -v hdiutil >/dev/null 2>&1; then

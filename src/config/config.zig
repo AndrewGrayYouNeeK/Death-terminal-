@@ -145,6 +145,10 @@ pub const Config = struct {
     ai_output_lines: u16 = 20,
     /// Chord that accepts the ghost-text suggestion.
     ai_accept_key: []const u8 = "tab",
+    /// Ask the Output (Ctrl+Shift+Q / Cmd+Shift+Q).
+    ai_ask_enabled: bool = true,
+    /// Lines of the output region sent to the model (the tail).
+    ai_ask_max_lines: u16 = 200,
     /// Load the OSC 133 shell integration into bash/zsh/fish.
     shell_integration: bool = true,
     /// Built-in SSH client (docs/SSH.md).
@@ -243,6 +247,12 @@ pub const Config = struct {
     ghost_patterns: std.ArrayList([]const u8),
     /// False uses the built-in patterns. Assigning a list, even `{}`, replaces them.
     ghost_patterns_set: bool = false,
+    /// Offer a shortcut when the same command sequence repeats in one project.
+    muscle_enabled: bool = true,
+    /// How many times a sequence must repeat before it is offered.
+    muscle_min_repeats: u16 = 3,
+    /// Longest sequence to mine (commands).
+    muscle_max_len: u16 = 5,
 
     pub const Backend = enum { auto, x11, wayland, win32, cocoa };
 
