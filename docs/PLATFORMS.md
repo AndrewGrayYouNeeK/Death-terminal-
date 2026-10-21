@@ -81,9 +81,12 @@ zig build release -Dtarget=aarch64-macos -Dpackages=true
 ```
 
 The `.dmg` is an `hdiutil` UDZO image when built on a Mac, and an HFS hybrid
-wrapped as UDIF when built on Linux. Neither is notarized
-(`packaging/SIGNING.md`). `make-app.sh` still ad-hoc signs with `codesign -`
-when that tool exists.
+wrapped as UDIF when built on Linux. `make-app.sh` ad-hoc signs with
+`codesign -` when that tool exists. The release workflow signs the
+cross-compiled `.app` with a Developer ID, rebuilds the `.dmg` with
+`hdiutil`, notarizes, and staples when the Apple secrets in
+`packaging/SIGNING.md` are set. When any of those secrets are missing, the
+unsigned cross-compiled zip and dmg are what the draft release gets.
 
 The Cocoa backend (`src/platform/cocoa_backend.zig`) loads libobjc, AppKit, QuartzCore, CoreGraphics and CoreFoundation with `dlopen`. That is why it cross-compiles without an SDK. It uses no delegate and no NSView subclass:
 

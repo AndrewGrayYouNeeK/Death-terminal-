@@ -1,7 +1,9 @@
 # Release workflow. The copy to edit is packaging/ci/release.yml; the
 # installed file is .github/workflows/release.yml (keep them identical).
 # On a v* tag, build every artifact and attach it to a draft GitHub release.
-# Signing is intentionally absent: packaging/SIGNING.md.
+# macOS artifacts are signed and notarized on macos-latest when every Apple
+# secret in packaging/SIGNING.md is set; otherwise the cross-compiled
+# artifacts are uploaded unsigned. Windows signing is still a TODO.
 name: Release
 
 on:
@@ -25,7 +27,10 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libvulkan-dev libx11-dev libwayland-dev wayland-protocols \
+          # mesa-vulkan-drivers ships lavapipe. Without an ICD, vkCreateInstance
+          # returns VK_ERROR_INCOMPATIBLE_DRIVER (-9) and the instance test fails.
+          # CI already installs this package.
+          sudo apt-get install -y pkg-config libvulkan-dev mesa-vulkan-drivers libx11-dev libwayland-dev wayland-protocols \
             libxkbcommon-dev libfreetype-dev libharfbuzz-dev libfontconfig-dev libssl-dev file
       - name: Resolve version
         run: |
@@ -61,7 +66,8 @@ jobs:
           tar -xf zig.tar.xz
           echo "$PWD/zig-linux-x86_64-0.13.0" >> $GITHUB_PATH
       # NSIS builds the Windows setup exe. genisoimage + zlib build the macOS
-      # DMG (make-dmg.sh). Neither signs anything.
+      # DMG (make-dmg.sh). The macos-sign job rewrites the macOS DMG with
+      # hdiutil when it signs; this DMG is what ships when secrets are absent.
       - name: Install packaging tools
         run: |
           sudo apt-get update
@@ -85,12 +91,52 @@ jobs:
             zig-out/release/*.dmg
             zig-out/release/*-setup.exe
 
+  macos-sign:
+    name: macOS sign and notarize
+    needs: cross
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-macos'
+          path: macos-in
+          merge-multiple: false
+      - name: Sign, notarize, and staple, or pass unsigned artifacts through
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash packaging/macos/sign-release.sh macos-in macos-out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-signed
+          if-no-files-found: error
+          path: |
+            macos-out/*.zip
+            macos-out/*.dmg
+            macos-out/*.tar.gz
+
   publish:
-    needs: [linux, cross]
+    needs: [linux, cross, macos-sign]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
+          pattern: linux
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x86_64-windows
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: macos-signed
           path: dist
           merge-multiple: true
       - name: Checksums

@@ -10,7 +10,7 @@ cp packaging/ci/ci.yml packaging/ci/release.yml .github/workflows/
 | File | Installed at | What it does |
 |------|--------------|--------------|
 | `ci.yml` | `.github/workflows/ci.yml` | Linux build + tests with the full dependency list, plus compile-only checks for Windows and macOS |
-| `release.yml` | `.github/workflows/release.yml` | On a `v*` tag: Linux tarball, AppImage, .deb and .rpm; Windows zip and NSIS setup exe; macOS tarball, `.app` zip and `.dmg`; SHA256SUMS; a draft GitHub release. Unsigned (see `packaging/SIGNING.md`) |
+| `release.yml` | `.github/workflows/release.yml` | On a `v*` tag: Linux tarball, AppImage, .deb and .rpm; Windows zip and NSIS setup exe; macOS tarball, `.app` zip and `.dmg`; SHA256SUMS; a draft GitHub release. macOS is signed and notarized when the Apple secrets in `packaging/SIGNING.md` are all set, and left unsigned when any are missing. Windows stays unsigned |
 
 ## CI dependencies
 
@@ -29,6 +29,9 @@ cp packaging/ci/ci.yml packaging/ci/release.yml .github/workflows/
 - The release job downloads `nfpm` and `appimagetool` (see
   `packaging/linux/build-packages.sh`). The cross job also installs `nsis`
   (Windows setup exe) and `genisoimage` plus `zlib1g-dev` (macOS `.dmg`).
+  The linux release job installs `mesa-vulkan-drivers` so `zig build test`
+  can create a Vulkan instance. A `macos-latest` job then signs the
+  cross-compiled macOS artifacts when the Apple secrets are set.
 
 `release.yml` uses `softprops/action-gh-release@v2` and needs
 `permissions: contents: write`. The release is created as a draft for review.

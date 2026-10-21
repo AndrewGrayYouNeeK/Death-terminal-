@@ -56,8 +56,9 @@ if command -v iconutil >/dev/null; then
   iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/deathterminal.icns"
 fi
 
-# Ad-hoc signature only. A Developer ID signature and notarization are
-# TODO; CI has no Apple secrets (packaging/SIGNING.md).
+# Ad-hoc signature only, and only when codesign exists (a local Mac).
+# Developer ID signing and notarization run in the release workflow when
+# the Apple secrets are set (packaging/SIGNING.md).
 command -v codesign >/dev/null && codesign --force --deep --sign - "$APP" || true
 
 (cd "$OUT" && rm -f "DeathTerminal-$VER-$ARCH.zip" && \
