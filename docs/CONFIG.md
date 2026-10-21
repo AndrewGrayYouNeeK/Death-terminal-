@@ -68,7 +68,7 @@ config is reloaded.
 | `font.line_height` | `1.0` | Cell height multiplier, 0.5–3 |
 | `font.ligatures` | `true` | HarfBuzz calt/liga/dlig |
 | `font.retro` | `false` | Built-in 8×8 bitmap font |
-| `theme` | `"default"` | `default`, `death`, `dracula`, `gruvbox-dark`, `nord`, `solarized-dark`, `solarized-light` |
+| `theme` | `"death"` | `death` when unset, plus `default` (classic ANSI), `dracula`, `gruvbox-dark`, `nord`, `solarized-dark`, `solarized-light` |
 | `colors.foreground`, `colors.background` | theme | `"#rrggbb"`, `"#rgb"` or `0xRRGGBB` |
 | `colors.cursor`, `colors.cursor_text` | theme | `"none"` inverts the cell under the cursor |
 | `colors.selection_background` | theme | |

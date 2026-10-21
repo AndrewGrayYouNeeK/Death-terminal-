@@ -183,6 +183,23 @@ test "lua config: runaway scripts are stopped" {
     try t.expect(d.contains("memory"));
 }
 
+test "lua config: unset theme is death; \"default\" is still selectable" {
+    var d = config.Diagnostics.init(t.allocator);
+    defer d.deinit();
+    var unset = loadStr("", &d);
+    defer unset.deinit();
+    try t.expectEqual(@as(usize, 0), d.items.items.len);
+    try t.expectEqualStrings("death", unset.theme);
+    try t.expectEqual(config.themes.defaultTheme().palette().hash(), unset.palette().hash());
+
+    d.clear();
+    var classic = loadStr("config.theme = \"default\"\n", &d);
+    defer classic.deinit();
+    try t.expectEqual(@as(usize, 0), d.items.items.len);
+    try t.expectEqualStrings("default", classic.theme);
+    try t.expectEqual(color.default_palette.hash(), classic.palette().hash());
+}
+
 test "lua config: config.example.lua is valid and matches the defaults" {
     var d = config.Diagnostics.init(t.allocator);
     defer d.deinit();

@@ -33,9 +33,10 @@ config.font.ligatures = true         -- HarfBuzz calt/liga/dlig
 config.font.retro = false            -- built-in 8x8 bitmap font
 
 -- Colours ------------------------------------------------------------------
--- Bundled themes: default, death, dracula, gruvbox-dark, nord,
--- solarized-dark, solarized-light (also listed in dt.themes).
-config.theme = "default"
+-- Bundled themes: death (built-in default), default (classic ANSI),
+-- dracula, gruvbox-dark, nord, solarized-dark, solarized-light
+-- (also listed in dt.themes).
+config.theme = "death"
 
 -- Individual colours override the theme. Colours are "#rrggbb" or "#rgb";
 -- cursor / cursor_text / selection_foreground also accept "none"
