@@ -72,7 +72,7 @@ local function join(prefix, key)
   return prefix .. "." .. key
 end
 
-local collection = { keys = true, string_map = true, string_list = true, palette = true, ssh_profiles = true, plugins = true, layout = true, ghost_patterns = true }
+local collection = { keys = true, string_map = true, string_list = true, palette = true, ssh_profiles = true, plugins = true, layout = true, excludes = true, ghost_patterns = true }
 
 local function unknown(path, loc)
   report(loc, "unknown option '" .. path .. "'" .. suggest(path))

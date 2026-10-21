@@ -114,6 +114,8 @@ pub const Action = enum {
     resize_down,
     zoom_pane,
     equalize_panes,
+    /// Rewind the working tree to just before a command in this session.
+    time_travel,
     /// A plugin keybinding (ActionEvent.arg = the binding's id). Not
     /// bindable from config.
     plugin_binding,
@@ -178,6 +180,7 @@ pub const Action = enum {
             .resize_down => "Panes: grow / shrink down",
             .zoom_pane => "Panes: zoom (toggle)",
             .equalize_panes => "Panes: equalize sizes",
+            .time_travel => "Time Travel: rewind the working tree",
             .share_pane => "Share: share this pane",
             .share_grant => "Share: grant or revoke guest control",
             .share_kick => "Share: kick the guest",
@@ -365,6 +368,10 @@ pub const Bindings = struct {
         "ctrl+shift+p=command_palette",
         "ctrl+shift+b=toggle_status_bar",
         "ctrl+shift+t=new_tab",
+        // Ctrl+Shift+T is New Tab. Cmd+Shift+T is the same chord on macOS
+        // (Command is matched as Ctrl+Shift first), so Time Travel is Ctrl+Alt+T
+        // (Cmd+Option+T on macOS).
+        "ctrl+alt+t=time_travel",
         "ctrl+shift+alt+w=close_tab",
         "ctrl+page_down=next_tab",
         "ctrl+tab=next_tab",
@@ -640,6 +647,8 @@ test "keysym mapping" {
 
 test "default bindings and overrides" {
     var b = Bindings.defaults();
+    try std.testing.expectEqual(Action.new_tab, b.match('t', .{ .ctrl = true, .shift = true }).?);
+    try std.testing.expectEqual(Action.time_travel, b.match('t', .{ .ctrl = true, .alt = true }).?);
     try std.testing.expectEqual(Action.ai_ask, b.match('q', .{ .ctrl = true, .shift = true }).?);
     try std.testing.expectEqual(Action.ai_ask, b.match('Q', .{ .ctrl = true, .shift = true }).?);
     try std.testing.expectEqual(Action.copy, b.match('C', .{ .ctrl = true, .shift = true }).?);

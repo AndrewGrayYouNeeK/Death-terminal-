@@ -32,6 +32,7 @@ const frame_mod = @import("../renderer/frame.zig");
 const events = @import("../platform/events.zig");
 const color = @import("../terminal/color.zig");
 const config_watch = @import("config_watch.zig");
+const travel_hub = @import("time_travel.zig");
 const share_ctrl = @import("share_ctrl.zig");
 const ghost_hold = @import("../ghost/hold.zig");
 const time_travel = @import("../ghost/time_travel.zig");
@@ -140,8 +141,17 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
         .ghost = ghost_hold.Hold.init(a),
         .last_focus = first.id,
         .last_tab = ws.currentTab().id,
+        .travel = travel_hub.Hub.open(a, cfg),
     };
+    gui.travel.activate();
+    defer gui.travel.deinit();
     defer gui.ghost.deinit();
+    time_travel.register(.{
+        .ctx = &gui,
+        .available = ghostSnapshotAvailable,
+        .snapshot = ghostSnapshotProvider,
+    });
+    defer time_travel.unregister();
     gui.setupPane(first);
     gui.fitWindow(window.width, window.height);
     if (loop.startup_layout) gui.buildStartupLayout();
@@ -214,6 +224,7 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
             const p = ws.pane(id) orelse continue;
             if (fds.items[3 + 2 * i + 1].revents & io.POLL.IN != 0) {
                 if (try p.ai.onWake(&p.ui, p.term, std.time.milliTimestamp())) gui.touch(p);
+                if (gui.travel.takeDirty()) gui.touchAll();
             }
             if (gui.ghost.open and gui.ghost.pane == id) {
                 const st = p.ai.ghostExplainState();
@@ -281,6 +292,49 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
     if (env_mod.get("DT_PERF_STATS") != null) pace.report();
 }
 
+fn ghostSnapshotAvailable(ctx: *anyopaque) bool {
+    const gui: *Gui = @ptrCast(@alignCast(ctx));
+    return gui.travel.snapshotReady();
+}
+
+fn ghostSnapshotProvider(ctx: *anyopaque, req: time_travel.SnapshotRequest) time_travel.SnapshotResult {
+    const gui: *Gui = @ptrCast(@alignCast(ctx));
+    return switch (gui.travel.snapshotFor(req.cwd, req.command, req.pane)) {
+        .ok => |id| .{ .ok = .{ .id = id } },
+        .unavailable => .unavailable,
+        .failed => |why| .{ .failed = why },
+    };
+}
+
+fn commandStarted(ctx: *anyopaque) void {
+    const p: *Pane = @ptrCast(@alignCast(ctx));
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = terminal.shell_integration.cwdFromUri(p.term.cwd_uri, &buf) orelse "";
+    travel_hub.notifyStart(.{
+        .pane = p.id,
+        .started = p.term.shell.started,
+        .cwd = cwd,
+        .remote = p.ssh_display.len > 0,
+        .command = p.term.shell.pending orelse "",
+        .ai = &p.ai,
+    });
+}
+
+fn noteCommand(self: *Gui, p: *Pane) void {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = terminal.shell_integration.cwdFromUri(p.term.cwd_uri, &buf) orelse p.track.cwd.items;
+    const command = p.term.shell.pending orelse if (p.term.shell.lastCommand()) |c| c.text else "";
+    const exit_code = if (p.term.shell.lastCommand()) |c| c.exit_code else null;
+    self.travel.observe(.{
+        .pane = p.id,
+        .started = p.term.shell.started,
+        .cwd = cwd,
+        .remote = p.ssh_display.len > 0,
+        .command = command,
+        .ai = &p.ai,
+    }, p.term.shell.finished, exit_code);
+}
+
 fn paneAiSettings(cfg: *const config.Config, remote: []const u8) ai_controller.Settings {
     var s = ai_controller.Settings.fromConfig(cfg);
     s.remote = remote;
@@ -306,6 +360,7 @@ const Gui = struct {
     /// Scratch for a pane directory when the plugin track has no cwd yet.
     muscle_dir: [std.fs.max_path_bytes]u8 = undefined,
     read_buf: []u8,
+    travel: travel_hub.Hub,
     share: *share_ctrl.Controller,
     /// Risky-command preview. Enter is held until Run, Cancel, or a snapshot.
     ghost: ghost_hold.Hold,
@@ -345,7 +400,12 @@ const Gui = struct {
 
     fn present(self: *Gui, force: bool) !bool {
         try self.vk.render();
+        if (self.travel.isOpen()) {
+            self.ws.full = true;
+            for (self.ws.panes.items) |p| p.dirty = true;
+        }
         const comp = try self.ws.compose(self.chrome);
+        if (self.travel.isOpen()) self.travel.draw(self.focusedPane().id, self.ws.cells.items, comp.rows, comp.cols);
         const paint_id: ?PaneId = if (self.share.promptOpen())
             self.focusedPane().id
         else if (self.share.bound)
@@ -364,7 +424,7 @@ const Gui = struct {
         // Reverse video (DECSCNM) is whole-window: only with one pane shown.
         if (self.ws.visibleCount() > 1) v.reverse_video = false;
         v.focused = self.window_focused;
-        v.cursor_visible = comp.cursor_visible and !self.ghost.open;
+        v.cursor_visible = comp.cursor_visible and !self.travel.isOpen() and !self.ghost.open;
         v.marks = self.ws.marks.items;
         v.palette = self.palette;
         v.selection_bg = self.palette.selection_bg;
@@ -417,6 +477,8 @@ const Gui = struct {
         el.applyCursorShape(p.term, self.cfg.cursor_shape);
         el.applyColumnSwitch(p.term, self.cfg.allow_column_switch, false);
         p.ai.filter = self.plugins.aiFilter();
+        p.term.command_start = commandStarted;
+        p.term.command_start_ctx = p;
     }
 
     /// A new pane running the shell (or an SSH session) of `req`.
@@ -571,6 +633,9 @@ const Gui = struct {
             self.ghost.close();
         }
         if (self.ws.drag == .pane and self.ws.drag.pane == id) self.ws.drag = .none;
+        p.term.command_start = null;
+        p.term.command_start_ctx = null;
+        self.travel.drop(id);
         const removed_tab = self.ws.detachPane(id);
         self.plugins.removeTrack(&p.track);
         if (self.plugins.host) |h| {
@@ -749,7 +814,9 @@ const Gui = struct {
             }
             p.ui.sync(p.term);
             self.plugins.afterOutput(&p.track, std.time.milliTimestamp());
+            noteCommand(self, p);
             try self.pluginEffects();
+            if (self.travel.isOpen()) self.touchAll();
             try self.muscleAfterOutput(p);
             const is_focus = p == self.focusedPane();
             if (!p.visible and !p.activity) {
@@ -789,6 +856,7 @@ const Gui = struct {
             },
             .action => |a| try self.handleAction(a),
             .paste => |pv| {
+                if (self.travel.isOpen()) return;
                 if (self.share.promptOpen()) {
                     self.share.promptPaste(pv.data);
                     self.touchAll();
@@ -829,6 +897,12 @@ const Gui = struct {
     }
 
     fn handleInput(self: *Gui, bytes: []const u8) !void {
+        if (self.travel.isOpen()) {
+            const result = self.travel.onText(self.focusedPane().id, bytes);
+            if (result == .close) self.travel.close();
+            self.touchAll();
+            return;
+        }
         if (self.ghost.open) {
             try self.answerGhost(self.ghost.answerText(bytes));
             return;
@@ -885,6 +959,12 @@ const Gui = struct {
     }
 
     fn handleKey(self: *Gui, key: input.Key, mods: input.Mods) !void {
+        if (self.travel.isOpen()) {
+            const result = self.travel.onKey(self.focusedPane().id, key);
+            if (result == .close) self.travel.close();
+            self.touchAll();
+            return;
+        }
         if (self.ghost.open) {
             try self.answerGhost(self.ghost.answerKey(key));
             return;
@@ -1055,10 +1135,25 @@ const Gui = struct {
 
     fn handleAction(self: *Gui, a: events.ActionEvent) !void {
         const act = a.action;
-        // While a prompt is up only the palettes stay reachable.
+        if (self.travel.isOpen()) {
+            if (act == .time_travel) {
+                self.travel.toggle(self.focusedPane().id);
+            } else if (act == .ai_dismiss) {
+                _ = self.travel.cancel(self.focusedPane().id);
+            }
+            self.touchAll();
+            return;
+        }
+        // Overlays own the keyboard until they close. Ghost Run's `t` is a
+        // snapshot, and Ctrl+Alt+T does not open Time Travel on top of it.
         if ((self.ws.confirm != null or self.ws.rename != null or self.ghost.open) and act != .command_palette) return self.keyFallback(a);
         if (self.muscle.capturing() and act != .command_palette) return self.keyFallback(a);
         if (self.chrome.palette != null and act != .command_palette and act != .ssh_palette) return self.keyFallback(a);
+        if (act == .time_travel) {
+            self.travel.toggle(self.focusedPane().id);
+            self.touchAll();
+            return;
+        }
         const fp = self.focusedPane();
         const now = std.time.milliTimestamp();
         const ws = self.ws;
@@ -1192,6 +1287,15 @@ const Gui = struct {
 
     fn handleMouse(self: *Gui, m: events.MouseInput) !void {
         const ws = self.ws;
+        if (self.travel.isOpen()) {
+            if (m.action == .press and m.button == .left) {
+                const ch: i32 = @intCast(self.cellH());
+                const row: u16 = @intCast(std.math.clamp(@divFloor(m.y, ch), 0, @as(i32, ws.rows) - 1));
+                self.travel.click(self.focusedPane().id, row, ws.rows);
+                self.touchAll();
+            }
+            return;
+        }
         if (self.chrome.palette != null or ws.confirm != null or self.ghost.open) return;
         const cw: i32 = @intCast(self.cellW());
         const ch: i32 = @intCast(self.cellH());
@@ -1563,6 +1667,7 @@ const Gui = struct {
         self.pace.frame_ns = el.frameNs(next.max_fps);
         self.pace.read_budget = @as(usize, next.read_budget_kb) * 1024;
         el.installBindings(next);
+        self.travel.apply(next);
         if (old.status_bar != next.status_bar) try self.setStatusBar(next.status_bar);
         self.frame.invalidate();
         self.share.configure(next);

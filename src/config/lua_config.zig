@@ -27,7 +27,7 @@ const share_invite = @import("../share/invite.zig");
 const prelude_src = @embedFile("prelude.lua");
 pub const version = "0.1.0";
 
-pub const Kind = enum { section, boolean, integer, number, string, color, choice, theme, keys, string_map, string_list, palette, ssh_profiles, plugins, layout, ghost_patterns };
+pub const Kind = enum { section, boolean, integer, number, string, color, choice, theme, keys, string_map, string_list, palette, ssh_profiles, plugins, layout, excludes, ghost_patterns };
 
 const Ref = union(enum) {
     boolean: *bool,
@@ -196,6 +196,13 @@ pub const schema = [_]Field{
     .{ .path = "shell.env", .kind = .string_map, .restart = true },
     .{ .path = "shell.cwd", .kind = .string, .ref = ref(.string, "shell_cwd"), .restart = true },
     .{ .path = "shell.integration", .kind = .boolean, .ref = ref(.boolean, "shell_integration"), .restart = true },
+
+    .{ .path = "time_travel", .kind = .section },
+    .{ .path = "time_travel.enabled", .kind = .boolean, .ref = ref(.boolean, "tt_enabled") },
+    .{ .path = "time_travel.max_dir_mb", .kind = .integer, .min = 1, .max = 1_048_576, .ref = ref(.u32, "tt_max_dir_mb") },
+    .{ .path = "time_travel.retention", .kind = .integer, .min = 1, .max = 10_000, .ref = ref(.u32, "tt_retention") },
+    .{ .path = "time_travel.ai_summary", .kind = .boolean, .ref = ref(.boolean, "tt_ai_summary") },
+    .{ .path = "time_travel.excludes", .kind = .excludes },
 
     .{ .path = "ghost_run", .kind = .section },
     .{ .path = "ghost_run.enabled", .kind = .boolean, .ref = ref(.boolean, "ghost_run_enabled") },
@@ -449,7 +456,7 @@ fn setValue(ctx: *Ctx, L: *State, path: []const u8, idx: c_int) ?[]const u8 {
             };
             f.ref.?(cfg).string.* = t.name;
         },
-        .keys, .string_map, .palette, .string_list, .ssh_profiles, .plugins, .layout, .ghost_patterns => {
+        .keys, .string_map, .palette, .string_list, .ssh_profiles, .plugins, .layout, .excludes, .ghost_patterns => {
             if (c.lua_type(L, idx) != c.LUA_TTABLE) {
                 const what = switch (f.kind) {
                     .layout => "a list of tabs like { { split = \"right\", panes = { {}, { command = \"htop\" } } } }",
@@ -459,6 +466,7 @@ fn setValue(ctx: *Ctx, L: *State, path: []const u8, idx: c_int) ?[]const u8 {
                     .string_map => "a table like { NAME = \"value\" }",
                     .palette => "a table like { [0] = \"#000000\", [1] = \"#cc0000\" }",
                     .ghost_patterns => "a list of patterns like { \"rm -r\", \"dd\" }",
+                    .excludes => "a list of patterns like { \"node_modules\", \".git/objects\" }",
                     else => "a list of strings like { \"-l\" }",
                 };
                 return fail(ctx, "{s}: expected {s}, got {s}", .{ path, what, describe(ctx, L, idx) });
@@ -480,6 +488,7 @@ fn setCollection(ctx: *Ctx, L: *State, f: *const Field, idx: c_int) ?[]const u8 
         .ssh_profiles => cfg.ssh_profiles.clearRetainingCapacity(),
         .plugins => cfg.plugins.clearRetainingCapacity(),
         .layout => cfg.startup_layout.clearRetainingCapacity(),
+        .excludes => cfg.tt_excludes.clearRetainingCapacity(),
         .ghost_patterns => {
             cfg.ghost_patterns.clearRetainingCapacity();
             cfg.ghost_patterns_set = true;
@@ -509,14 +518,19 @@ fn setCollection(ctx: *Ctx, L: *State, f: *const Field, idx: c_int) ?[]const u8 
         }
         return null;
     }
-    if (f.kind == .string_list) {
+    if (f.kind == .string_list or f.kind == .excludes) {
         const n = c.luaL_len(L, t);
         var i: c.lua_Integer = 1;
         while (i <= n) : (i += 1) {
             _ = c.lua_rawgeti(L, t, i);
             defer lua.pop(L, 1);
             const s = lua.toString(L, -1) orelse return fail(ctx, "{s}[{d}]: expected a string, got {s}", .{ f.path, i, describe(ctx, L, -1) });
-            cfg.shell_args.append(cfg.dupe(s) catch return "out of memory") catch return "out of memory";
+            const owned = cfg.dupe(s) catch return "out of memory";
+            if (f.kind == .string_list) {
+                cfg.shell_args.append(owned) catch return "out of memory";
+            } else {
+                cfg.tt_excludes.append(owned) catch return "out of memory";
+            }
         }
         return null;
     }
@@ -593,16 +607,17 @@ fn setItem(ctx: *Ctx, L: *State, path: []const u8, key_idx: c_int, val_idx: c_in
             }
             cfg.shell_env.append(entry) catch return "out of memory";
         },
-        .string_list => {
+        .string_list, .excludes => {
             if (c.lua_isinteger(L, key_idx) == 0) return fail(ctx, "{s}: index must be a number", .{path});
             const i = c.lua_tointegerx(L, key_idx, null);
-            const n: c.lua_Integer = @intCast(cfg.shell_args.items.len);
+            const list = if (f.kind == .string_list) &cfg.shell_args else &cfg.tt_excludes;
+            const n: c.lua_Integer = @intCast(list.items.len);
             if (i < 1 or i > n + 1) return fail(ctx, "{s}[{d}]: index out of range (1..{d})", .{ path, i, n + 1 });
             const s = lua.toString(L, val_idx) orelse return fail(ctx, "{s}[{d}]: expected a string, got {s}", .{ path, i, describe(ctx, L, val_idx) });
             const owned = cfg.dupe(s) catch return "out of memory";
             if (i == n + 1) {
-                cfg.shell_args.append(owned) catch return "out of memory";
-            } else cfg.shell_args.items[@intCast(i - 1)] = owned;
+                list.append(owned) catch return "out of memory";
+            } else list.items[@intCast(i - 1)] = owned;
         },
         .ghost_patterns => {
             if (c.lua_isinteger(L, key_idx) == 0) return fail(ctx, "{s}: index must be a number", .{path});
@@ -1051,11 +1066,12 @@ fn luaGet(Lopt: ?*State) callconv(.C) c_int {
             }
             return 0;
         },
-        .string_list => {
+        .string_list, .excludes => {
             if (!has_key or c.lua_isinteger(L, 2) == 0) return 0;
             const i = c.lua_tointegerx(L, 2, null);
-            if (i < 1 or i > cfg.shell_args.items.len) return 0;
-            lua.pushString(L, cfg.shell_args.items[@intCast(i - 1)]);
+            const list = if (f.kind == .string_list) cfg.shell_args.items else cfg.tt_excludes.items;
+            if (i < 1 or i > list.len) return 0;
+            lua.pushString(L, list[@intCast(i - 1)]);
         },
         .ghost_patterns => {
             if (!cfg.ghost_patterns_set) return 0;

@@ -447,6 +447,15 @@ fn handleKey(st: *State, ev: Id) bool {
             return true;
         }
         if (keysymOf(code, chars)) |sym| {
+            // Option is checked before the Ctrl+Shift fallback so Cmd+Option+T
+            // can bind Time Travel without taking Cmd+T / Cmd+Shift+T (New Tab).
+            if (flags & Flag.option != 0) {
+                const m: input.Mods = .{ .ctrl = true, .alt = true, .shift = mods.shift };
+                if (events.matchBinding(sym, m)) |a| {
+                    st.queue.pushAction(a);
+                    return true;
+                }
+            }
             const alts = [_]input.Mods{ .{ .ctrl = true, .shift = true }, .{ .ctrl = true }, .{ .ctrl = true, .shift = mods.shift } };
             for (alts) |m| if (events.matchBinding(sym, m)) |a| {
                 st.queue.pushAction(a);

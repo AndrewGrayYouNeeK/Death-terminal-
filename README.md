@@ -71,6 +71,11 @@ Context-aware, not just history-based.
 - Lua 5.4 config with live reload (see [docs/CONFIG.md](docs/CONFIG.md))
 - Sandboxed Lua plugins, each in its own state with memory/CPU limits and only the permissions you grant: hooks for commands (OSC 133), output, cwd, title, bell, focus, keys, SSH and AI suggestions; command palette (Ctrl+Shift+P), keybindings, status bar, toasts, timers, themes; `deathterminal --plugins list|enable|disable` (see [docs/PLUGINS.md](docs/PLUGINS.md))
 
+### ⏪ Time Travel
+- Before each command (OSC 133 C), a cheap snapshot of that shell's directory: copy-on-write where the filesystem allows it (APFS clonefile, Linux reflink), then a byte copy. Content-addressed under the data directory
+- After the command, a diff of added, removed and modified files. Ctrl+Alt+T (Cmd+Option+T on macOS) scrubs the session and rewinds that folder to just before the command; the rewind asks first and can be undone
+- Ctrl+Shift+T stays New Tab. Huge trees, `node_modules`, `.git/objects` and anything outside the directory (including symlinks) are skipped. See [docs/TIME_TRAVEL.md](docs/TIME_TRAVEL.md)
+
 ### 🗂 Tabs + Split Panes
 - Tabs and horizontal/vertical splits, each pane with its own shell, scrollback, selection, search and AI context
 - Themed tab bar with cwd, activity, bell and exit-status markers; drag to reorder, double-click to rename; drag dividers to resize; zoom, equalize, optional dimming of inactive panes
@@ -156,6 +161,7 @@ in [docs/MOBILE.md](docs/MOBILE.md) and is not built.
 - Lua plugins: sandboxed per-plugin states, permission grants in config.lua, hooks, command palette (Ctrl+Shift+P), status bar (on by default), toasts, timers, themes, four example plugins including the bundled YouNeeK Time clock (see [docs/PLUGINS.md](docs/PLUGINS.md))
 - Muscle memory: local mining of repeated command sequences, project and global shortcuts in `shortcuts.lua`, palette list/rename/delete, stop on the first failing command (see [docs/MUSCLE_MEMORY.md](docs/MUSCLE_MEMORY.md))
 - Tabs and split panes: layout tree, keyboard/mouse resize and focus, zoom, equalize, tab bar, confirm-close for running programs, startup layouts, plugin tab/pane events and actions (see [docs/TABS.md](docs/TABS.md))
+- Time Travel: per-command snapshots of the working tree, a scrubbable timeline (Ctrl+Alt+T / Cmd+Option+T) and an undoable rewind (see [docs/TIME_TRAVEL.md](docs/TIME_TRAVEL.md))
 - Shared Haunting: one pane, live, Noise-encrypted, direct TCP or an optional splice relay. Guest input is off until the host grants it; F12 kicks (see [docs/SHARING.md](docs/SHARING.md)). No NAT traversal
 - CI: Linux build + unit tests, Windows and macOS cross-compiles; a `v*` tag opens a draft GitHub release
 - Packaging: `zig build release -Dpackages=true` builds an AppImage, `.deb` (with a `.desktop` file) and `.rpm`, a Windows zip plus NSIS installer, and a macOS `.app` plus `.dmg`. A `v*` tag publishes them as a draft. macOS signing and notarization run when the Apple secrets in [packaging/SIGNING.md](packaging/SIGNING.md) are set; otherwise those artifacts stay unsigned. Windows signing is still a TODO

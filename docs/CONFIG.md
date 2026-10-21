@@ -93,6 +93,11 @@ config is reloaded.
 | `shell.env` | `{}` | Extra environment, e.g. `{ EDITOR = "nvim" }`. These values beat inherited ones and even `TERM` (**restart**) |
 | `shell.cwd` | `""` | Starting directory. `""` inherits it; a leading `~` means `$HOME` (**restart**) |
 | `shell.integration` | `true` | Load the OSC 133 prompt marks for bash/zsh/fish so AI suggestions know the typed command, history and exit codes ([AI.md](AI.md#shell-integration-osc-133)) (**restart**) |
+| `time_travel.enabled` | `true` | Snapshot the working tree before each command. See [TIME_TRAVEL.md](TIME_TRAVEL.md) |
+| `time_travel.max_dir_mb` | `200` | Skip a snapshot (and refuse a rewind that could not be undone) above this size, 1–1048576 |
+| `time_travel.retention` | `50` | How many snapshots to keep per pane, 1–10000 |
+| `time_travel.ai_summary` | `true` | One-line AI summary when a command changed files (`ai.enabled` must also be on) |
+| `time_travel.excludes` | `node_modules`, `.git/objects`, build dirs | Gitignore-style patterns. `{}` keeps everything a root `.gitignore` does not reject. Remove `.git/objects` to snapshot git objects |
 | `ghost_run.enabled` | `true` | Intercept Enter on a risky command and show a read-only impact preview ([GHOST_RUN.md](GHOST_RUN.md)) |
 | `ghost_run.ai_explain` | `true` | Add a plain-English explanation when `ai.enabled` is on. The preview itself stays local |
 | `ghost_run.patterns` | built-in | List of patterns. Assigning one, even `{}`, replaces the built-in list instead of extending it |

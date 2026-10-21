@@ -306,6 +306,7 @@ fn printHelp() !void {
         \\    • Built-in SSH (libssh2): profiles, ProxyJump, -L/-R/-D forwards (Ctrl+Shift+S)
         \\    • Vulkan-accelerated rendering
         \\    • Lua plugins: hooks, command palette (Ctrl+Shift+P), status bar, themes
+        \\    • Time Travel: snapshot the working tree before each command (Ctrl+Alt+T)
         \\    • Brutalist, high-performance design
         \\
         \\For more information, visit: https://github.com/AndrewGrayYouNeeK/Death-terminal-
@@ -370,6 +371,8 @@ test {
     _ = @import("app/event_loop.zig");
     _ = @import("app/config_watch.zig");
     _ = @import("config/config.zig");
+    _ = @import("timetravel/mod.zig");
+    _ = @import("app/time_travel.zig");
     _ = @import("config/themes.zig");
     _ = @import("config/lua_config.zig");
     _ = @import("config/lua_config_test.zig");

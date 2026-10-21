@@ -113,6 +113,8 @@ time_travel.register(.{
 
 `SnapshotRequest` is `{ cwd, command, pane }`. `snapshot` must not run `command`. It is called only after the user presses `t`. `SnapshotResult` is `ok` (with an id), `unavailable`, or `failed` (with a message). `unregister` removes the provider. With nothing registered, `t` is hidden.
 
+The GUI registers Time Travel's store as that provider when Time Travel is enabled and the store opened. Headless mode does not.
+
 ## Headless
 
 `window.headless` prints the same preview on stderr and reads one key: `y`, `n`, Esc, Ctrl+C, or `t`. Only a lone `\r`, `\n`, or `\r\n` is intercepted. A paste that already includes the command and the newline is written through, because the command is not on screen as the current input yet. Headless does not request the AI note.

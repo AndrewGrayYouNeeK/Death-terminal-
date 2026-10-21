@@ -13,6 +13,7 @@ pub const themes = @import("themes.zig");
 pub const lua_config = @import("lua_config.zig");
 pub const SshProfile = @import("../ssh/target.zig").Profile;
 pub const PluginConfig = @import("../plugins/plugin_config.zig").PluginConfig;
+const tt_exclude = @import("../timetravel/exclude.zig");
 
 /// A pane, or a split of several (`config.layout`). Strings live in the
 /// config arena.
@@ -250,6 +251,17 @@ pub const Config = struct {
     shell_env: std.ArrayList([]const u8),
     /// Starting directory ("" = inherit; "~" is expanded).
     shell_cwd: []const u8 = "",
+    /// Snapshot the working tree before each command (docs/TIME_TRAVEL.md).
+    tt_enabled: bool = true,
+    /// Skip a snapshot when the walked files are larger than this.
+    tt_max_dir_mb: u32 = 200,
+    /// Snapshots kept per pane (and in the store, plus anything still on screen).
+    tt_retention: u32 = 50,
+    /// Ask the AI for a one-line summary when a command changed files.
+    tt_ai_summary: bool = true,
+    /// Gitignore-style excludes. Empty means keep everything the root
+    /// `.gitignore` does not reject. Defaults skip `node_modules`, `.git/objects`, …
+    tt_excludes: std.ArrayList([]const u8),
     /// Ghost Run: confirm risky commands before Enter reaches the shell.
     ghost_run_enabled: bool = true,
     /// Ask the AI engine for a plain-English explanation on the overlay.
@@ -270,7 +282,7 @@ pub const Config = struct {
     pub fn init(allocator: std.mem.Allocator) Config {
         const arena = allocator.create(std.heap.ArenaAllocator) catch @panic("config: out of memory");
         arena.* = std.heap.ArenaAllocator.init(allocator);
-        return Config{
+        var cfg = Config{
             .allocator = allocator,
             .arena = arena,
             .keybinds = std.ArrayList([]const u8).init(allocator),
@@ -279,8 +291,15 @@ pub const Config = struct {
             .ssh_profiles = std.ArrayList(SshProfile).init(allocator),
             .startup_layout = std.ArrayList(LayoutTab).init(allocator),
             .plugins = std.ArrayList(PluginConfig).init(allocator),
+            .tt_excludes = std.ArrayList([]const u8).init(allocator),
             .ghost_patterns = std.ArrayList([]const u8).init(allocator),
         };
+        cfg.arena = arena;
+        for (tt_exclude.default_patterns) |p| {
+            const owned = cfg.dupe(p) catch @panic("config: out of memory");
+            cfg.tt_excludes.append(owned) catch @panic("config: out of memory");
+        }
+        return cfg;
     }
 
     pub fn deinit(self: *Config) void {
@@ -290,6 +309,7 @@ pub const Config = struct {
         self.ssh_profiles.deinit();
         self.startup_layout.deinit();
         self.plugins.deinit();
+        self.tt_excludes.deinit();
         self.ghost_patterns.deinit();
         self.arena.deinit();
         self.allocator.destroy(self.arena);
