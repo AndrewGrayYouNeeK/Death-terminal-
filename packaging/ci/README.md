@@ -4,13 +4,14 @@ These files are installed at `.github/workflows/`. This directory is the
 copy to edit; keep the installed files identical:
 
 ```sh
-cp packaging/ci/ci.yml packaging/ci/release.yml .github/workflows/
+cp packaging/ci/ci.yml packaging/ci/release.yml packaging/ci/pages.yml .github/workflows/
 ```
 
 | File | Installed at | What it does |
 |------|--------------|--------------|
 | `ci.yml` | `.github/workflows/ci.yml` | Linux build + tests with the full dependency list, plus compile-only checks for Windows and macOS |
 | `release.yml` | `.github/workflows/release.yml` | On a `v*` tag: Linux tarball, AppImage, .deb and .rpm; Windows zip and NSIS setup exe; macOS tarball, `.app` zip and `.dmg`; SHA256SUMS; a draft GitHub release. Unsigned (see `packaging/SIGNING.md`) |
+| `pages.yml` | `.github/workflows/pages.yml` | On push to `main`: deploy the static download page in `/site` with `actions/configure-pages`, `actions/upload-pages-artifact`, and `actions/deploy-pages`. `GITHUB_TOKEN` cannot create the Pages site (`enablement` needs `administration:write`), so the owner sets Settings → Pages → Source to GitHub Actions once, then re-runs the workflow if it already failed |
 
 ## CI dependencies
 

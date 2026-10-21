@@ -1,0 +1,274 @@
+:root {
+  color-scheme: dark;
+  --bg: #000000;
+  --fg: #e0e0e0;
+  --dim: #9a9a9a;
+  --red: #ff0033;
+  --line: #4a4a4a;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  animation: none !important;
+  transition: none !important;
+}
+
+html {
+  background: var(--bg);
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  border-top: 8px solid var(--red);
+  font-family: "JetBrains Mono", "Cascadia Mono", "Cascadia Code", Consolas, "Liberation Mono", ui-monospace, monospace;
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+::selection {
+  background: var(--red);
+  color: #000;
+}
+
+a {
+  color: var(--red);
+}
+
+a:focus {
+  outline: none;
+}
+
+a:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: 3px;
+}
+
+.wrap {
+  max-width: 52rem;
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 4rem;
+}
+
+.top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+h1 {
+  margin: 0;
+  padding-left: 0.7rem;
+  border-left: 0.7rem solid var(--red);
+  font-size: clamp(2rem, 10vw, 4.8rem);
+  line-height: 0.92;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+}
+
+.github {
+  color: var(--fg);
+  text-decoration: none;
+  border-bottom: 2px solid var(--red);
+  font-weight: 700;
+}
+
+.tagline {
+  margin: 1.25rem 0 0;
+  max-width: 38rem;
+  font-size: 1.15rem;
+}
+
+.sub,
+.note {
+  margin: 0.4rem 0 0;
+  color: var(--dim);
+}
+
+.hero,
+.features,
+.install,
+.closing {
+  border-top: 1px solid var(--red);
+  margin-top: 1.75rem;
+  padding-top: 1.25rem;
+}
+
+h2 {
+  margin: 0 0 0.9rem;
+  color: var(--red);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+h3 {
+  margin: 1.25rem 0 0.4rem;
+  font-size: 1rem;
+}
+
+.download-primary {
+  display: block;
+  width: 100%;
+  margin-top: 1.25rem;
+  padding: 1.05rem 1.15rem;
+  background: var(--red);
+  color: #000;
+  text-decoration: none;
+  text-align: left;
+  font-weight: 700;
+  font-size: 1.35rem;
+  line-height: 1.2;
+}
+
+.download-primary:hover,
+.download-primary:focus-visible {
+  background: #000;
+  color: var(--red);
+}
+
+.download-primary .file {
+  display: block;
+  margin-top: 0.35rem;
+  color: #000;
+  font-size: 0.8rem;
+  font-weight: 400;
+}
+
+.download-primary:hover .file,
+.download-primary:focus-visible .file {
+  color: var(--red);
+}
+
+.download-primary .file:empty {
+  display: none;
+}
+
+.detect,
+.status {
+  margin: 0.75rem 0 0;
+}
+
+.status {
+  color: var(--dim);
+}
+
+.builds {
+  display: grid;
+  grid-template-columns: 1fr;
+  margin-top: 1.25rem;
+  border: 1px solid var(--red);
+}
+
+.builds a {
+  display: block;
+  padding: 0.85rem 1rem;
+  border-top: 1px solid var(--red);
+  background: #000;
+  color: var(--fg);
+  text-decoration: none;
+  font-weight: 700;
+}
+
+.builds a:first-child {
+  border-top: 0;
+}
+
+.builds a:hover,
+.builds a:focus-visible,
+.builds a.is-match {
+  background: var(--red);
+  color: #000;
+}
+
+.builds a.is-match:hover,
+.builds a.is-match:focus-visible {
+  background: #000;
+  color: var(--red);
+}
+
+.builds .file {
+  display: block;
+  margin-top: 0.3rem;
+  color: var(--dim);
+  font-size: 0.78rem;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+
+.builds a:hover .file,
+.builds a:focus-visible .file,
+.builds a.is-match .file {
+  color: #000;
+}
+
+.builds a.is-match:hover .file,
+.builds a.is-match:focus-visible .file {
+  color: var(--dim);
+}
+
+.features ul,
+.install ol {
+  margin: 0;
+  padding-left: 1.15rem;
+}
+
+.features li,
+.install li {
+  margin: 0.45rem 0;
+}
+
+.install p,
+.closing p,
+.features p {
+  margin: 0.45rem 0;
+}
+
+pre {
+  margin: 0.6rem 0;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--line);
+  overflow-x: auto;
+  background: #000;
+  color: var(--fg);
+}
+
+code {
+  font-family: inherit;
+  font-size: 0.92em;
+}
+
+.closing {
+  margin-bottom: 0;
+}
+
+@media (min-width: 42rem) {
+  .download-primary {
+    display: inline-block;
+    width: auto;
+    min-width: 22rem;
+  }
+
+  .builds {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .builds a {
+    border-top: 0;
+    border-left: 1px solid var(--red);
+  }
+
+  .builds a:nth-child(odd) {
+    border-left: 0;
+  }
+
+  .builds a:nth-child(n + 3) {
+    border-top: 1px solid var(--red);
+  }
+}

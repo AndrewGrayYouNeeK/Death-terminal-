@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- GitHub Pages download page at https://andrewgrayyouneek.github.io/Death-terminal-/ (`site/`). `.github/workflows/pages.yml` deploys it with `actions/deploy-pages` on push to `main`. The page reads the latest published release and falls back to the Releases page. The owner sets Settings → Pages → Source to GitHub Actions once (`actions/configure-pages` cannot do that with `GITHUB_TOKEN`)
 - Installable desktop packages from `zig build release -Dpackages=true`: macOS `.app` plus `.dmg` (`packaging/macos/make-dmg.sh`; `hdiutil` on a Mac, HFS-hybrid UDIF on Linux), Windows NSIS setup exe with the app icon and a Start Menu shortcut (`packaging/windows/build-installer.sh`), alongside the existing Linux AppImage, `.deb` (installs `deathterminal.desktop`) and `.rpm`. The tag release workflow uploads them. Code signing stays a documented TODO (`packaging/SIGNING.md`)
 - `docs/MOBILE.md`: iOS/Android plan. No mobile target is built
 - Grok 4.7 on `api.x.ai` and `us.api.x.ai` (the model Grok Bot uses) goes through the Responses API: `reasoning.effort` defaults to `low` (`config.ai.reasoning`: `low` / `medium` / `high` / `xhigh`), live search is off, responses are not stored, and reasoning text is not shown as the suggestion. `ai.max_tokens` is sent as `max_output_tokens`, which caps the visible answer. Other endpoints stay on chat/completions. xAI requests wait at least 15s; `ai.timeout_ms` now allows up to 600000
