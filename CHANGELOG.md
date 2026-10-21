@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Ask the Output (`Ctrl+Shift+Q`, `Cmd+Shift+Q` on macOS; `Cmd+Q` still quits): a prompt bar sends the redacted selection, last command output, or visible screen to the configured model and highlights the cited lines. `config.ai.ask.enabled` and `config.ai.ask.max_lines` (default 200) control it. Long output is truncated with a note; an unreachable endpoint says "AI offline"
 - Bundled `youneek-time` plugin: a YouNeeK Time status segment (civil hour, 100 minutes per hour, `#7CFF6B`, local suncalc moon phase). The status bar is on by default. `config.plugins["youneek-time"]` can disable it, switch to regular `HH:MM`, pick 12/24h, set a timezone, and turn on an hourly toast (`settings.chime`, off by default)
 - Installable desktop packages from `zig build release -Dpackages=true`: macOS `.app` plus `.dmg` (`packaging/macos/make-dmg.sh`; `hdiutil` on a Mac, HFS-hybrid UDIF on Linux), Windows NSIS setup exe with the app icon and a Start Menu shortcut (`packaging/windows/build-installer.sh`), alongside the existing Linux AppImage, `.deb` (installs `deathterminal.desktop`) and `.rpm`. The tag release workflow uploads them. Code signing stays a documented TODO (`packaging/SIGNING.md`)
 - `docs/MOBILE.md`: iOS/Android plan. No mobile target is built

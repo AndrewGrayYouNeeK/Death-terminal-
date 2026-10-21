@@ -27,12 +27,24 @@ pub const Mark = struct {
     gen: u32,
 };
 
+/// Absolute line range of a command's output (OSC 133 C through D).
+/// Valid while `Terminal.layout_gen` still equals `gen`.
+pub const OutputSpan = struct {
+    start: i64,
+    end: i64,
+    /// Column where the output begins on `start`.
+    col: u16 = 0,
+    gen: u32,
+};
+
 pub const Command = struct {
     text: []u8,
     /// null = the shell never reported it (D without a code).
     exit_code: ?i32,
     /// Tail of the command's output (at most `max_output` bytes).
     output: []u8,
+    /// Screen lines of the output, when the marks were still in the grid.
+    span: ?OutputSpan = null,
 
     fn deinit(self: Command, allocator: std.mem.Allocator) void {
         allocator.free(self.text);
@@ -79,12 +91,12 @@ pub const State = struct {
     }
 
     /// Record a finished command (takes ownership of `text` and `output`).
-    pub fn pushCommand(self: *State, text: []u8, exit_code: ?i32, output: []u8) void {
+    pub fn pushCommand(self: *State, text: []u8, exit_code: ?i32, output: []u8, span: ?OutputSpan) void {
         if (self.history.items.len >= max_history) {
             self.history.items[0].deinit(self.allocator);
             _ = self.history.orderedRemove(0);
         }
-        self.history.append(self.allocator, .{ .text = text, .exit_code = exit_code, .output = output }) catch {
+        self.history.append(self.allocator, .{ .text = text, .exit_code = exit_code, .output = output, .span = span }) catch {
             self.allocator.free(text);
             self.allocator.free(output);
             return;
@@ -187,7 +199,7 @@ test "history ring keeps the newest commands" {
     defer s.deinit();
     for (0..max_history + 5) |i| {
         const t = try std.fmt.allocPrint(std.testing.allocator, "cmd{d}", .{i});
-        s.pushCommand(t, @intCast(i), try std.testing.allocator.dupe(u8, ""));
+        s.pushCommand(t, @intCast(i), try std.testing.allocator.dupe(u8, ""), null);
     }
     try std.testing.expectEqual(@as(usize, max_history), s.history.items.len);
     try std.testing.expectEqualStrings("cmd5", s.history.items[0].text);

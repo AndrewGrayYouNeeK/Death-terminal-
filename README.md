@@ -38,6 +38,7 @@ Context-aware, not just history-based.
 - `api.x.ai` and `us.api.x.ai` (model `grok-4.7`) use the Responses API: `config.ai.reasoning` is `low` / `medium` / `high` / `xhigh` (empty means `low`; it cannot be turned off), live search is off, responses are not stored, and the wait is at least 15s
 - Dim ghost text after the cursor: Tab accepts, Esc dismisses, Alt+] / Alt+[ cycle alternatives; nothing is inserted unless you accept
 - Ctrl+Shift+A explains the last failed command and suggests a fix
+- Ctrl+Shift+Q (Cmd+Shift+Q on macOS; Cmd+Q still quits) asks a question about the selection, the last command's output, or the screen. The answer cites lines, which are highlighted; Down and Enter jump between them. Long output is truncated with a note. `config.ai.ask.enabled` and `config.ai.ask.max_lines` control it
 - Secrets (tokens, keys, passwords, env assignments) are redacted before anything is sent; offline endpoints just show a small "AI offline" badge
 - bash/zsh/fish OSC 133 shell integration, injected automatically (see [docs/AI.md](docs/AI.md))
 

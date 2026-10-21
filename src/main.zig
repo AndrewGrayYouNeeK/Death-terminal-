@@ -279,6 +279,7 @@ fn printHelp() !void {
         \\
         \\FEATURES:
         \\    • AI command suggestions (OpenAI-compatible, local Ollama by default)
+        \\    • Ask the Output (Ctrl+Shift+Q): question about the last command, selection, or screen
         \\    • Built-in SSH (libssh2): profiles, ProxyJump, -L/-R/-D forwards (Ctrl+Shift+S)
         \\    • Vulkan-accelerated rendering
         \\    • Lua plugins: hooks, command palette (Ctrl+Shift+P), status bar, themes
