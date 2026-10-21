@@ -441,7 +441,8 @@ fn handleKey(st: *State, ev: Id) bool {
         // Cmd shortcuts reuse the Ctrl+Shift bindings (Cmd+C copy,
         // Cmd+V paste, Cmd+T new tab, ...), then the Ctrl ones (zoom).
         const chars = objc.utf8(msg(Id, ev, "charactersIgnoringModifiers", .{}));
-        if (std.mem.eql(u8, chars, "q")) {
+        // Cmd+Q quits. Cmd+Shift+Q is Ask the Output (the ctrl+shift binding).
+        if (commandQuits(chars, flags)) {
             st.queue.pushClose();
             return true;
         }
@@ -611,6 +612,21 @@ fn keysymOf(code: u16, chars: []const u8) ?u32 {
         'a'...'z', '0'...'9', '=', '-', ',', '.', '/', '+', '_' => c,
         else => null,
     };
+}
+
+/// Cmd+Q quits. Shift or Option keeps the key for bindings (Cmd+Shift+Q asks).
+fn commandQuits(chars: []const u8, flags: u64) bool {
+    if (!std.mem.eql(u8, chars, "q")) return false;
+    if (flags & (Flag.shift | Flag.option) != 0) return false;
+    return true;
+}
+
+test "cocoa: Cmd+Q quits; Cmd+Shift+Q does not" {
+    try std.testing.expect(commandQuits("q", Flag.command));
+    try std.testing.expect(commandQuits("q", Flag.command | Flag.control));
+    try std.testing.expect(!commandQuits("q", Flag.command | Flag.shift));
+    try std.testing.expect(!commandQuits("q", Flag.command | Flag.option));
+    try std.testing.expect(!commandQuits("w", Flag.command));
 }
 
 test "cocoa: key tables" {

@@ -98,6 +98,9 @@ config is reloaded.
 | `time_travel.retention` | `50` | How many snapshots to keep per pane, 1–10000 |
 | `time_travel.ai_summary` | `true` | One-line AI summary when a command changed files (`ai.enabled` must also be on) |
 | `time_travel.excludes` | `node_modules`, `.git/objects`, build dirs | Gitignore-style patterns. `{}` keeps everything a root `.gitignore` does not reject. Remove `.git/objects` to snapshot git objects |
+| `ghost_run.enabled` | `true` | Intercept Enter on a risky command and show a read-only impact preview ([GHOST_RUN.md](GHOST_RUN.md)) |
+| `ghost_run.ai_explain` | `true` | Add a plain-English explanation when `ai.enabled` is on. The preview itself stays local |
+| `ghost_run.patterns` | built-in | List of patterns. Assigning one, even `{}`, replaces the built-in list instead of extending it |
 | `ai.enabled` | `true` | AI command suggestions on/off (`--no-ai` overrides). See [AI.md](AI.md) |
 | `ai.endpoint` | `"http://localhost:11434/v1"` | Base URL (http/https). Ollama and other OpenAI-compatible servers use `/chat/completions`. `api.x.ai` and `us.api.x.ai` use `/responses` (Grok 4.7) |
 | `ai.model` | `"qwen2.5-coder:0.5b"` | Model name (`grok-4.7` on xAI) |
@@ -110,11 +113,21 @@ config is reloaded.
 | `ai.history` | `5` | Previous commands (with exit codes) sent as context, 0–32 |
 | `ai.output_lines` | `20` | Lines of recent output sent as context, 0–200 |
 | `ai.accept_key` | `"tab"` | Chord that accepts the ghost text |
+| `ai.ask.enabled` | `true` | Ask the Output on/off (`Ctrl+Shift+Q`, `Cmd+Shift+Q` on macOS). See [AI.md](AI.md) |
+| `ai.ask.max_lines` | `200` | Lines of that region sent to the model (the tail), 1–4000 |
+| `muscle_memory.enabled` | `true` | Notice repeated command sequences and offer to save them as shortcuts. See [MUSCLE_MEMORY.md](MUSCLE_MEMORY.md) |
+| `muscle_memory.min_repeats` | `3` | How many times the same sequence must run in one project before it is offered, 2–50 |
+| `muscle_memory.max_len` | `5` | Longest sequence to notice, in commands, 2–8 |
 | `ssh.enabled` | `true` | Built-in SSH client (`--ssh`, Ctrl+Shift+S). See [SSH.md](SSH.md) |
 | `ssh.config_file` | `"~/.ssh/config"` | OpenSSH config to read Host aliases from (`""` = none) |
 | `ssh.keepalive_s` | `30` | Default keepalive interval, 0–3600 (0 = off); profiles can override |
 | `ssh.known_hosts` | `"~/.ssh/known_hosts"` | Host keys file (shared with OpenSSH; appended to, never rewritten) |
 | `status_bar.enabled` | `true` | A one-row status bar under the grid for plugin segments (the bundled YouNeeK Time clock uses it). Ctrl+Shift+B (`toggle_status_bar`) toggles it |
+| `share.enabled` | `true` | Host a Shared Haunting of the focused pane. `false` refuses to host; `--join` still works ([SHARING.md](SHARING.md)) |
+| `share.bind` | `"0.0.0.0"` | IPv4 address the host listens on |
+| `share.port` | `0` | Listen port, 0–65535. `0` picks a free port |
+| `share.advertise` | `""` | Host written into the invite. `""` detects a LAN IPv4 (no NAT traversal) |
+| `share.relay` | `""` | `""` is direct TCP. Or `host:port` / `tcp://host:port` for the optional splice ([SHARING.md](SHARING.md#relay)) |
 | `tabs.bar` | `"auto"` | Tab bar: `"auto"` (only with 2+ tabs), `"top"`, `"bottom"`, `"hidden"`. `toggle_tab_bar` flips it. See [TABS.md](TABS.md) |
 | `tabs.confirm_close` | `true` | Ask before closing a pane / tab / the window while a program (not just the shell) runs in it |
 | `tabs.dim_inactive` | `0` | 0–0.9: fade the text of panes without the focus (0 = off) |
@@ -134,8 +147,11 @@ Actions: `copy`, `paste`, `paste_selection`, `search`, `scroll_page_up`,
 `scroll_bottom`, `zoom_in`, `zoom_out`, `zoom_reset`, `select_all`,
 `clear_selection`, `reload_config` (default Ctrl+Shift+R), `ai_accept` (Tab, only
 while a suggestion shows), `ai_dismiss` (Esc, likewise), `ai_next` / `ai_prev`
-(Alt+] / Alt+[), `ai_explain` (Ctrl+Shift+A), `ssh_palette` (Ctrl+Shift+S),
+(Alt+] / Alt+[), `ai_explain` (Ctrl+Shift+A), `ai_ask` (Ctrl+Shift+Q; Cmd+Shift+Q on macOS, Cmd+Q still quits), `ssh_palette` (Ctrl+Shift+S),
 `command_palette` (Ctrl+Shift+P), `toggle_status_bar` (Ctrl+Shift+B). `select_all` is Ctrl+Shift+Alt+A.
+Sharing ([SHARING.md](SHARING.md)): `share_pane` (Ctrl+Shift+H), `share_grant`
+(Ctrl+Shift+G), `share_kick` (F12), `share_stop` (Ctrl+Shift+Alt+H), `share_join`
+(Ctrl+Shift+J).
 
 Tabs and panes ([TABS.md](TABS.md)): `new_tab` (Ctrl+Shift+T), `close_tab`
 (Ctrl+Shift+Alt+W), `next_tab` / `prev_tab` (Ctrl+PgDn / Ctrl+PgUp, Ctrl+Tab /

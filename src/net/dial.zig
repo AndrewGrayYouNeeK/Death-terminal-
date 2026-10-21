@@ -39,7 +39,7 @@ pub const CancelFn = struct {
     ctx: *anyopaque,
     f: *const fn (*anyopaque) bool,
 
-    fn check(self: ?CancelFn) bool {
+    pub fn check(self: ?CancelFn) bool {
         const c = self orelse return false;
         return c.f(c.ctx);
     }

@@ -71,6 +71,8 @@ pub const Action = enum {
     ai_prev,
     /// Ask the AI to explain (and fix) the last failed command.
     ai_explain,
+    /// Ask a question about the last command's output, the selection, or the screen.
+    ai_ask,
     /// SSH palette: profiles (open in a new window), and this session's
     /// forwards (toggle) and reconnect.
     ssh_palette,
@@ -117,6 +119,12 @@ pub const Action = enum {
     /// A plugin keybinding (ActionEvent.arg = the binding's id). Not
     /// bindable from config.
     plugin_binding,
+    /// Shared Haunting (docs/SHARING.md).
+    share_pane,
+    share_grant,
+    share_kick,
+    share_stop,
+    share_join,
 
     /// goto_tab_N -> N-1.
     pub fn gotoIndex(self: Action) ?usize {
@@ -146,6 +154,7 @@ pub const Action = enum {
             .clear_selection => "Clear selection",
             .reload_config => "Reload config",
             .ai_explain => "AI: explain the last failed command",
+            .ai_ask => "AI: ask about the output",
             .ssh_palette => "SSH: profiles and forwards",
             .toggle_status_bar => "Toggle status bar",
             .new_tab => "Tabs: new tab",
@@ -172,6 +181,11 @@ pub const Action = enum {
             .zoom_pane => "Panes: zoom (toggle)",
             .equalize_panes => "Panes: equalize sizes",
             .time_travel => "Time Travel: rewind the working tree",
+            .share_pane => "Share: share this pane",
+            .share_grant => "Share: grant or revoke guest control",
+            .share_kick => "Share: kick the guest",
+            .share_stop => "Share: stop sharing",
+            .share_join => "Share: join a haunting",
             // Listed as "Go to tab N: <title>" entries instead.
             .goto_tab_1, .goto_tab_2, .goto_tab_3, .goto_tab_4, .goto_tab_5, .goto_tab_6, .goto_tab_7, .goto_tab_8, .goto_tab_9 => null,
             .none, .ai_accept, .ai_dismiss, .ai_next, .ai_prev, .command_palette, .plugin_binding => null,
@@ -349,6 +363,7 @@ pub const Bindings = struct {
         "alt+bracketright=ai_next",
         "alt+bracketleft=ai_prev",
         "ctrl+shift+a=ai_explain",
+        "ctrl+shift+q=ai_ask",
         "ctrl+shift+s=ssh_palette",
         "ctrl+shift+p=command_palette",
         "ctrl+shift+b=toggle_status_bar",
@@ -387,6 +402,11 @@ pub const Bindings = struct {
         "alt+shift+down=resize_down",
         "ctrl+shift+z=zoom_pane",
         "ctrl+shift+alt+e=equalize_panes",
+        "ctrl+shift+h=share_pane",
+        "ctrl+shift+g=share_grant",
+        "f12=share_kick",
+        "ctrl+shift+alt+h=share_stop",
+        "ctrl+shift+j=share_join",
     };
 
     pub fn defaults() Bindings {
@@ -629,6 +649,8 @@ test "default bindings and overrides" {
     var b = Bindings.defaults();
     try std.testing.expectEqual(Action.new_tab, b.match('t', .{ .ctrl = true, .shift = true }).?);
     try std.testing.expectEqual(Action.time_travel, b.match('t', .{ .ctrl = true, .alt = true }).?);
+    try std.testing.expectEqual(Action.ai_ask, b.match('q', .{ .ctrl = true, .shift = true }).?);
+    try std.testing.expectEqual(Action.ai_ask, b.match('Q', .{ .ctrl = true, .shift = true }).?);
     try std.testing.expectEqual(Action.copy, b.match('C', .{ .ctrl = true, .shift = true }).?);
     try std.testing.expectEqual(Action.copy, b.match('c', .{ .ctrl = true, .shift = true }).?);
     try std.testing.expect(b.match('c', .{ .ctrl = true }) == null); // plain Ctrl+C goes to the shell

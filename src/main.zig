@@ -12,6 +12,7 @@ const config = @import("config/config.zig");
 const event_loop = @import("app/event_loop.zig");
 const plugin_registry = @import("plugins/registry.zig");
 const spawn = @import("app/spawn.zig");
+const share = @import("share.zig");
 
 const VERSION = @import("build_options").version;
 
@@ -55,6 +56,17 @@ pub fn main() !void {
             };
             try std.io.getStdOut().writeAll(shell_inject.script(sh));
             return;
+        }
+    }
+
+    // `--share-relay [host:]port`: rendezvous only, no window.
+    for (args[1..], 1..) |a, i| {
+        if (std.mem.eql(u8, a, "--share-relay")) {
+            const spec = if (i + 1 < args.len) args[i + 1] else "";
+            std.process.exit(share.relay.serveUntilSignal(spec));
+        }
+        if (std.mem.startsWith(u8, a, "--share-relay=")) {
+            std.process.exit(share.relay.serveUntilSignal(a["--share-relay=".len..]));
         }
     }
 
@@ -139,6 +151,7 @@ pub fn main() !void {
         .ssh_remote = ssh_display,
         .spawn_ctx = spawn_ctx,
         .startup_layout = use_layout,
+        .join_code = joinArg(args),
     };
     try loop.run(&vulkan_renderer, &term, &lua);
 }
@@ -195,6 +208,14 @@ fn sshCtl(args: []const []const u8) u8 {
     };
     std.io.getStdOut().writeAll(r) catch {};
     return if (std.mem.startsWith(u8, r, "error")) 1 else 0;
+}
+
+fn joinArg(args: []const []const u8) ?[]const u8 {
+    for (args[1..], 1..) |a, i| {
+        if (std.mem.eql(u8, a, "--join") and i + 1 < args.len) return args[i + 1];
+        if (std.mem.startsWith(u8, a, "--join=")) return a["--join=".len..];
+    }
+    return null;
 }
 
 fn sshArg(args: []const []const u8) ?[]const u8 {
@@ -259,6 +280,8 @@ fn printHelp() !void {
         \\    --ssh-session <target> [-L|-R|-D spec]...  Run the SSH client in this terminal
         \\    --ssh-ctl <pid> <cmd>   Control a running session: status, list, toggle <n>,
         \\                     on <n>, off <n>, add <spec>, reconnect
+        \\    --join <code>    Watch another terminal's pane (invite code or deathterminal://join/ link)
+        \\    --share-relay <host:port|port>  Run the optional rendezvous (see docs/SHARING.md)
         \\    --plugins list | enable <name> | disable <name>
         \\                     Show installed plugins (and their permissions), or switch
         \\                     one on/off; see docs/PLUGINS.md
@@ -279,6 +302,7 @@ fn printHelp() !void {
         \\
         \\FEATURES:
         \\    • AI command suggestions (OpenAI-compatible, local Ollama by default)
+        \\    • Ask the Output (Ctrl+Shift+Q): question about the last command, selection, or screen
         \\    • Built-in SSH (libssh2): profiles, ProxyJump, -L/-R/-D forwards (Ctrl+Shift+S)
         \\    • Vulkan-accelerated rendering
         \\    • Lua plugins: hooks, command palette (Ctrl+Shift+P), status bar, themes
@@ -329,6 +353,7 @@ test {
     _ = @import("app/tabs.zig");
     _ = @import("app/spawn.zig");
     _ = @import("app/session.zig");
+    _ = @import("muscle/session.zig");
     _ = @import("plugins/permissions.zig");
     _ = @import("plugins/value.zig");
     _ = @import("plugins/manifest.zig");
@@ -359,6 +384,12 @@ test {
     _ = @import("ai/engine.zig");
     _ = @import("app/ai_controller.zig");
     _ = @import("app/shell_inject.zig");
+    _ = @import("ghost/match.zig");
+    _ = @import("ghost/expand.zig");
+    _ = @import("ghost/impact.zig");
+    _ = @import("ghost/hold.zig");
+    _ = @import("ghost/explain.zig");
+    _ = @import("ghost/time_travel.zig");
     // The built-in SSH client is Linux-only.
     if (builtin.os.tag == .linux) {
         _ = @import("ssh/forward.zig");
@@ -373,6 +404,8 @@ test {
         _ = @import("ssh/client.zig");
     }
     _ = @import("scripting/lua_engine.zig");
+    _ = @import("share.zig");
+    _ = @import("app/share_ctrl.zig");
 }
 
 test "basic functionality" {

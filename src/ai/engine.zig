@@ -7,7 +7,7 @@
 //!
 //! When the endpoint is unreachable the engine marks itself offline and
 //! stops trying suggestion requests for a while (5 s, doubling to 60 s);
-//! explicit requests (explain) always try. Errors never surface as
+//! explicit requests (explain, ask, Ghost Run, summaries) always try. Errors never surface as
 //! dialogs: the UI shows a small status tag instead.
 
 const std = @import("std");
@@ -16,7 +16,7 @@ const io = @import("../platform/io.zig");
 const posix = std.posix;
 const openai = @import("openai.zig");
 
-pub const Kind = enum { suggest, explain, summarize };
+pub const Kind = enum { suggest, explain, ask, ghost_explain, summarize };
 
 pub const Status = enum(u8) {
     /// Nothing has failed (or the last request worked).

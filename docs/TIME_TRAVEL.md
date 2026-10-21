@@ -4,6 +4,8 @@ Time Travel remembers what each command did to its working directory, and can pu
 
 It runs in the GUI. Headless mode does not take snapshots. A remote SSH pane is skipped: the path on this machine is not the directory the remote command changed.
 
+The GUI registers this store as Ghost Run's snapshot provider while the window is open. Pressing `t` on a Ghost Run preview captures the working tree and does not run the command until that capture succeeds. Headless mode leaves the provider unregistered, so `t` stays hidden there.
+
 ## What gets saved
 
 When the shell emits OSC 133 C (command start), the terminal snapshots the current directory before it parses the rest of that output. The directory comes from OSC 7 (`file://…`). Until a prompt has reported one, the command is recorded as `cwd unknown` and nothing is walked.

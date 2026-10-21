@@ -41,6 +41,9 @@ pub const Hub = struct {
     open: bool = false,
     dirty: bool = false,
     next_id: u64 = 1,
+    /// Borrowed by `snapshotFor` until the next call.
+    borrow_id: [96]u8 = undefined,
+    borrow_fail: [96]u8 = undefined,
 
     pub fn open(a: std.mem.Allocator, cfg: *const config.Config) Hub {
         const dir = dataDir(a) catch return blank(a, cfg);
@@ -87,6 +90,58 @@ pub const Hub = struct {
 
     pub fn isOpen(self: *const Hub) bool {
         return self.open;
+    }
+
+    /// Ghost Run shows `t` when a snapshot can be taken. This does not capture.
+    pub fn snapshotReady(self: *const Hub) bool {
+        return self.enabled and self.store != null;
+    }
+
+    /// Result of a Ghost Run snapshot. `ok` and `failed` text is borrowed
+    /// from this hub until the next `snapshotFor`.
+    pub const ManualSnap = union(enum) {
+        ok: []const u8,
+        unavailable,
+        failed: []const u8,
+    };
+
+    /// Snapshot `cwd` before `command` runs. Does not run `command`.
+    pub fn snapshotFor(self: *Hub, cwd: []const u8, command: []const u8, pane: u32) ManualSnap {
+        if (!self.snapshotReady()) return .unavailable;
+        if (cwd.len == 0 or !std.fs.path.isAbsolute(cwd)) return .unavailable;
+        const tl = self.timeline(pane) catch return self.borrowFail("out of memory");
+        const id = self.next_id;
+        self.next_id += 1;
+        const st: ?*Store = if (self.store) |*p| p else null;
+        _ = tl.begin(st, id, .{
+            .enabled = true,
+            .remote = false,
+            .max_bytes = self.max_bytes,
+            .excludes = self.excludeSlice(),
+            .cwd = cwd,
+            .command = command,
+            .now_ms = std.time.milliTimestamp(),
+        }) catch return self.borrowFail("out of memory");
+        tl.trim(self.retention);
+        self.gc();
+        const entry = tl.find(id) orelse return self.borrowFail("snapshot failed");
+        if (entry.snap_id.len == 0) {
+            const why = if (entry.skip.len > 0) entry.skip else "snapshot failed";
+            return self.borrowFail(why);
+        }
+        return self.borrowOk(entry.snap_id);
+    }
+
+    fn borrowOk(self: *Hub, text: []const u8) ManualSnap {
+        const n = @min(text.len, self.borrow_id.len);
+        @memcpy(self.borrow_id[0..n], text[0..n]);
+        return .{ .ok = self.borrow_id[0..n] };
+    }
+
+    fn borrowFail(self: *Hub, text: []const u8) ManualSnap {
+        const n = @min(text.len, self.borrow_fail.len);
+        @memcpy(self.borrow_fail[0..n], text[0..n]);
+        return .{ .failed = self.borrow_fail[0..n] };
     }
 
     pub fn takeDirty(self: *Hub) bool {
@@ -357,4 +412,37 @@ test "hub records a diff and rewinds through the store" {
     defer a.free(back);
     try std.testing.expectEqualStrings("bye", back);
     try std.testing.expectEqual(@as(usize, exclude.default_patterns.len), hub.excludes.items.len);
+}
+
+test "hub snapshotFor copies the tree and does not run the command" {
+    const a = std.testing.allocator;
+    var cfg = config.Config.init(a);
+    defer cfg.deinit();
+    cfg.tt_ai_summary = false;
+    var parent = std.testing.tmpDir(.{});
+    defer parent.cleanup();
+    try parent.dir.makeDir("work");
+    try parent.dir.writeFile(.{ .sub_path = "work/a.txt", .data = "hello" });
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = try parent.dir.realpath(".", &root_buf);
+    var work_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var store_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const work = try std.fmt.bufPrint(&work_buf, "{s}/work", .{root});
+    const store_path = try std.fmt.bufPrint(&store_buf, "{s}/tt", .{root});
+    var hub = Hub.openAt(a, &cfg, store_path);
+    defer hub.deinit();
+    try std.testing.expect(hub.snapshotReady());
+    const snap = hub.snapshotFor(work, "rm -rf x", 1);
+    const id = switch (snap) {
+        .ok => |got| got,
+        .unavailable, .failed => return error.ExpectedSnapshot,
+    };
+    try std.testing.expect(id.len > 0);
+    const body = try parent.dir.readFileAlloc(a, "work/a.txt", 16);
+    defer a.free(body);
+    try std.testing.expectEqualStrings("hello", body);
+    try std.testing.expect(hub.snapshotFor("", "rm -rf x", 1) == .unavailable);
+    hub.enabled = false;
+    try std.testing.expect(!hub.snapshotReady());
+    try std.testing.expect(hub.snapshotFor(work, "rm -rf x", 1) == .unavailable);
 }

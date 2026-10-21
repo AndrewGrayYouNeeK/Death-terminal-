@@ -12,6 +12,8 @@ const ui_mod = @import("ui.zig");
 const engine_mod = @import("../ai/engine.zig");
 const openai = @import("../ai/openai.zig");
 const context = @import("../ai/context.zig");
+const ask = @import("../ai/ask.zig");
+const ghost_explain = @import("../ghost/explain.zig");
 const si = terminal.shell_integration;
 
 const Terminal = terminal.Terminal;
@@ -30,6 +32,9 @@ pub const Settings = struct {
     explain_max_tokens: u16 = 400,
     history: u16 = 5,
     output_lines: u16 = 20,
+    /// Ask the Output (Ctrl+Shift+Q). `ask_max_lines` is the tail sent.
+    ask_enabled: bool = true,
+    ask_max_lines: u16 = 200,
     /// Shell program for the context ("" = $SHELL).
     shell: []const u8 = "",
     /// "user@host" when the terminal runs an SSH session (see context.zig).
@@ -48,6 +53,8 @@ pub const Settings = struct {
             .explain_max_tokens = cfg.ai_explain_max_tokens,
             .history = cfg.ai_history,
             .output_lines = cfg.ai_output_lines,
+            .ask_enabled = cfg.ai_ask_enabled,
+            .ask_max_lines = cfg.ai_ask_max_lines,
             .shell = cfg.shell_program,
         };
     }
@@ -72,6 +79,18 @@ pub const Controller = struct {
     suggest_anchor: ?si.Mark = null,
     explain_gen: u64 = 0,
     explain_title: std.ArrayList(u8),
+    ask_gen: u64 = 0,
+    ask_title: std.ArrayList(u8),
+    ask_region: ?ask.Region = null,
+    /// True while the ask bar is up, so a debounced suggestion cannot replace the request.
+    ask_hold: bool = false,
+    ask_active: bool = false,
+    /// Ghost Run explanation. `onWake` stores it here so `take` cannot
+    /// drop it before the overlay reads it. Not shown as the error notice.
+    ghost_gen: u64 = 0,
+    ghost_text: std.ArrayList(u8),
+    ghost_done: bool = false,
+    ghost_failed: bool = false,
     shown_status: ?engine_mod.Status = null,
     /// Plugins' `ai_suggestion` hook (set by the event loop).
     filter: ?Filter = null,
@@ -114,6 +133,8 @@ pub const Controller = struct {
             .settings = settings,
             .suggest_input = std.ArrayList(u8).init(allocator),
             .explain_title = std.ArrayList(u8).init(allocator),
+            .ask_title = std.ArrayList(u8).init(allocator),
+            .ghost_text = std.ArrayList(u8).init(allocator),
         };
         self.startEngine();
         return self;
@@ -123,6 +144,9 @@ pub const Controller = struct {
         if (self.engine) |e| e.deinit();
         self.suggest_input.deinit();
         self.explain_title.deinit();
+        self.ask_title.deinit();
+        self.freeAskRegion();
+        self.ghost_text.deinit();
     }
 
     fn startEngine(self: *Controller) void {
@@ -139,13 +163,22 @@ pub const Controller = struct {
         const was = self.settings;
         self.settings = settings;
         if (!settings.enabled) {
+            self.ask_hold = false;
+            self.ask_active = false;
+            self.ask_gen = 0;
+            self.freeAskRegion();
+            ui.closeAsk();
             if (self.engine) |e| e.deinit();
             self.engine = null;
             ui.clearGhost();
             ui.setAiStatus(null);
             self.shown_status = null;
+            self.ghost_gen = 0;
+            self.ghost_done = true;
+            self.ghost_failed = true;
             return;
         }
+        if (!settings.ask_enabled and ui.askIsOpen()) self.cancelAsk(ui);
         if (self.engine) |e| {
             if (!std.mem.eql(u8, was.endpoint, settings.endpoint) or !std.mem.eql(u8, was.model, settings.model) or
                 !std.mem.eql(u8, was.api_key_env, settings.api_key_env) or !std.mem.eql(u8, was.reasoning, settings.reasoning) or
@@ -170,6 +203,7 @@ pub const Controller = struct {
 
     /// The user sent `bytes` (typed text) to the shell.
     pub fn onTyped(self: *Controller, ui: *Ui, term: *const Terminal, bytes: []const u8, now_ms: i64) void {
+        if (ui.askIsOpen()) return;
         if (self.engine == null) return;
         // Typing along the ghost text keeps it; no new request needed.
         if (ui.ghostTyped(term, bytes)) {
@@ -182,6 +216,7 @@ pub const Controller = struct {
     /// Any other key sent to the shell (arrows, backspace, Enter, ...):
     /// the old suggestion is stale.
     pub fn onKeystroke(self: *Controller, ui: *Ui, now_ms: i64) void {
+        if (ui.askIsOpen()) return;
         const e = self.engine orelse return;
         ui.clearGhost();
         if (self.suggest_anchor != null) e.cancelAll();
@@ -236,6 +271,7 @@ pub const Controller = struct {
     }
 
     fn requestSuggestion(self: *Controller, term: *const Terminal) !void {
+        if (self.ask_hold) return;
         const e = self.engine orelse return;
         const input = (try term.currentInput(self.allocator)) orelse return;
         defer self.allocator.free(input);
@@ -263,6 +299,7 @@ pub const Controller = struct {
     /// "Explain/fix last error": ask about the most recent failed command
     /// (or, without shell integration, the visible output).
     pub fn explain(self: *Controller, ui: *Ui, term: *const Terminal, now_ms: i64) !void {
+        if (ui.askIsOpen()) self.cancelAsk(ui);
         const e = self.engine orelse {
             try ui.setNotice(.info, "AI is disabled (config.ai.enabled = false or --no-ai)", &.{}, 4000, now_ms);
             return;
@@ -308,6 +345,40 @@ pub const Controller = struct {
         try ui.setAiNotice(self.explain_title.items, "thinking\u{2026}", now_ms);
     }
 
+    /// Plain-English Ghost Run note. Does not use the "explain last error" notice.
+    /// The command has not run. `impact` is the local read-only estimate.
+    pub fn requestGhostExplain(self: *Controller, command: []const u8, impact: []const u8, cwd: []const u8) !void {
+        const e = self.engine orelse return;
+        self.due_ms = null;
+        self.suggest_anchor = null;
+        var arena_state = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_state.deinit();
+        const msgs = try ghost_explain.messages(arena_state.allocator(), command, impact, cwd);
+        self.ghost_text.clearRetainingCapacity();
+        self.ghost_done = false;
+        self.ghost_failed = false;
+        self.ghost_gen = try e.submit(.ghost_explain, msgs, self.settings.explain_max_tokens, 6);
+    }
+
+    pub fn cancelGhostExplain(self: *Controller) void {
+        if (self.ghost_gen == 0) return;
+        self.ghost_gen = 0;
+        self.ghost_done = false;
+        self.ghost_failed = false;
+        self.ghost_text.clearRetainingCapacity();
+        if (self.engine) |e| e.cancelAll();
+    }
+
+    pub const GhostExplain = struct {
+        text: []const u8,
+        done: bool,
+        failed: bool,
+    };
+
+    pub fn ghostExplainState(self: *const Controller) GhostExplain {
+        return .{ .text = self.ghost_text.items, .done = self.ghost_done, .failed = self.ghost_failed };
+    }
+
     /// The engine signalled: collect streamed text. Returns whether the
     /// UI changed.
     pub fn onWake(self: *Controller, ui: *Ui, term: *const Terminal, now_ms: i64) !bool {
@@ -315,27 +386,42 @@ pub const Controller = struct {
         var changed = false;
         while (try e.take(self.allocator)) |u| {
             defer self.allocator.free(u.text);
-            if (u.kind == .suggest and u.gen == self.suggest_gen) {
-                changed = try self.showSuggestion(ui, term, u) or changed;
-            } else if (u.kind == .explain and u.gen == self.explain_gen) {
-                // Only while our answer is still the notice on screen.
-                if (ui.notice == null or ui.notice.?.kind != .ai) continue;
-                if (u.failed) |_| {
-                    var buf: [96]u8 = undefined;
-                    const why = e.statusText(&buf);
-                    var line_buf: [160]u8 = undefined;
-                    const line = std.fmt.bufPrint(&line_buf, "The AI endpoint is not available ({s}). Check config.ai.endpoint / that Ollama is running.", .{if (why.len > 0) why else "error"}) catch "The AI endpoint is not available.";
-                    try ui.setAiNotice(self.explain_title.items, line, now_ms);
-                } else {
-                    const body = if (u.done) u.text else try std.fmt.allocPrint(self.allocator, "{s}\u{2026}", .{u.text});
-                    defer if (!u.done) self.allocator.free(body);
-                    try ui.setAiNotice(self.explain_title.items, if (body.len > 0) body else "(no answer)", now_ms);
-                }
-                changed = true;
-            } else if (u.kind == .summarize and u.gen == self.summary_gen) {
-                if (self.on_summary) |cb| if (self.summary_ctx) |ctx| {
-                    cb(ctx, self.summary_for, u.text, u.done, u.failed != null);
-                };
+            switch (u.kind) {
+                .suggest => if (u.gen == self.suggest_gen) {
+                    changed = try self.showSuggestion(ui, term, u) or changed;
+                },
+                .explain => if (u.gen == self.explain_gen) {
+                    // Only while our answer is still the notice on screen.
+                    if (ui.askIsOpen()) continue;
+                    if (ui.notice == null or ui.notice.?.kind != .ai) continue;
+                    if (u.failed) |_| {
+                        var buf: [96]u8 = undefined;
+                        const why = e.statusText(&buf);
+                        var line_buf: [160]u8 = undefined;
+                        const line = std.fmt.bufPrint(&line_buf, "The AI endpoint is not available ({s}). Check config.ai.endpoint / that Ollama is running.", .{if (why.len > 0) why else "error"}) catch "The AI endpoint is not available.";
+                        try ui.setAiNotice(self.explain_title.items, line, now_ms);
+                    } else {
+                        const body = if (u.done) u.text else try std.fmt.allocPrint(self.allocator, "{s}\u{2026}", .{u.text});
+                        defer if (!u.done) self.allocator.free(body);
+                        try ui.setAiNotice(self.explain_title.items, if (body.len > 0) body else "(no answer)", now_ms);
+                    }
+                    changed = true;
+                },
+                .ask => if (u.gen == self.ask_gen) {
+                    changed = try self.onAskUpdate(ui, term, u, now_ms) or changed;
+                },
+                .ghost_explain => if (u.gen == self.ghost_gen and self.ghost_gen != 0) {
+                    self.ghost_text.clearRetainingCapacity();
+                    self.ghost_text.appendSlice(u.text) catch {};
+                    self.ghost_done = u.done;
+                    self.ghost_failed = u.failed != null;
+                    changed = true;
+                },
+                .summarize => if (u.gen == self.summary_gen) {
+                    if (self.on_summary) |cb| if (self.summary_ctx) |ctx| {
+                        cb(ctx, self.summary_for, u.text, u.done, u.failed != null);
+                    };
+                },
             }
         }
         changed = self.syncStatus(ui) or changed;
@@ -411,6 +497,127 @@ pub const Controller = struct {
         if (kept == list.len) return list;
         const out = try self.allocator.realloc(list, kept);
         return out;
+    }
+
+    /// Ctrl+Shift+Q. A second press closes the bar.
+    pub fn openAsk(self: *Controller, ui: *Ui, term: *const Terminal, now_ms: i64) !void {
+        if (ui.askIsOpen()) {
+            self.cancelAsk(ui);
+            return;
+        }
+        if (!self.settings.enabled or self.engine == null) {
+            try ui.setNotice(.info, "AI is disabled (config.ai.enabled = false or --no-ai)", &.{}, 4000, now_ms);
+            return;
+        }
+        if (!self.settings.ask_enabled) {
+            try ui.setNotice(.info, "Ask the output is off (config.ai.ask.enabled = false)", &.{}, 4000, now_ms);
+            return;
+        }
+        if (ui.notice != null and ui.notice.?.kind == .ai) ui.clearNotice();
+        self.due_ms = null;
+        try ui.openAsk(ask.classify(term, ui.sel).label());
+        self.ask_hold = true;
+    }
+
+    pub fn submitAsk(self: *Controller, ui: *Ui, term: *const Terminal, now_ms: i64) !void {
+        const e = self.engine orelse return;
+        const question = ui.askQuery();
+        if (std.mem.trim(u8, question, " \t").len == 0) return;
+        self.freeAskRegion();
+        var region = try self.extractAsk(ui, term);
+        errdefer region.deinit();
+        var arena_state = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_state.deinit();
+        const msgs = try ask.messages(arena_state.allocator(), question, &region);
+        ui.askMarkWaiting();
+        self.ask_region = region;
+        self.ask_gen = e.submit(.ask, msgs, self.settings.explain_max_tokens, 0) catch |err| {
+            self.freeAskRegion();
+            ui.askMarkEdit();
+            return err;
+        };
+        self.ask_active = true;
+        self.ask_hold = true;
+        self.suggest_anchor = null;
+        ui.clearGhost();
+        try self.setAskTitle(question);
+        try ui.setAiNotice(self.ask_title.items, "thinking\u{2026}", now_ms);
+    }
+
+    pub fn cancelAsk(self: *Controller, ui: *Ui) void {
+        self.ask_hold = false;
+        self.ask_active = false;
+        self.freeAskRegion();
+        if (self.ask_gen != 0) {
+            if (self.engine) |eng| eng.cancelAll();
+            self.ask_gen = 0;
+        }
+        ui.closeAsk();
+        if (ui.notice) |n| if (n.kind == .ai) ui.clearNotice();
+    }
+
+    fn extractAsk(self: *const Controller, ui: *Ui, term: *const Terminal) !ask.Region {
+        const rows: u16 = if (ui.overlayActive() and term.rows > 1) term.rows - 1 else term.rows;
+        return ask.extract(self.allocator, term, .{
+            .selection = ui.sel,
+            .word_chars = ui.opts.word_chars,
+            .view_top = ui.viewTop(term),
+            .view_rows = rows,
+            .max_lines = self.settings.ask_max_lines,
+        });
+    }
+
+    fn setAskTitle(self: *Controller, question: []const u8) !void {
+        const q = std.mem.trim(u8, question, " \t");
+        self.ask_title.clearRetainingCapacity();
+        try self.ask_title.appendSlice("Ask: ");
+        const n = @min(q.len, 60);
+        try self.ask_title.appendSlice(q[0..n]);
+        if (q.len > 60) try self.ask_title.appendSlice("\u{2026}");
+    }
+
+    fn freeAskRegion(self: *Controller) void {
+        if (self.ask_region) |*r| r.deinit();
+        self.ask_region = null;
+    }
+
+    fn onAskUpdate(self: *Controller, ui: *Ui, term: *const Terminal, u: engine_mod.Update, now_ms: i64) !bool {
+        if (!ui.askIsOpen()) return false;
+        const eng = self.engine orelse return false;
+        if (u.failed) |_| {
+            var buf: [96]u8 = undefined;
+            const why = eng.statusText(&buf);
+            var line_buf: [180]u8 = undefined;
+            const line = std.fmt.bufPrint(&line_buf, "AI offline ({s}). Check config.ai.endpoint, or that Ollama is running.", .{if (why.len > 0) why else "error"}) catch "AI offline.";
+            try ui.setAiNotice(self.ask_title.items, line, now_ms);
+            ui.askMarkOffline();
+            self.ask_active = false;
+            self.freeAskRegion();
+            return true;
+        }
+        var parsed = try ask.parseReply(self.allocator, u.text);
+        defer parsed.deinit();
+        if (!u.done) {
+            const body = if (parsed.answer.len > 0) parsed.answer else "thinking\u{2026}";
+            try ui.setAiNotice(self.ask_title.items, body, now_ms);
+            return true;
+        }
+        const region = self.ask_region;
+        var note_buf: [320]u8 = undefined;
+        const note: []const u8 = if (region) |*r| ask.formatNote(&note_buf, r) else "";
+        var body = std.ArrayList(u8).init(self.allocator);
+        defer body.deinit();
+        try body.appendSlice(if (parsed.answer.len > 0) parsed.answer else "(no answer)");
+        if (note.len > 0) try body.writer().print("\n({s})", .{note});
+        if (region) |*r| {
+            const matches = try ask.mapHighlights(self.allocator, r.lines, parsed.refs);
+            defer self.allocator.free(matches);
+            ui.setAskMatches(term, matches);
+        } else ui.askMarkOffline();
+        try ui.setAiNotice(self.ask_title.items, body.items, now_ms);
+        self.ask_active = false;
+        self.freeAskRegion();
+        return true;
     }
 
     fn syncStatus(self: *Controller, ui: *Ui) bool {
@@ -605,6 +812,98 @@ test "controller: explain last error shows the answer in an overlay" {
     // Esc closes it.
     try t.expect(try ui.handleKey(&term, .escape, .{}));
     try t.expect(ui.notice == null);
+}
+
+fn askAnswered(ui: *Ui) bool {
+    if (!ui.ask.live or ui.ask.phase != .answer or ui.ask.offline) return false;
+    const n = ui.notice orelse return false;
+    if (n.kind != .ai or n.lines.items.len < 2) return false;
+    return std.mem.indexOf(u8, n.lines.items[1], "a.txt") != null;
+}
+
+fn askOffline(ui: *Ui) bool {
+    if (!ui.ask.live or !ui.ask.offline) return false;
+    const n = ui.notice orelse return false;
+    return std.mem.indexOf(u8, n.lines.items[n.lines.items.len - 1], "AI offline") != null;
+}
+
+test "controller: ask the output highlights the cited line" {
+    const replies = [_]mock.Reply{.{ .chunks = mock.sse(&.{"The file is a.txt\\nREFS:\\nL1:a.txt"}) }};
+    const srv = try mock.MockServer.start(t.allocator, &replies);
+    defer srv.deinit();
+    var url_buf: [64]u8 = undefined;
+    var term = try Terminal.initBuffer(t.allocator, 16, 70, 16);
+    defer term.deinit();
+    var ui = Ui.init(t.allocator, .{});
+    defer ui.deinit();
+    var c = Controller.init(t.allocator, .{ .endpoint = srv.url(&url_buf), .model = "m" });
+    defer c.deinit();
+    try term.processOutput("\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07a.txt\r\nclient_secret=xyz\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+    try c.openAsk(&ui, &term, 0);
+    try t.expect(ui.askIsOpen());
+    try t.expect(try ui.handleText(&term, "where is the empty file?"));
+    try t.expect(try ui.handleKey(&term, .enter, .{}));
+    try t.expect(ui.takeAskSubmit());
+    try c.submitAsk(&ui, &term, 0);
+    try waitFor(&c, &ui, &term, askAnswered);
+    const ms = ui.ask.matches orelse return error.TestUnexpectedResult;
+    try t.expectEqual(@as(usize, 1), ms.items.len);
+    try t.expectEqual(@as(u16, 0), ms.items[0].start);
+    try t.expectEqual(@as(u16, 4), ms.items[0].end);
+    var cells = std.ArrayList(terminal.Cell).init(t.allocator);
+    defer cells.deinit();
+    var marks = std.ArrayList(@import("../renderer/frame.zig").Mark).init(t.allocator);
+    defer marks.deinit();
+    _ = try ui.compose(&term, &cells, &marks);
+    var highlighted: usize = 0;
+    for (marks.items) |m| if (m == .current_match) {
+        highlighted += 1;
+    };
+    try t.expectEqual(@as(usize, 5), highlighted);
+    try t.expect(std.mem.indexOf(u8, srv.requests.items[0], "xyz") == null);
+    try t.expect(std.mem.indexOf(u8, srv.requests.items[0], "[REDACTED]") != null);
+    try t.expect(std.mem.indexOf(u8, srv.requests.items[0], "where is the empty file?") != null);
+    // Down jumps; Esc closes and cancels.
+    try t.expect(try ui.handleKey(&term, .escape, .{}));
+    try t.expect(ui.takeAskCancel());
+    c.cancelAsk(&ui);
+    try t.expect(!ui.askIsOpen());
+}
+
+test "controller: ask reports AI offline when the endpoint is down" {
+    const srv = try mock.MockServer.start(t.allocator, &.{});
+    var url_buf: [64]u8 = undefined;
+    const url = try t.allocator.dupe(u8, srv.url(&url_buf));
+    defer t.allocator.free(url);
+    srv.deinit();
+    var term = try Terminal.initBuffer(t.allocator, 8, 40, 8);
+    defer term.deinit();
+    var ui = Ui.init(t.allocator, .{});
+    defer ui.deinit();
+    var c = Controller.init(t.allocator, .{ .endpoint = url, .model = "m" });
+    defer c.deinit();
+    try term.processOutput("hello\r\n");
+    try c.openAsk(&ui, &term, 0);
+    try t.expect(try ui.handleText(&term, "what is this?"));
+    try t.expect(try ui.handleKey(&term, .enter, .{}));
+    try t.expect(ui.takeAskSubmit());
+    try c.submitAsk(&ui, &term, 0);
+    try waitFor(&c, &ui, &term, askOffline);
+    try t.expectEqualStrings("AI offline", ui.ai_status.?);
+    var buf: [80]u8 = undefined;
+    try t.expect(std.mem.indexOf(u8, ui.ask.barText(&buf), "AI offline") != null);
+}
+
+test "controller: ask stays closed when config.ai.ask.enabled is false" {
+    var term = try Terminal.initBuffer(t.allocator, 4, 20, 4);
+    defer term.deinit();
+    var ui = Ui.init(t.allocator, .{});
+    defer ui.deinit();
+    var c = Controller.init(t.allocator, .{ .ask_enabled = false });
+    defer c.deinit();
+    try c.openAsk(&ui, &term, 0);
+    try t.expect(!ui.askIsOpen());
+    try t.expect(std.mem.indexOf(u8, ui.notice.?.lines.items[0], "Ask the output is off") != null);
 }
 
 fn offlineTag(ui: *Ui) bool {

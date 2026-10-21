@@ -1663,7 +1663,7 @@ fn apiThemeCurrent(p: *Plugin, L: *State) error{LuaMsg}!c_int {
 pub const plugin_actions = [_]events.Action{
     .search,          .scroll_page_up,    .scroll_page_down, .scroll_line_up, .scroll_line_down,
     .scroll_top,      .scroll_bottom,     .zoom_in,          .zoom_out,       .zoom_reset,
-    .select_all,      .clear_selection,   .reload_config,    .ai_explain,     .ssh_palette,
+    .select_all,      .clear_selection,   .reload_config,    .ai_explain,     .ai_ask,         .ssh_palette,
     .command_palette, .toggle_status_bar,
     // Tabs and panes.
     .new_tab,          .close_tab,      .next_tab,

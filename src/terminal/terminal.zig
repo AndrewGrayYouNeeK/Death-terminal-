@@ -1888,6 +1888,7 @@ pub const Terminal = struct {
         };
         sh.pending = null;
         var output: []u8 = &.{};
+        const span = if (sh.output_start) |start| self.outputSpan(start) else null;
         if (self.validMark(sh.output_start)) |start| {
             if (self.textBetween(self.allocator, start, self.cursorMark(), true)) |t| {
                 const trimmed = std.mem.trim(u8, t, " \r\n");
@@ -1905,10 +1906,22 @@ pub const Terminal = struct {
             self.allocator.free(text);
             return;
         };
-        sh.pushCommand(text, exit_code, output);
+        sh.pushCommand(text, exit_code, output, span);
     }
 
-    fn validMark(self: *const Terminal, m: ?shell_integration.Mark) ?shell_integration.Mark {
+    /// Absolute lines from an OSC 133 `C` mark up to the cursor (the row
+    /// the cursor is on is excluded when the cursor is in column 0, so the
+    /// trailing newline is not an extra blank line).
+    pub fn outputSpan(self: *const Terminal, start: shell_integration.Mark) ?shell_integration.OutputSpan {
+        if (self.validMark(start) == null) return null;
+        const end_mark = self.cursorMark();
+        var end_line = end_mark.line;
+        if (end_mark.col == 0 and end_line > start.line) end_line -= 1;
+        if (end_line < start.line) return null;
+        return .{ .start = start.line, .end = end_line, .col = start.col, .gen = self.layout_gen };
+    }
+
+    pub fn validMark(self: *const Terminal, m: ?shell_integration.Mark) ?shell_integration.Mark {
         const mark = m orelse return null;
         if (mark.gen != self.layout_gen) return null;
         if (mark.line < self.historyTop()) return null;
