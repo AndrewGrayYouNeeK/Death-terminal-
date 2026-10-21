@@ -37,14 +37,15 @@ CLIPBOARD.
 
 | Keys | Action |
 |---|---|
-| Ctrl+Shift+C | `copy` selection to CLIPBOARD (with no selection it does nothing: it is never sent to the shell, so it can't act as Ctrl+C) |
-| Ctrl+Shift+V | `paste` CLIPBOARD |
+| Ctrl+Shift+C | `copy` selection to CLIPBOARD (with no selection it does nothing: it is never sent to the shell, so it can't act as Ctrl+C). On macOS, Cmd+C does this too |
+| Ctrl+Shift+V | `paste` CLIPBOARD. On macOS, Cmd+V pastes, including bracketed paste when the application asked for it (?2004) |
+| Cmd+A (macOS) | `select_all`. Linux and Windows stay on Ctrl+Shift+Alt+A |
 | Shift+Insert | `paste_selection` (PRIMARY) |
 | Ctrl+Shift+F | `search` |
 | Shift+PgUp / Shift+PgDn | `scroll_page_up` / `scroll_page_down` |
 | Shift+Home / Shift+End | `scroll_top` / `scroll_bottom` |
 | Ctrl+Shift+Up / Down | `scroll_line_up` / `scroll_line_down` |
-| Ctrl+Shift+Alt+A | `select_all` (was Ctrl+Shift+A before the AI milestone, which now explains the last error) |
+| Ctrl+Shift+Alt+A | `select_all` (was Ctrl+Shift+A before the AI milestone, which now explains the last error). On macOS, Cmd+A selects all; Cmd+Shift+A does too |
 | Ctrl+Shift+Q | `ai_ask`: ask about the selection, the last command's output, or the screen (Cmd+Shift+Q on macOS; Cmd+Q still quits). See [AI.md](AI.md) |
 | Ctrl+Shift+H | `share_pane` (macOS: Cmd+Shift+H; Cmd+H is Hide). See [SHARING.md](SHARING.md) |
 | Ctrl+= / Ctrl+- / Ctrl+0 | `zoom_in` / `zoom_out` / `zoom_reset` |

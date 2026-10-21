@@ -31,7 +31,18 @@ or the firewall.
 On macOS the first share listens on a new port. The system may ask to allow
 incoming connections. Allow them. If you deny the prompt, the guest times out
 or the connection is refused. The same prompt can appear for `deathterminal
---share`.
+--share`. A failed relay dial does not exit that process. Hosting stays on
+the LAN and the log prints the real reason (`share: relay failed (...);
+hosting on the LAN only`). An HTTP 403 from the edge is that kind of
+failure: the hostname answered, but a Cloudflare managed challenge is not
+the Worker, so the client cannot complete `wss://`. macOS loads trust
+anchors from the Security framework, then a PEM file, then the roots
+bundled in the binary. It does not read the system keychain file.
+
+Click the banner, or click the invite without dragging, to copy the whole
+invite again. Drag to highlight a slice. Double-click a word and
+triple-click a line. The highlight is the selection color. Cmd+C (Ctrl+Shift+C
+elsewhere) copies that slice.
 
 ## What is shared
 
