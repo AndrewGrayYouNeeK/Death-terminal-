@@ -107,6 +107,9 @@ config is reloaded.
 | `ai.accept_key` | `"tab"` | Chord that accepts the ghost text |
 | `ai.ask.enabled` | `true` | Ask the Output on/off (`Ctrl+Shift+Q`, `Cmd+Shift+Q` on macOS). See [AI.md](AI.md) |
 | `ai.ask.max_lines` | `200` | Lines of that region sent to the model (the tail), 1–4000 |
+| `muscle_memory.enabled` | `true` | Notice repeated command sequences and offer to save them as shortcuts. See [MUSCLE_MEMORY.md](MUSCLE_MEMORY.md) |
+| `muscle_memory.min_repeats` | `3` | How many times the same sequence must run in one project before it is offered, 2–50 |
+| `muscle_memory.max_len` | `5` | Longest sequence to notice, in commands, 2–8 |
 | `ssh.enabled` | `true` | Built-in SSH client (`--ssh`, Ctrl+Shift+S). See [SSH.md](SSH.md) |
 | `ssh.config_file` | `"~/.ssh/config"` | OpenSSH config to read Host aliases from (`""` = none) |
 | `ssh.keepalive_s` | `30` | Default keepalive interval, 0–3600 (0 = off); profiles can override |

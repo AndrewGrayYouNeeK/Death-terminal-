@@ -239,6 +239,12 @@ pub const Config = struct {
     shell_env: std.ArrayList([]const u8),
     /// Starting directory ("" = inherit; "~" is expanded).
     shell_cwd: []const u8 = "",
+    /// Offer a shortcut when the same command sequence repeats in one project.
+    muscle_enabled: bool = true,
+    /// How many times a sequence must repeat before it is offered.
+    muscle_min_repeats: u16 = 3,
+    /// Longest sequence to mine (commands).
+    muscle_max_len: u16 = 5,
 
     pub const Backend = enum { auto, x11, wayland, win32, cocoa };
 
