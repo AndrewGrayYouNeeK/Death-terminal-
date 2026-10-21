@@ -1,6 +1,6 @@
 //! OSC 133 shell-integration tracking.
 //!
-//! Shells that run Death Terminal's integration snippets (see
+//! Shells that run YouNeeK Death Terminal's integration snippets (see
 //! shell-integration/) mark their prompts with OSC 133:
 //!
 //!   ESC ] 133 ; A BEL   prompt starts

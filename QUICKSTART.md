@@ -1,6 +1,6 @@
 # Quick Start Guide
 
-Get DeathTerminal up and running in minutes!
+Get YouNeeK Death Terminal up and running in minutes!
 
 ## Prerequisites Check
 
@@ -161,13 +161,13 @@ export VK_LAYER_PATH=$VULKAN_SDK/share/vulkan/explicit_layer.d
 
 ## First Run
 
-After installation, run DeathTerminal:
+After installation, run YouNeeK Death Terminal:
 
 ```bash
 deathterminal --gui
 ```
 
-You should see the DeathTerminal banner and initialization messages:
+You should see the YouNeeK Death Terminal banner and initialization messages:
 
 ```
  ██████╗ ███████╗ █████╗ ████████╗██╗  ██╗
@@ -310,4 +310,4 @@ zig build
 
 ---
 
-**Welcome to DeathTerminal! 💀**
+**Welcome to YouNeeK Death Terminal! 💀**

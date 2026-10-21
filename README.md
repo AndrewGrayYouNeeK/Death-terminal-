@@ -1,17 +1,17 @@
-# DeathTerminal 💀
+# YouNeeK Death Terminal 💀
 
 **A brutalist, GPU-accelerated terminal with AI-native command workflows.**
 
 Fast. Minimal. Unapologetically powerful.
 
-## ⚡ Why DeathTerminal?
+## ⚡ Why YouNeeK Death Terminal?
 
 Most terminals are either:
 
 - fast but dumb (like Alacritty), or
 - smart but heavy (like Warp)
 
-DeathTerminal aims for both:
+YouNeeK Death Terminal aims for both:
 
 - low-level performance
 - AI-native workflows
@@ -131,7 +131,7 @@ in [docs/MOBILE.md](docs/MOBILE.md) and is not built.
 - X11 / Wayland / Win32 / Cocoa windows, resize, HiDPI scaling; on macOS, Cmd mirrors the Ctrl and Ctrl+Shift chords. ConPTY on Windows (see [docs/PLATFORMS.md](docs/PLATFORMS.md))
 - Lua 5.4 config (`~/.config/death-terminal/config.lua`, or `%APPDATA%\death-terminal\config.lua` on Windows; vendored Lua, sandboxed): typed options with file:line errors shown in the window, bundled themes, key bindings, shell/env/cwd, live reload on save or Ctrl+Shift+R; `deathterminal --print-default-config` (see [docs/CONFIG.md](docs/CONFIG.md))
 - Built-in SSH (libssh2, Linux only): profiles + `~/.ssh/config`, ProxyJump, agent/key/keyboard-interactive/password auth, known_hosts checks, remote PTY with resize, `-L/-R/-D` forwards togglable at runtime (Ctrl+Shift+S), keepalive/reconnect; `zig build test-ssh` against a local sshd (see [docs/SSH.md](docs/SSH.md))
-- Lua plugins: sandboxed per-plugin states, permission grants in config.lua, hooks, command palette (Ctrl+Shift+P), optional status bar, toasts, timers, themes, three example plugins (see [docs/PLUGINS.md](docs/PLUGINS.md))
+- Lua plugins: sandboxed per-plugin states, permission grants in config.lua, hooks, command palette (Ctrl+Shift+P), status bar (on by default), toasts, timers, themes, four example plugins including the bundled YouNeeK Time clock (see [docs/PLUGINS.md](docs/PLUGINS.md))
 - Tabs and split panes: layout tree, keyboard/mouse resize and focus, zoom, equalize, tab bar, confirm-close for running programs, startup layouts, plugin tab/pane events and actions (see [docs/TABS.md](docs/TABS.md))
 - CI: Linux build + unit tests, Windows and macOS cross-compiles; a `v*` tag opens a draft GitHub release
 - Packaging: `zig build release -Dpackages=true` builds an AppImage, `.deb` (with a `.desktop` file) and `.rpm`, a Windows zip plus NSIS installer, and a macOS `.app` plus `.dmg`. A `v*` tag publishes them. Signing is not done yet ([packaging/SIGNING.md](packaging/SIGNING.md))
@@ -201,6 +201,6 @@ MIT
 
 ## 💀 Final Word
 
-DeathTerminal isn't trying to be everything.
+YouNeeK Death Terminal isn't trying to be everything.
 
 It's trying to be the terminal you don't outgrow.

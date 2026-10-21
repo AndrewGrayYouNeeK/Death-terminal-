@@ -33,4 +33,4 @@ cp packaging/ci/ci.yml packaging/ci/release.yml .github/workflows/
   and set `MOLTENVK_DIR` so the `.app` bundles the dylib and ICD json.
 
 `release.yml` uses `softprops/action-gh-release@v2` and needs
-`permissions: contents: write`. The release is created as a draft for review.
+`permissions: contents: write`. The release is created as a draft titled `YouNeeK Death Terminal` plus the ref, for review.

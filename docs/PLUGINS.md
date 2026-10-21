@@ -1,6 +1,6 @@
 # Plugins
 
-DeathTerminal plugins are small Lua 5.4 programs that react to terminal events
+YouNeeK Death Terminal plugins are small Lua 5.4 programs that react to terminal events
 (commands finishing, the working directory changing, key presses, AI suggestions, ...)
 and extend the UI: command palette entries, keybindings, status-bar segments, toasts,
 timers and colour themes.
@@ -17,7 +17,7 @@ logged and shown, and one that keeps failing is switched off. It can't crash the
     lib/util.lua      -- optional modules: require("lib.util")
 ```
 
-Three example plugins ship in [`plugins/`](../plugins). Copy or symlink them to try:
+Four example plugins ship in [`plugins/`](../plugins). `youneek-time` is also embedded: if you have not installed your own copy, DeathTerminal writes it to `$XDG_DATA_HOME/death-terminal/bundled-plugins/youneek-time` (`%LOCALAPPDATA%\death-terminal\bundled-plugins\youneek-time` on Windows) and loads it. A directory of the same name in the plugins folder wins. The status bar is on by default so the clock shows with no config. Copy or symlink the others to try them:
 
 ```sh
 mkdir -p ~/.config/death-terminal/plugins
@@ -30,18 +30,30 @@ deathterminal --plugins list
 | `git_branch` | Branch of the shell's cwd (and `*` when dirty) in the status bar | `allow = { "exec" }, exec = { "git" }`, OSC 7 cwd (bundled shell integration) |
 | `long_command` | Toast (and a desktop notification while unfocused) when a command that ran longer than `threshold_s` (default 10) finishes, with its exit code; a running timer in the status bar | OSC 133 shell integration; `screen` to include the command line |
 | `theme_cycle` | Registers a `crimson` theme, palette commands "Theme: next/previous/crimson" and Ctrl+Alt+T; the theme name in the status bar | nothing |
+| `youneek-time` | YouNeeK Time in the status bar: civil hour with 100 YouNeeK minutes (`HH:MM`, one minute = 36 real seconds), `#7CFF6B`, and the moon phase (suncalc math, local). Updates every second. `settings.chime` toasts on the hour (off by default; plugins cannot play a sound) | nothing |
 
 ## Configuration
 
 ```lua
-config.status_bar = { enabled = true }      -- segments need the bar (Ctrl+Shift+B toggles it)
+config.status_bar = { enabled = true }      -- default; Ctrl+Shift+B toggles it
 config.plugins = {
   git_branch = { allow = { "exec" }, exec = { "git" } },
   long_command = { settings = { threshold_s = 5 } },
   weather = { allow = { "network" }, hosts = { "wttr.in" } },
   noisy = { enabled = false },
+  ["youneek-time"] = {                    -- bundled clock; these are its defaults
+    enabled = true,                       -- false turns it off (config beats --plugins)
+    settings = {
+      mode = "youneek",                   -- "youneek" or "regular" (civil HH:MM)
+      hours = 24,                         -- 12 or 24; applies to the hour in either mode
+      timezone = "",                      -- "" = local, "UTC", or "-05:00" / "+5"
+      chime = false,                      -- toast when the civil hour changes
+    },
+  },
 }
 ```
+
+YouNeeK minutes follow YouNeeK Time's army clock (`armyHours` / `armyMinutes` in that app): the hour is the civil hour, and `MM = floor(seconds_into_the_hour / 36)` runs `00`–`99`. `14:30:00` real is `14:50` YNK; `14:59:59` real is `14:99`. `mode = "regular"` shows the civil minute instead. The phase name and glyph come from the same cutoffs as YouNeeK Time's live moon card (`New Moon` below `0.03`, through the quarters, and `New Moon` again at `0.97`). The accent is `#7CFF6B`.
 
 | Key | Default | |
 |---|---|---|

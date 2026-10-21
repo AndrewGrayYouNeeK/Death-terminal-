@@ -307,7 +307,7 @@ pub const Terminal = struct {
         const amap = try identityMap(allocator, rows);
         errdefer allocator.free(amap);
 
-        const title = try allocator.dupe(u8, "DeathTerminal");
+        const title = try allocator.dupe(u8, "YouNeeK Death Terminal");
         errdefer allocator.free(title);
         const cwd = try allocator.alloc(u8, 0);
 
@@ -1387,7 +1387,7 @@ pub const Terminal = struct {
             '>' => {
                 switch (final) {
                     'c' => self.reply("\x1b[>1;10;0c", .{}), // DA2: VT220, version 10
-                    'q' => self.reply("\x1bP>|DeathTerminal 0.1.0\x1b\\", .{}), // XTVERSION
+                    'q' => self.reply("\x1bP>|YouNeeK Death Terminal 0.1.0\x1b\\", .{}), // XTVERSION
                     else => {},
                 }
                 return;

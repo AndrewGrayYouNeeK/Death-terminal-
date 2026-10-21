@@ -122,8 +122,8 @@ fn pathBeside(dir: []const u8, name: []const u8, buf: []u8) ![:0]u8 {
 
 test "MoltenVK next to the executable is a candidate" {
     var buf: [256]u8 = undefined;
-    const molten = try pathBeside("/Applications/DeathTerminal.app/Contents/MacOS", "libMoltenVK.dylib", &buf);
-    try std.testing.expectEqualStrings("/Applications/DeathTerminal.app/Contents/MacOS/libMoltenVK.dylib", molten);
+    const molten = try pathBeside("/Applications/YouNeeK Death Terminal.app/Contents/MacOS", "libMoltenVK.dylib", &buf);
+    try std.testing.expectEqualStrings("/Applications/YouNeeK Death Terminal.app/Contents/MacOS/libMoltenVK.dylib", molten);
     const vulkan = try pathBeside("/opt/dt", "libvulkan.1.dylib", &buf);
     try std.testing.expectEqualStrings("/opt/dt/libvulkan.1.dylib", vulkan);
     try std.testing.expectEqualStrings(beside_exe[1], "libMoltenVK.dylib");
@@ -132,12 +132,12 @@ test "MoltenVK next to the executable is a candidate" {
 test "MoltenVK in the app Frameworks directory is a candidate" {
     var buf: [256]u8 = undefined;
     const molten = try pathBeside(
-        "/Applications/DeathTerminal.app/Contents/MacOS",
+        "/Applications/YouNeeK Death Terminal.app/Contents/MacOS",
         "../Frameworks/libMoltenVK.dylib",
         &buf,
     );
     try std.testing.expectEqualStrings(
-        "/Applications/DeathTerminal.app/Contents/MacOS/../Frameworks/libMoltenVK.dylib",
+        "/Applications/YouNeeK Death Terminal.app/Contents/MacOS/../Frameworks/libMoltenVK.dylib",
         molten,
     );
     try std.testing.expectEqualStrings(beside_exe[3], "../Frameworks/libMoltenVK.dylib");

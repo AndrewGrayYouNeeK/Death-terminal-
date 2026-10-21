@@ -8,16 +8,16 @@ cask "deathterminal" do
          intel: "0000000000000000000000000000000000000000000000000000000000000000"
 
   url "https://github.com/AndrewGrayYouNeeK/Death-terminal-/releases/download/v#{version}/DeathTerminal-#{version}-#{arch}.zip"
-  name "DeathTerminal"
+  name "YouNeeK Death Terminal"
   desc "Brutalist GPU terminal emulator with AI suggestions, built-in SSH and Lua plugins"
   homepage "https://github.com/AndrewGrayYouNeeK/Death-terminal-"
 
   depends_on macos: ">= :big_sur"
   depends_on formula: "molten-vk"
 
-  app "DeathTerminal.app"
-  binary "#{appdir}/DeathTerminal.app/Contents/MacOS/deathterminal"
-  manpage "#{appdir}/DeathTerminal.app/Contents/Resources/share/man/man1/deathterminal.1"
+  app "YouNeeK Death Terminal.app"
+  binary "#{appdir}/YouNeeK Death Terminal.app/Contents/MacOS/deathterminal"
+  manpage "#{appdir}/YouNeeK Death Terminal.app/Contents/Resources/share/man/man1/deathterminal.1"
 
   zap trash: "~/.config/death-terminal"
 end

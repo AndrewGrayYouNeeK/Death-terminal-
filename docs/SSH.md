@@ -1,6 +1,6 @@
 # Built-in SSH
 
-Death Terminal has an SSH client built on [libssh2](https://libssh2.org) 1.11.1. It is
+YouNeeK Death Terminal has an SSH client built on [libssh2](https://libssh2.org) 1.11.1. It is
 vendored in `vendor/libssh2-1.11.1` and compiled by `zig build` against the system
 `libcrypto`. Prompts for host keys, passphrases and passwords are drawn in the terminal
 itself.

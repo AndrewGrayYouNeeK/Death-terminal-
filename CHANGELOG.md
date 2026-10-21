@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to DeathTerminal will be documented in this file.
+All notable changes to YouNeeK Death Terminal will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Bundled `youneek-time` plugin: a YouNeeK Time status segment (civil hour, 100 minutes per hour, `#7CFF6B`, local suncalc moon phase). The status bar is on by default. `config.plugins["youneek-time"]` can disable it, switch to regular `HH:MM`, pick 12/24h, set a timezone, and turn on an hourly toast (`settings.chime`, off by default)
 - The macOS release bundle includes MoltenVK 1.4.2 (`libMoltenVK.dylib` and `MoltenVK_icd.json` in `Contents/Frameworks`). The loader resolves that directory from the executable because `dlopen` does not expand `@executable_path`
 - Installable desktop packages from `zig build release -Dpackages=true`: macOS `.app` plus `.dmg` (`packaging/macos/make-dmg.sh`; `hdiutil` on a Mac, HFS-hybrid UDIF on Linux), Windows NSIS setup exe with the app icon and a Start Menu shortcut (`packaging/windows/build-installer.sh`), alongside the existing Linux AppImage, `.deb` (installs `deathterminal.desktop`) and `.rpm`. The tag release workflow uploads them. Code signing stays a documented TODO (`packaging/SIGNING.md`)
 - `docs/MOBILE.md`: iOS/Android plan. No mobile target is built
@@ -125,9 +126,9 @@ First versioned release. Everything below (milestones 1–12) ships in it.
 - Scrolling no longer copies the whole screen per line (row map), scrollback stores trimmed lines: `cat` of a 23 MB file in the GUI takes 1.8 s instead of 18.4 s
 - The selection is cleared when output rewrites the selected text
 - The search bar no longer hides the prompt on the last row
-- Headless mode puts the controlling tty in raw mode, so Ctrl+C reaches the shell instead of quitting DeathTerminal; the tty is restored on exit
+- Headless mode puts the controlling tty in raw mode, so Ctrl+C reaches the shell instead of quitting YouNeeK Death Terminal; the tty is restored on exit
 - Ctrl+C in the GUI is sent to the shell (0x03) instead of closing the window
-- The shell starts with default signal dispositions and an empty mask, so Ctrl+C works even when DeathTerminal was launched with SIGINT ignored
+- The shell starts with default signal dispositions and an empty mask, so Ctrl+C works even when YouNeeK Death Terminal was launched with SIGINT ignored
 - `ESC[m` resets attributes; `ESC ( B` no longer prints `B`; DCS/APC/PM/SOS strings are swallowed; ST-terminated OSC works; empty/zero CSI params default correctly; huge params saturate; `38;5;n` uses the full 256 palette; private-marker CSI (e.g. XTMODKEYS `CSI > 4 ; 1 m`) is no longer treated as SGR; ED 2 no longer homes the cursor (xterm behaviour)
 
 ### Added
@@ -170,7 +171,7 @@ First versioned release. Everything below (milestones 1–12) ships in it.
 - Scrollback buffer for terminal history (`src/terminal/scrollback.zig`)
 - Runtime configuration module with CLI and file loading (`src/config/config.zig`)
 - GitHub Actions CI workflow for build and test
-- DeathTerminal-focused `DEVELOPMENT.md` guide
+- YouNeeK Death Terminal development guide (`DEVELOPMENT.md`)
 
 ### Changed
 - Updated terminal core for Zig 0.13 POSIX APIs

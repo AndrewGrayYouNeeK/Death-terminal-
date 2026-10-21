@@ -5,7 +5,7 @@ target in this change. Desktop packaging is the thing that ships here.
 
 ## What would have to move
 
-DeathTerminal is a desktop process. The pieces a phone build would trip over:
+YouNeeK Death Terminal is a desktop process. The pieces a phone build would trip over:
 
 | Piece | Today | Why a phone cannot reuse it as-is |
 | --- | --- | --- |

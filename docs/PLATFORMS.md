@@ -76,8 +76,8 @@ What was failing, and why:
 ```sh
 zig build -Dtarget=aarch64-macos           # or x86_64-macos
 zig build release -Dtarget=aarch64-macos -Dpackages=true
-# writes zig-out/release/DeathTerminal.app, DeathTerminal-<ver>-<arch>.zip
-# and DeathTerminal-<ver>-<arch>.dmg
+# writes zig-out/release/YouNeeK Death Terminal.app, DeathTerminal-<ver>-<arch>.zip
+# and DeathTerminal-<ver>-<arch>.dmg (zip and dmg filenames stay DeathTerminal-*)
 ```
 
 The `.dmg` is an `hdiutil` UDZO image when built on a Mac, and an HFS hybrid

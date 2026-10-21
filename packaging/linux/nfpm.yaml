@@ -11,11 +11,11 @@ section: x11
 priority: optional
 maintainer: Andrew Gray <AndrewGrayYouNeeK@users.noreply.github.com>
 description: |
-  Brutalist GPU terminal emulator.
+  YouNeeK Death Terminal: brutalist GPU terminal emulator.
   Vulkan rendering, tabs and split panes, an xterm-compatible VT core,
   optional AI command suggestions, a built-in SSH client and sandboxed
   Lua plugins.
-vendor: DeathTerminal
+vendor: YouNeeK Death Terminal
 homepage: https://github.com/AndrewGrayYouNeeK/Death-terminal-
 license: Unlicense
 
