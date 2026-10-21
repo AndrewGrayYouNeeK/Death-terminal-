@@ -170,6 +170,17 @@ pub const Config = struct {
     /// One-row status bar at the bottom (plugin segments). On so the bundled
     /// YouNeeK Time clock is visible without a config file.
     status_bar: bool = true,
+    /// Shared Haunting (docs/SHARING.md). Hosting can be turned off; joining
+    /// with --join does not consult this flag.
+    share_enabled: bool = true,
+    /// Local address to listen on. "0.0.0.0" accepts LAN connections.
+    share_bind: []const u8 = "0.0.0.0",
+    /// TCP port. 0 picks an ephemeral port and puts it in the invite.
+    share_port: u16 = 0,
+    /// Host name or IP written into the invite. Empty = the LAN address.
+    share_advertise: []const u8 = "",
+    /// Optional relay, "host:port" or "tcp://host:port". Empty = direct TCP.
+    share_relay: []const u8 = "",
     /// Tab bar: "auto" (only with 2+ tabs), "top", "bottom", "hidden".
     tab_bar: []const u8 = "auto",
     /// Ask before closing a pane / tab / window whose shell runs a program.

@@ -22,6 +22,7 @@ const PluginConfig = cfg_mod.PluginConfig;
 const plugin_permissions = @import("../plugins/permissions.zig");
 const plugin_manifest = @import("../plugins/manifest.zig");
 const plugin_value = @import("../plugins/value.zig");
+const share_invite = @import("../share/invite.zig");
 
 const prelude_src = @embedFile("prelude.lua");
 pub const version = "0.1.0";
@@ -90,6 +91,25 @@ fn ghostPatternError(s: []const u8) ?[]const u8 {
 
 fn checkChord(s: []const u8) ?[]const u8 {
     _ = events.parseChord(s) catch return "cannot parse the key chord (use e.g. \"tab\", \"ctrl+space\", \"right\")";
+    return null;
+}
+
+fn checkShareBind(s: []const u8) ?[]const u8 {
+    if (s.len == 0) return "expected an IP address like \"0.0.0.0\"";
+    _ = std.net.Address.parseIp(s, 0) catch return "expected an IP address like \"0.0.0.0\"";
+    return null;
+}
+
+fn checkShareRelay(s: []const u8) ?[]const u8 {
+    if (s.len == 0) return null;
+    _ = share_invite.parseRelay(s) catch return "expected host:port or tcp://host:port";
+    return null;
+}
+
+fn checkAdvertise(s: []const u8) ?[]const u8 {
+    if (s.len == 0) return null;
+    if (s.len > 63) return "63 characters or fewer";
+    if (std.mem.indexOfAny(u8, s, " \t/#?") != null) return "expected a host name or IP, with no path";
     return null;
 }
 
@@ -213,6 +233,13 @@ pub const schema = [_]Field{
 
     .{ .path = "status_bar", .kind = .section },
     .{ .path = "status_bar.enabled", .kind = .boolean, .ref = ref(.boolean, "status_bar") },
+
+    .{ .path = "share", .kind = .section },
+    .{ .path = "share.enabled", .kind = .boolean, .ref = ref(.boolean, "share_enabled") },
+    .{ .path = "share.bind", .kind = .string, .ref = ref(.string, "share_bind"), .check = checkShareBind },
+    .{ .path = "share.port", .kind = .integer, .min = 0, .max = 65535, .ref = ref(.u16, "share_port") },
+    .{ .path = "share.advertise", .kind = .string, .ref = ref(.string, "share_advertise"), .check = checkAdvertise },
+    .{ .path = "share.relay", .kind = .string, .ref = ref(.string, "share_relay"), .check = checkShareRelay },
 
     .{ .path = "tabs", .kind = .section },
     .{ .path = "tabs.bar", .kind = .choice, .choices = &tab_bar_modes, .ref = ref(.string, "tab_bar") },

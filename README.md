@@ -76,6 +76,11 @@ Context-aware, not just history-based.
 - Themed tab bar with cwd, activity, bell and exit-status markers; drag to reorder, double-click to rename; drag dividers to resize; zoom, equalize, optional dimming of inactive panes
 - New tabs/panes inherit the cwd (OSC 7); the SSH palette opens a profile in a tab, a split, or a new window; startup layouts in Lua (see [docs/TABS.md](docs/TABS.md))
 
+### 👁 Shared Haunting
+- Share the focused pane live with one other terminal: Ctrl+Shift+H, then `deathterminal --join <code>` (or Ctrl+Shift+J)
+- Direct TCP by default. Noise (X25519 + ChaCha20-Poly1305, keyed by the invite) — no central server. Optional `config.share.relay` is a splice, not a decryption point
+- Guest is read-only until the host presses Ctrl+Shift+G. The host shows a "being watched" banner; F12 kicks. Other panes are never sent. AI redaction does not apply to the shared screen (see [docs/SHARING.md](docs/SHARING.md))
+
 ### 🎯 Brutalist Design
 - No animations
 - No distractions
@@ -151,6 +156,7 @@ in [docs/MOBILE.md](docs/MOBILE.md) and is not built.
 - Lua plugins: sandboxed per-plugin states, permission grants in config.lua, hooks, command palette (Ctrl+Shift+P), status bar (on by default), toasts, timers, themes, four example plugins including the bundled YouNeeK Time clock (see [docs/PLUGINS.md](docs/PLUGINS.md))
 - Muscle memory: local mining of repeated command sequences, project and global shortcuts in `shortcuts.lua`, palette list/rename/delete, stop on the first failing command (see [docs/MUSCLE_MEMORY.md](docs/MUSCLE_MEMORY.md))
 - Tabs and split panes: layout tree, keyboard/mouse resize and focus, zoom, equalize, tab bar, confirm-close for running programs, startup layouts, plugin tab/pane events and actions (see [docs/TABS.md](docs/TABS.md))
+- Shared Haunting: one pane, live, Noise-encrypted, direct TCP or an optional splice relay. Guest input is off until the host grants it; F12 kicks (see [docs/SHARING.md](docs/SHARING.md)). No NAT traversal
 - CI: Linux build + unit tests, Windows and macOS cross-compiles; a `v*` tag opens a draft GitHub release
 - Packaging: `zig build release -Dpackages=true` builds an AppImage, `.deb` (with a `.desktop` file) and `.rpm`, a Windows zip plus NSIS installer, and a macOS `.app` plus `.dmg`. A `v*` tag publishes them as a draft. macOS signing and notarization run when the Apple secrets in [packaging/SIGNING.md](packaging/SIGNING.md) are set; otherwise those artifacts stay unsigned. Windows signing is still a TODO
 - 80/132-column DECCOLM: headless grids resize; GUI panes keep their width and only clear, home, and reset margins
@@ -189,6 +195,7 @@ The client is plain HTTP/JSON (it replaces the gRPC service planned originally);
 - No credential logging
 - SSH handled via libssh2
 - AI context is redacted before sending (provider tokens, AWS/GitHub/OpenAI keys, passwords, `KEY=value` assignments, private keys); API keys are read from an environment variable, never stored in the config
+- A shared pane is the opposite: the guest sees the real cells, secrets included, and only that pane. Guest keystrokes reach the shell only after the host grants control for that session ([docs/SHARING.md](docs/SHARING.md))
 
 ## 🛣 Roadmap
 

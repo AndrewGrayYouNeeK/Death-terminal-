@@ -26,6 +26,7 @@ const gui_mod = @import("gui.zig");
 const ghost_hold = @import("../ghost/hold.zig");
 const time_travel = @import("../ghost/time_travel.zig");
 const io = @import("../platform/io.zig");
+const share_ctrl = @import("share_ctrl.zig");
 const win_misc = if (builtin.os.tag == .windows) @import("../platform/win_misc.zig") else struct {};
 
 /// Wait this long after the last change event before reloading, so an
@@ -76,6 +77,8 @@ pub const EventLoop = struct {
     spawn_ctx: spawn.Context = .{},
     /// Open config.layout's tabs (the first pane is already `term`).
     startup_layout: bool = false,
+    /// `deathterminal --join <code>`: show that host's pane instead of a shell.
+    join_code: ?[]const u8 = null,
 
     fn aiSettings(self: *const EventLoop) ai_controller.Settings {
         var s = ai_controller.Settings.fromConfig(self.cfg);
@@ -91,6 +94,10 @@ pub const EventLoop = struct {
     ) !void {
         _ = lua;
 
+        if (self.join_code != null and self.cfg.headless) {
+            try self.runGuestHeadless(vulkan_renderer, term);
+            return;
+        }
         if (self.cfg.headless) {
             try self.runHeadless(vulkan_renderer, term);
         } else {
@@ -189,6 +196,82 @@ pub const EventLoop = struct {
 
         try renderHeadless(term, vulkan_renderer);
         std.debug.print("\n", .{});
+    }
+
+    /// Headless guest: the local shell is drained and the grid is the host's.
+    fn runGuestHeadless(
+        self: *EventLoop,
+        vulkan_renderer: *renderer.VulkanRenderer,
+        term: *terminal.Terminal,
+    ) !void {
+        var share = share_ctrl.Controller.init(self.allocator);
+        defer share.deinit();
+        share.configure(self.cfg);
+        share.joinCode(0, self.join_code orelse return);
+
+        const pty_fd = term.getPtyFd() orelse return error.NoPty;
+        try setNonBlocking(pty_fd);
+        var stdin_raw = false;
+        if (builtin.os.tag != .windows) {
+            stdin_raw = try enableRawMode();
+        } else {
+            stdin_raw = win_misc.enableRawConsole();
+        }
+        defer if (stdin_raw) {
+            if (builtin.os.tag == .windows) win_misc.restoreConsole() else disableRawMode() catch {};
+        };
+        const stdin_fd: io.Fd = if (builtin.os.tag == .windows) win_misc.stdinSocket() catch io.none else posix.STDIN_FILENO;
+        try installSignalHandlers();
+
+        const deadline = std.time.milliTimestamp() + 8000;
+        while (std.time.milliTimestamp() < deadline) {
+            share.tick();
+            const g = share.guest orelse break;
+            if (g.phase != .waiting) break;
+            std.time.sleep(10 * std.time.ns_per_ms);
+        }
+        if (share.guest == null or share.guest.?.phase != .open) {
+            const why = share.takeError() orelse if (share.guest) |g| g.failure() orelse "timed out" else "timed out";
+            std.debug.print("join failed: {s}\n", .{why});
+            return;
+        }
+        std.debug.print("Watching (read-only until the host grants control). Ctrl+C leaves.\n", .{});
+
+        var input_buf: [1024]u8 = undefined;
+        var dirty = true;
+        while (!shutdown_requested.load(.seq_cst)) {
+            var extra = [_]io.Fd{ io.none, io.none };
+            const nfd = share.fillPoll(&extra);
+            var poll_fds = [_]io.PollFd{
+                io.pollFd(pty_fd, io.POLL.IN),
+                io.pollFd(stdin_fd, io.POLL.IN),
+                io.pollFd(if (nfd > 0) extra[0] else io.none, io.POLL.IN),
+            };
+            _ = io.poll(&poll_fds, 50);
+            if (poll_fds[0].revents & io.POLL.IN != 0) {
+                var junk: [4096]u8 = undefined;
+                while (true) {
+                    const n = io.read(pty_fd, &junk) catch break;
+                    if (n == 0) break;
+                }
+            }
+            if (poll_fds[1].revents & io.POLL.IN != 0) {
+                const n = io.read(stdin_fd, &input_buf) catch 0;
+                if (n == 0) break;
+                if (std.mem.indexOfScalar(u8, input_buf[0..n], 0x03) != null) break;
+                share.onGuestBytes(input_buf[0..n]);
+            }
+            share.tick();
+            if (share.applyGrid(term)) dirty = true;
+            if (share.guest) |g| if (g.kicked or g.phase == .closed) {
+                std.debug.print("\nThe host ended the share.\n", .{});
+                break;
+            };
+            if (dirty) {
+                try renderHeadless(term, vulkan_renderer);
+                dirty = false;
+            }
+        }
     }
 
     /// Lone Enter on a risky command opens a text prompt. The command is

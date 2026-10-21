@@ -117,6 +117,12 @@ pub const Action = enum {
     /// A plugin keybinding (ActionEvent.arg = the binding's id). Not
     /// bindable from config.
     plugin_binding,
+    /// Shared Haunting (docs/SHARING.md).
+    share_pane,
+    share_grant,
+    share_kick,
+    share_stop,
+    share_join,
 
     /// goto_tab_N -> N-1.
     pub fn gotoIndex(self: Action) ?usize {
@@ -172,6 +178,11 @@ pub const Action = enum {
             .resize_down => "Panes: grow / shrink down",
             .zoom_pane => "Panes: zoom (toggle)",
             .equalize_panes => "Panes: equalize sizes",
+            .share_pane => "Share: share this pane",
+            .share_grant => "Share: grant or revoke guest control",
+            .share_kick => "Share: kick the guest",
+            .share_stop => "Share: stop sharing",
+            .share_join => "Share: join a haunting",
             // Listed as "Go to tab N: <title>" entries instead.
             .goto_tab_1, .goto_tab_2, .goto_tab_3, .goto_tab_4, .goto_tab_5, .goto_tab_6, .goto_tab_7, .goto_tab_8, .goto_tab_9 => null,
             .none, .ai_accept, .ai_dismiss, .ai_next, .ai_prev, .command_palette, .plugin_binding => null,
@@ -384,6 +395,11 @@ pub const Bindings = struct {
         "alt+shift+down=resize_down",
         "ctrl+shift+z=zoom_pane",
         "ctrl+shift+alt+e=equalize_panes",
+        "ctrl+shift+h=share_pane",
+        "ctrl+shift+g=share_grant",
+        "f12=share_kick",
+        "ctrl+shift+alt+h=share_stop",
+        "ctrl+shift+j=share_join",
     };
 
     pub fn defaults() Bindings {

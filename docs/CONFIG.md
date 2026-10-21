@@ -118,6 +118,11 @@ config is reloaded.
 | `ssh.keepalive_s` | `30` | Default keepalive interval, 0–3600 (0 = off); profiles can override |
 | `ssh.known_hosts` | `"~/.ssh/known_hosts"` | Host keys file (shared with OpenSSH; appended to, never rewritten) |
 | `status_bar.enabled` | `true` | A one-row status bar under the grid for plugin segments (the bundled YouNeeK Time clock uses it). Ctrl+Shift+B (`toggle_status_bar`) toggles it |
+| `share.enabled` | `true` | Host a Shared Haunting of the focused pane. `false` refuses to host; `--join` still works ([SHARING.md](SHARING.md)) |
+| `share.bind` | `"0.0.0.0"` | IPv4 address the host listens on |
+| `share.port` | `0` | Listen port, 0–65535. `0` picks a free port |
+| `share.advertise` | `""` | Host written into the invite. `""` detects a LAN IPv4 (no NAT traversal) |
+| `share.relay` | `""` | `""` is direct TCP. Or `host:port` / `tcp://host:port` for the optional splice ([SHARING.md](SHARING.md#relay)) |
 | `tabs.bar` | `"auto"` | Tab bar: `"auto"` (only with 2+ tabs), `"top"`, `"bottom"`, `"hidden"`. `toggle_tab_bar` flips it. See [TABS.md](TABS.md) |
 | `tabs.confirm_close` | `true` | Ask before closing a pane / tab / the window while a program (not just the shell) runs in it |
 | `tabs.dim_inactive` | `0` | 0–0.9: fade the text of panes without the focus (0 = off) |
@@ -139,6 +144,9 @@ Actions: `copy`, `paste`, `paste_selection`, `search`, `scroll_page_up`,
 while a suggestion shows), `ai_dismiss` (Esc, likewise), `ai_next` / `ai_prev`
 (Alt+] / Alt+[), `ai_explain` (Ctrl+Shift+A), `ai_ask` (Ctrl+Shift+Q; Cmd+Shift+Q on macOS, Cmd+Q still quits), `ssh_palette` (Ctrl+Shift+S),
 `command_palette` (Ctrl+Shift+P), `toggle_status_bar` (Ctrl+Shift+B). `select_all` is Ctrl+Shift+Alt+A.
+Sharing ([SHARING.md](SHARING.md)): `share_pane` (Ctrl+Shift+H), `share_grant`
+(Ctrl+Shift+G), `share_kick` (F12), `share_stop` (Ctrl+Shift+Alt+H), `share_join`
+(Ctrl+Shift+J).
 
 Tabs and panes ([TABS.md](TABS.md)): `new_tab` (Ctrl+Shift+T), `close_tab`
 (Ctrl+Shift+Alt+W), `next_tab` / `prev_tab` (Ctrl+PgDn / Ctrl+PgUp, Ctrl+Tab /
