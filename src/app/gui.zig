@@ -59,7 +59,7 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
     defer soft.deinit();
 
     var window = try window_mod.Window.open(a, .{
-        .title = "DeathTerminal",
+        .title = "YouNeeK Death Terminal",
         .width = soft.width,
         .height = soft.height,
         .scale = cfg.scale,
@@ -1253,7 +1253,7 @@ const Gui = struct {
         var restart_line: []u8 = &.{};
         defer allocator.free(restart_line);
         if (restart.items.len > 0) {
-            restart_line = try std.fmt.allocPrint(allocator, "restart DeathTerminal to apply: {s}", .{restart.items});
+            restart_line = try std.fmt.allocPrint(allocator, "restart YouNeeK Death Terminal to apply: {s}", .{restart.items});
             try lines.append(restart_line);
         }
         var head_buf: [512]u8 = undefined;

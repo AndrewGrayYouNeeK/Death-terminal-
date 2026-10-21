@@ -1,7 +1,7 @@
 # Homebrew formula skeleton (build from source). UNTESTED on macOS.
 # brew install --build-from-source ./packaging/macos/deathterminal.rb
 class Deathterminal < Formula
-  desc "Brutalist GPU terminal emulator with AI suggestions, built-in SSH and Lua plugins"
+  desc "YouNeeK Death Terminal: brutalist GPU terminal emulator with AI suggestions, built-in SSH and Lua plugins"
   homepage "https://github.com/AndrewGrayYouNeeK/Death-terminal-"
   url "https://github.com/AndrewGrayYouNeeK/Death-terminal-/archive/refs/tags/v0.1.0.tar.gz"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"

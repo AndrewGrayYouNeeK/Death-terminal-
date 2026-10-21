@@ -1,6 +1,6 @@
 # Plugins
 
-DeathTerminal plugins are small Lua 5.4 programs that react to terminal events
+YouNeeK Death Terminal plugins are small Lua 5.4 programs that react to terminal events
 (commands finishing, the working directory changing, key presses, AI suggestions, ...)
 and extend the UI: command palette entries, keybindings, status-bar segments, toasts,
 timers and colour themes.

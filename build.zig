@@ -234,13 +234,13 @@ fn winResource(b: *std.Build, version: []const u8) std.Build.LazyPath {
         \\    BEGIN
         \\        BLOCK "040904b0"
         \\        BEGIN
-        \\            VALUE "CompanyName", "DeathTerminal"
-        \\            VALUE "FileDescription", "DeathTerminal - Brutalist Terminal Emulator"
+        \\            VALUE "CompanyName", "YouNeeK Death Terminal"
+        \\            VALUE "FileDescription", "YouNeeK Death Terminal - Brutalist Terminal Emulator"
         \\            VALUE "FileVersion", "{s}"
         \\            VALUE "InternalName", "deathterminal"
         \\            VALUE "LegalCopyright", "Public domain (The Unlicense)"
         \\            VALUE "OriginalFilename", "deathterminal.exe"
-        \\            VALUE "ProductName", "DeathTerminal"
+        \\            VALUE "ProductName", "YouNeeK Death Terminal"
         \\            VALUE "ProductVersion", "{s}"
         \\        END
         \\    END

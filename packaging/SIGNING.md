@@ -18,7 +18,7 @@ TODO, once a Developer ID Application certificate is available:
 1. Import the certificate into a temporary keychain on a macOS runner
    (`CSC_LINK` / `CSC_KEY_PASSWORD`, or `CODESIGN_IDENTITY`).
 2. Sign the bundle, inside out, with a secure timestamp and the hardened
-   runtime: `codesign --sign "$CODESIGN_IDENTITY" --options runtime --timestamp --deep DeathTerminal.app`.
+   runtime: `codesign --sign "$CODESIGN_IDENTITY" --options runtime --timestamp --deep "YouNeeK Death Terminal.app"`.
 3. Notarize the DMG: `xcrun notarytool submit DeathTerminal-*.dmg --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait`.
 4. Staple the ticket: `xcrun stapler staple DeathTerminal-*.dmg`.
 

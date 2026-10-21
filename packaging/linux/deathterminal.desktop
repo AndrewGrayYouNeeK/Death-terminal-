@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=DeathTerminal
+Name=YouNeeK Death Terminal
 GenericName=Terminal
 Comment=Brutalist GPU terminal emulator with AI suggestions, built-in SSH and Lua plugins
 Exec=deathterminal --gui

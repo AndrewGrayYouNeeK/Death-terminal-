@@ -98,4 +98,5 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           draft: true
+          name: YouNeeK Death Terminal ${{ github.ref_name }}
           files: dist/*

@@ -1,11 +1,11 @@
-# Death Terminal shell integration for bash.
+# YouNeeK Death Terminal shell integration for bash.
 #
 # Emits OSC 133 prompt/command marks (A = prompt start, B = input start,
 # C = command start, D;<exit> = command finished) and OSC 7 (working
 # directory) so the terminal knows what you are typing, where commands
 # start and end, and how they exited. AI suggestions use this.
 #
-# Death Terminal injects this file automatically (shell.integration = true
+# YouNeeK Death Terminal injects this file automatically (shell.integration = true
 # in config.lua). To source it yourself instead:
 #   deathterminal --print-shell-integration bash > ~/.config/deathterminal/bash.sh
 #   [ "$TERM_PROGRAM" = DeathTerminal ] && . ~/.config/deathterminal/bash.sh   # in ~/.bashrc

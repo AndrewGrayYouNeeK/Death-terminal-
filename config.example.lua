@@ -1,4 +1,4 @@
--- DeathTerminal configuration
+-- YouNeeK Death Terminal configuration
 --
 -- Save as ~/.config/death-terminal/config.lua (or $XDG_CONFIG_HOME/...).
 -- Print this file at any time with:
