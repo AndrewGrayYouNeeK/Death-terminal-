@@ -1,6 +1,6 @@
 # VT / xterm compatibility
 
-DeathTerminal advertises `TERM=xterm-256color` and implements the subset of
+YouNeeK Death Terminal advertises `TERM=xterm-256color` and implements the subset of
 xterm that full-screen programs rely on. Emulation lives in
 `src/terminal/terminal.zig`, the parser in `src/terminal/ansi_parser.zig`,
 input encoding in `src/terminal/input.zig`; tests are in

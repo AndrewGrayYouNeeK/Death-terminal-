@@ -1,10 +1,10 @@
-# DeathTerminal Development Guide
+# YouNeeK Death Terminal Development Guide
 
-This document tracks development status and priorities for the DeathTerminal desktop terminal emulator.
+This document tracks development status and priorities for the YouNeeK Death Terminal desktop terminal emulator.
 
 ## Project Overview
 
-DeathTerminal is a Zig-based, GPU-accelerated terminal emulator. It has AI command suggestions (OpenAI-compatible HTTP/JSON, docs/AI.md) and Lua config; built-in SSH, Lua plugins, and tabs/split panes. It is a **native desktop application** — not a web app.
+YouNeeK Death Terminal is a Zig-based, GPU-accelerated terminal emulator. It has AI command suggestions (OpenAI-compatible HTTP/JSON, docs/AI.md) and Lua config; built-in SSH, Lua plugins, and tabs/split panes. It is a **native desktop application** — not a web app.
 
 ## Architecture
 

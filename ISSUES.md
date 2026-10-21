@@ -1,4 +1,4 @@
-# DeathTerminal Project Checklist
+# YouNeeK Death Terminal Project Checklist
 
 ## ✅ COMPLETED
 

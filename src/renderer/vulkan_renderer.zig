@@ -143,9 +143,9 @@ pub const VulkanRenderer = struct {
 
         var app_info = std.mem.zeroes(vk.VkApplicationInfo);
         app_info.sType = vk.VK_STRUCTURE_TYPE_APPLICATION_INFO;
-        app_info.pApplicationName = "DeathTerminal";
+        app_info.pApplicationName = "YouNeeK Death Terminal";
         app_info.applicationVersion = vk.makeApiVersion(0, 1, 0);
-        app_info.pEngineName = "DeathTerminal";
+        app_info.pEngineName = "YouNeeK Death Terminal";
         app_info.engineVersion = vk.makeApiVersion(0, 1, 0);
         app_info.apiVersion = vk.API_VERSION_1_0;
 

@@ -1,17 +1,17 @@
-# DeathTerminal 💀
+# YouNeeK Death Terminal 💀
 
 **A brutalist, GPU-accelerated terminal with AI-native command workflows.**
 
 Fast. Minimal. Unapologetically powerful.
 
-## ⚡ Why DeathTerminal?
+## ⚡ Why YouNeeK Death Terminal?
 
 Most terminals are either:
 
 - fast but dumb (like Alacritty), or
 - smart but heavy (like Warp)
 
-DeathTerminal aims for both:
+YouNeeK Death Terminal aims for both:
 
 - low-level performance
 - AI-native workflows
@@ -201,6 +201,6 @@ MIT
 
 ## 💀 Final Word
 
-DeathTerminal isn't trying to be everything.
+YouNeeK Death Terminal isn't trying to be everything.
 
 It's trying to be the terminal you don't outgrow.

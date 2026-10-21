@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to DeathTerminal will be documented in this file.
+All notable changes to YouNeeK Death Terminal will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -124,9 +124,9 @@ First versioned release. Everything below (milestones 1–12) ships in it.
 - Scrolling no longer copies the whole screen per line (row map), scrollback stores trimmed lines: `cat` of a 23 MB file in the GUI takes 1.8 s instead of 18.4 s
 - The selection is cleared when output rewrites the selected text
 - The search bar no longer hides the prompt on the last row
-- Headless mode puts the controlling tty in raw mode, so Ctrl+C reaches the shell instead of quitting DeathTerminal; the tty is restored on exit
+- Headless mode puts the controlling tty in raw mode, so Ctrl+C reaches the shell instead of quitting YouNeeK Death Terminal; the tty is restored on exit
 - Ctrl+C in the GUI is sent to the shell (0x03) instead of closing the window
-- The shell starts with default signal dispositions and an empty mask, so Ctrl+C works even when DeathTerminal was launched with SIGINT ignored
+- The shell starts with default signal dispositions and an empty mask, so Ctrl+C works even when YouNeeK Death Terminal was launched with SIGINT ignored
 - `ESC[m` resets attributes; `ESC ( B` no longer prints `B`; DCS/APC/PM/SOS strings are swallowed; ST-terminated OSC works; empty/zero CSI params default correctly; huge params saturate; `38;5;n` uses the full 256 palette; private-marker CSI (e.g. XTMODKEYS `CSI > 4 ; 1 m`) is no longer treated as SGR; ED 2 no longer homes the cursor (xterm behaviour)
 
 ### Added
@@ -169,7 +169,7 @@ First versioned release. Everything below (milestones 1–12) ships in it.
 - Scrollback buffer for terminal history (`src/terminal/scrollback.zig`)
 - Runtime configuration module with CLI and file loading (`src/config/config.zig`)
 - GitHub Actions CI workflow for build and test
-- DeathTerminal-focused `DEVELOPMENT.md` guide
+- YouNeeK Death Terminal development guide (`DEVELOPMENT.md`)
 
 ### Changed
 - Updated terminal core for Zig 0.13 POSIX APIs

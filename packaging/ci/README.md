@@ -31,4 +31,4 @@ cp packaging/ci/ci.yml packaging/ci/release.yml .github/workflows/
   (Windows setup exe) and `genisoimage` plus `zlib1g-dev` (macOS `.dmg`).
 
 `release.yml` uses `softprops/action-gh-release@v2` and needs
-`permissions: contents: write`. The release is created as a draft for review.
+`permissions: contents: write`. The release is created as a draft titled `YouNeeK Death Terminal` plus the ref, for review.

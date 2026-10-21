@@ -8,9 +8,9 @@
   Not built or tested on the Linux box.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="DeathTerminal" Manufacturer="DeathTerminal" Version="0.1.0"
+  <Package Name="YouNeeK Death Terminal" Manufacturer="YouNeeK Death Terminal" Version="0.1.0"
            UpgradeCode="6f0f3c3e-4f8e-4d84-9a7e-2f1b0d1e7c55" Scope="perUserOrMachine">
-    <MajorUpgrade DowngradeErrorMessage="A newer DeathTerminal is already installed." />
+    <MajorUpgrade DowngradeErrorMessage="A newer YouNeeK Death Terminal is already installed." />
     <MediaTemplate EmbedCab="yes" />
     <Icon Id="DeathTerminalIcon" SourceFile="..\deathterminal.ico" />
     <Property Id="ARPPRODUCTICON" Value="DeathTerminalIcon" />
@@ -32,7 +32,7 @@
 
     <StandardDirectory Id="ProgramMenuFolder">
       <Component Id="StartMenuShortcut" Guid="*">
-        <Shortcut Id="DeathTerminalShortcut" Name="DeathTerminal" Target="[INSTALLFOLDER]deathterminal.exe"
+        <Shortcut Id="DeathTerminalShortcut" Name="YouNeeK Death Terminal" Target="[INSTALLFOLDER]deathterminal.exe"
                   Arguments="--gui" WorkingDirectory="INSTALLFOLDER" Icon="DeathTerminalIcon" />
         <RegistryValue Root="HKCU" Key="Software\DeathTerminal" Name="installed" Type="integer" Value="1" KeyPath="yes" />
       </Component>

@@ -1,6 +1,6 @@
 # Performance
 
-How DeathTerminal schedules work, the knobs you can set, and measured numbers.
+How YouNeeK Death Terminal schedules work, the knobs you can set, and measured numbers.
 Run `zig build bench` (always ReleaseFast) to reproduce the micro-benchmarks;
 `zig build bench -- frames` skips the slow parser section.
 

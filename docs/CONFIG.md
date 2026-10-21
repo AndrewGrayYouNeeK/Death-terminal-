@@ -1,6 +1,6 @@
 # Configuration (config.lua)
 
-DeathTerminal is configured with a Lua 5.4 file. Lua is vendored
+YouNeeK Death Terminal is configured with a Lua 5.4 file. Lua is vendored
 (`vendor/lua-5.4.7`) and compiled into the binary, so there's nothing to install.
 
 ```sh
@@ -46,7 +46,7 @@ Reading an option gives you its current value: `config.font.size + 2`.
 
 | | |
 |---|---|
-| `dt.version` | DeathTerminal version string |
+| `dt.version` | YouNeeK Death Terminal version string |
 | `dt.os` | `"linux"`, `"macos"`, `"windows"`, … |
 | `dt.themes` | List of bundled theme names |
 | `dt.theme(name)` | Copy of a theme's colours (`foreground`, `background`, `cursor`, `cursor_text`, `selection_background`, `selection_foreground`, `palette[0..15]`). Use it to copy and tweak a theme: `config.colors = dt.theme("nord")` |

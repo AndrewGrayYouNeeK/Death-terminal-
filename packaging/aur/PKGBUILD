@@ -1,10 +1,10 @@
 # Maintainer: Andrew Gray <AndrewGrayYouNeeK@users.noreply.github.com>
-# AUR package skeleton: builds DeathTerminal from the release source tarball.
+# AUR package skeleton: builds YouNeeK Death Terminal from the release source tarball.
 # Update pkgver and sha256sums (`updpkgsums`) for each release.
 pkgname=deathterminal
 pkgver=0.1.0
 pkgrel=1
-pkgdesc="Brutalist GPU terminal emulator with AI suggestions, built-in SSH and Lua plugins"
+pkgdesc="YouNeeK Death Terminal: brutalist GPU terminal emulator with AI suggestions, built-in SSH and Lua plugins"
 arch=('x86_64' 'aarch64')
 url="https://github.com/AndrewGrayYouNeeK/Death-terminal-"
 license=('Unlicense')

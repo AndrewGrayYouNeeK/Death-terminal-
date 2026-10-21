@@ -1,4 +1,6 @@
-; DeathTerminal per-user NSIS installer.
+; YouNeeK Death Terminal per-user NSIS installer.
+; InstallDir and the uninstall registry key stay DeathTerminal so upgrades
+; still find an existing per-user install. Start Menu names use the display name.
 ; Built from a staged `zig build release -Dtarget=x86_64-windows` tree:
 ;   makensis -DVERSION=0.1.0 -DVER_QUAD=0.1.0.0 -DSTAGE=... -DOUT=... -DICON=... deathterminal.nsi
 ; The exe already carries the icon resource. This installer adds a Start
@@ -26,7 +28,9 @@ Unicode true
   !error "ICON is required"
 !endif
 
-Name "DeathTerminal ${VERSION}"
+!define DISPLAY_NAME "YouNeeK Death Terminal"
+
+Name "${DISPLAY_NAME} ${VERSION}"
 OutFile "${OUT}"
 InstallDir "$LOCALAPPDATA\DeathTerminal"
 InstallDirRegKey HKCU "Software\DeathTerminal" "InstallDir"
@@ -46,14 +50,14 @@ SetCompressor /SOLID lzma
 !insertmacro MUI_LANGUAGE "English"
 
 VIProductVersion "${VER_QUAD}"
-VIAddVersionKey "ProductName" "DeathTerminal"
-VIAddVersionKey "FileDescription" "DeathTerminal installer"
+VIAddVersionKey "ProductName" "${DISPLAY_NAME}"
+VIAddVersionKey "FileDescription" "${DISPLAY_NAME} installer"
 VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "ProductVersion" "${VERSION}"
 VIAddVersionKey "LegalCopyright" "Public domain (The Unlicense)"
-VIAddVersionKey "CompanyName" "DeathTerminal"
+VIAddVersionKey "CompanyName" "${DISPLAY_NAME}"
 
-Section "DeathTerminal" SecMain
+Section "${DISPLAY_NAME}" SecMain
   SectionIn RO
   SetOutPath "$INSTDIR"
   File "${STAGE}/deathterminal.exe"
@@ -66,18 +70,22 @@ Section "DeathTerminal" SecMain
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "Software\DeathTerminal" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "Software\DeathTerminal" "Version" "${VERSION}"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeathTerminal" "DisplayName" "DeathTerminal"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeathTerminal" "DisplayName" "${DISPLAY_NAME}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeathTerminal" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeathTerminal" "Publisher" "DeathTerminal"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeathTerminal" "Publisher" "${DISPLAY_NAME}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeathTerminal" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeathTerminal" "UninstallString" "$\"$INSTDIR\Uninstall.exe$\""
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeathTerminal" "DisplayIcon" "$INSTDIR\deathterminal.exe"
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeathTerminal" "NoModify" 1
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\DeathTerminal" "NoRepair" 1
 
-  CreateDirectory "$SMPROGRAMS\DeathTerminal"
-  CreateShortcut "$SMPROGRAMS\DeathTerminal\DeathTerminal.lnk" "$INSTDIR\deathterminal.exe" "--gui" "$INSTDIR\deathterminal.exe" 0
-  CreateShortcut "$SMPROGRAMS\DeathTerminal\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
+  ; Drop the previous Start Menu folder (display name used to be DeathTerminal).
+  Delete "$SMPROGRAMS\DeathTerminal\DeathTerminal.lnk"
+  Delete "$SMPROGRAMS\DeathTerminal\Uninstall.lnk"
+  RMDir "$SMPROGRAMS\DeathTerminal"
+  CreateDirectory "$SMPROGRAMS\${DISPLAY_NAME}"
+  CreateShortcut "$SMPROGRAMS\${DISPLAY_NAME}\${DISPLAY_NAME}.lnk" "$INSTDIR\deathterminal.exe" "--gui" "$INSTDIR\deathterminal.exe" 0
+  CreateShortcut "$SMPROGRAMS\${DISPLAY_NAME}\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
 SectionEnd
 
 Section "Uninstall"
@@ -90,6 +98,9 @@ Section "Uninstall"
   RMDir /r "$INSTDIR\docs"
   RMDir /r "$INSTDIR\examples"
   RMDir "$INSTDIR"
+  Delete "$SMPROGRAMS\${DISPLAY_NAME}\${DISPLAY_NAME}.lnk"
+  Delete "$SMPROGRAMS\${DISPLAY_NAME}\Uninstall.lnk"
+  RMDir "$SMPROGRAMS\${DISPLAY_NAME}"
   Delete "$SMPROGRAMS\DeathTerminal\DeathTerminal.lnk"
   Delete "$SMPROGRAMS\DeathTerminal\Uninstall.lnk"
   RMDir "$SMPROGRAMS\DeathTerminal"
