@@ -83,6 +83,17 @@ pub fn randomSecret() [secret_len]u8 {
     return s;
 }
 
+/// True when `host` is this machine's LAN address. Loopback is not included:
+/// the caller already dials that address directly. A same-machine guest uses
+/// this to try `127.0.0.1` before the LAN IP, which macOS often firewalls.
+pub fn isThisMachine(host: []const u8) bool {
+    if (host.len == 0 or std.mem.eql(u8, host, "127.0.0.1") or std.mem.eql(u8, host, "localhost")) return false;
+    var buf: [64]u8 = undefined;
+    const lan = detectLanHost(&buf);
+    if (std.mem.eql(u8, lan, "127.0.0.1")) return false;
+    return std.mem.eql(u8, host, lan);
+}
+
 /// Best-effort IPv4 of the interface that would reach the LAN. Falls back
 /// to loopback when the host has no route. This does not punch NAT.
 pub fn detectLanHost(buf: []u8) []const u8 {
@@ -308,6 +319,11 @@ test "relay config: default hosted url, off, or a custom splice" {
     try std.testing.expect(isDefaultHostedRelay("wss://relay.youneek.xyz/v1/aa"));
     try std.testing.expect(!isDefaultHostedRelay(hosted_ws_fallback));
     try std.testing.expect(!isDefaultHostedRelay("wss://relay.youneek.xyz.evil"));
+    try std.testing.expect(!isThisMachine("192.0.2.1"));
+    try std.testing.expect(!isThisMachine("127.0.0.1"));
+    var lan_buf: [64]u8 = undefined;
+    const lan = detectLanHost(&lan_buf);
+    if (!std.mem.eql(u8, lan, "127.0.0.1")) try std.testing.expect(isThisMachine(lan));
     try std.testing.expect(edgeRejectedUpgrade("HTTP/1.1 404 Not Found body  req GET /v1/b92b84c8744352e7?role=host"));
     try std.testing.expect(edgeRejectedUpgrade("HTTP/1.1 403 Forbidden body <!DOCTYPE html>"));
     try std.testing.expect(!edgeRejectedUpgrade("HTTP/1.1 404 Not Found body not found req GET /v1/zz"));

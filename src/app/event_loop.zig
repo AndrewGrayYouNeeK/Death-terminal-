@@ -27,6 +27,7 @@ const ghost_hold = @import("../ghost/hold.zig");
 const time_travel = @import("../ghost/time_travel.zig");
 const io = @import("../platform/io.zig");
 const share_ctrl = @import("share_ctrl.zig");
+const share_trace = @import("../share/trace.zig");
 const win_misc = if (builtin.os.tag == .windows) @import("../platform/win_misc.zig") else struct {};
 
 /// Wait this long after the last change event before reloading, so an
@@ -236,10 +237,11 @@ pub const EventLoop = struct {
             std.debug.print("join: signal handlers failed ({s}); continuing\n", .{@errorName(err)});
         };
 
-        // Long enough for the LAN probe plus a custom-domain reject and the
-        // workers.dev retry. A relay failure prints here and returns. It does
-        // not leave main as error.Unexpected.
-        const deadline = std.time.milliTimestamp() + 20000;
+        // LAN probe, a custom-domain reject, then the workers.dev retry,
+        // including a TLS handshake that can take its own 10s. A relay
+        // failure prints here and returns. It does not leave main as
+        // error.Unexpected.
+        const deadline = std.time.milliTimestamp() + 45000;
         while (std.time.milliTimestamp() < deadline) {
             share.tick();
             const g = share.guest orelse break;
@@ -248,6 +250,14 @@ pub const EventLoop = struct {
         }
         if (share.guest == null or share.guest.?.phase != .open) {
             const why = share.takeError() orelse if (share.guest) |g| g.failure() orelse "timed out" else "timed out";
+            if (std.mem.eql(u8, why, "timed out")) {
+                var step: [180]u8 = undefined;
+                const n = share_trace.copyStep(&step);
+                if (n > 0) {
+                    std.debug.print("join failed: timed out during {s}\n", .{step[0..n]});
+                    return;
+                }
+            }
             std.debug.print("join failed: {s}\n", .{why});
             return;
         }

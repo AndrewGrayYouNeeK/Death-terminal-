@@ -14,6 +14,7 @@ const netdial = @import("../net/dial.zig");
 const link_mod = @import("link.zig");
 const invite = @import("invite.zig");
 const relay = @import("relay.zig");
+const trace = @import("trace.zig");
 
 const posix = std.posix;
 const certs = @import("certs.zig");
@@ -342,6 +343,7 @@ fn httpUpgrade(pipe: Io, target: Target, role: relay.Role, id: *const [8]u8, wai
         return error.Closed;
     };
     const status = head[0..line_end];
+    trace.log("websocket upgrade {s}", .{status});
     if (std.mem.indexOf(u8, status, " 101 ") == null) {
         var peek: [64]u8 = undefined;
         var pn: usize = 0;
@@ -431,6 +433,11 @@ pub fn open(url: []const u8, role: relay.Role, id: *const [8]u8, cancel: ?netdia
     io.ensureSockets();
     io.ignoreSigpipe();
     detail_len = 0;
+    const role_name = switch (role) {
+        .host => "host",
+        .guest => "guest",
+    };
+    trace.log("relay dial {s} role {s}", .{ url, role_name });
     const target = try parseUrl(url);
     const fd = netdial.connect(target.host(), target.port, 15000, cancel) catch |err| return mapDial(err);
     var tcp = std.net.Stream{ .handle = fd };
@@ -438,6 +445,7 @@ pub fn open(url: []const u8, role: relay.Role, id: *const [8]u8, cancel: ?netdia
     errdefer if (tcp_owned) tcp.close();
     link_mod.setNoDelay(tcp);
     io.armSocket(tcp.handle);
+    trace.log("tcp connected {s}:{d}", .{ target.host(), target.port });
 
     var tls_ptr: ?*std.crypto.tls.Client = null;
     errdefer if (tcp_owned and tls_ptr != null) std.heap.page_allocator.destroy(tls_ptr.?);
@@ -450,11 +458,20 @@ pub fn open(url: []const u8, role: relay.Role, id: *const [8]u8, cancel: ?netdia
         defer bundle.deinit(std.heap.page_allocator);
         const t = std.heap.page_allocator.create(std.crypto.tls.Client) catch return error.OutOfMemory;
         tls_ptr = t;
+        // Client.init blocks in the handshake and does not see the dial
+        // cancel flag. A socket timer is what makes a stuck workers.dev
+        // handshake return instead of holding the join thread.
+        trace.log("tls handshake {s}", .{target.host()});
+        setRecvTimeout(tcp.handle, 10_000);
         t.* = std.crypto.tls.Client.init(tcp, bundle, target.host()) catch |err| {
+            setRecvTimeout(tcp.handle, 0);
+            trace.log("tls handshake {s} {s}", .{ target.host(), @errorName(err) });
             setDetailFmt("TLS {s}", .{@errorName(err)});
             return error.Tls;
         };
+        setRecvTimeout(tcp.handle, 0);
         t.allow_truncation_attacks = true;
+        trace.log("tls handshake done {s}", .{target.host()});
     }
     io.setNonBlocking(tcp.handle) catch {};
 
@@ -468,6 +485,7 @@ pub fn open(url: []const u8, role: relay.Role, id: *const [8]u8, cancel: ?netdia
     var status_buf: [8]u8 = undefined;
     const status = try readData(pipe, &status_buf, peer_wait);
     if (status.len != 1 or status[0] != relay.status_ok) return error.RelayRejected;
+    trace.log("relay paired role {s}", .{role_name});
 
     const pair = io.socketPair() catch return error.Closed;
     errdefer io.close(pair[1]);
