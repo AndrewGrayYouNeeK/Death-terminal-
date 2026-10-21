@@ -1672,7 +1672,7 @@ pub const plugin_actions = [_]events.Action{
     .goto_tab_7,      .goto_tab_8,        .goto_tab_9,       .split_right,    .split_down,
     .close_pane,      .focus_left,        .focus_right,      .focus_up,       .focus_down,
     .next_pane,       .prev_pane,         .resize_left,      .resize_right,   .resize_up,
-    .resize_down,     .zoom_pane,         .equalize_panes,
+    .resize_down,     .zoom_pane,         .equalize_panes, .time_travel,
 };
 
 fn apiAction(p: *Plugin, L: *State) error{LuaMsg}!c_int {

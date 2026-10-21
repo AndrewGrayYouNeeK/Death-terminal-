@@ -16,6 +16,9 @@ pub const PTY = pty_mod.PTY;
 const CSIParams = ansi_parser.CSIParams;
 
 /// Cell represents a single character cell in the terminal
+/// Fired when OSC 133 C is parsed, before the rest of that buffer is applied.
+pub const CommandStartFn = *const fn (ctx: *anyopaque) void;
+
 pub const Cell = struct {
     char: u21, // Unicode codepoint
     fg_color: u32,
@@ -284,6 +287,9 @@ pub const Terminal = struct {
     clipboard_ops: std.ArrayList(ClipboardOp),
     /// OSC 133 prompt/command tracking (see shell_integration.zig).
     shell: shell_integration.State,
+    /// Optional hook for OSC 133 C (Time Travel snapshots). Null in tests.
+    command_start: ?CommandStartFn = null,
+    command_start_ctx: ?*anyopaque = null,
 
     pub fn init(allocator: std.mem.Allocator) !Terminal {
         return initWithSize(allocator, 24, 80, 10_000);
@@ -1864,6 +1870,7 @@ pub const Terminal = struct {
                 sh.output_start = self.cursorMark();
                 sh.phase = .running;
                 sh.started +%= 1;
+                if (self.command_start) |cb| if (self.command_start_ctx) |ctx| cb(ctx);
             },
             'D' => {
                 if (sh.phase == .running or sh.pending != null) self.finishCommand(shell_integration.parseExit(arg));

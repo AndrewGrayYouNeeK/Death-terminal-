@@ -32,6 +32,7 @@ const frame_mod = @import("../renderer/frame.zig");
 const events = @import("../platform/events.zig");
 const color = @import("../terminal/color.zig");
 const config_watch = @import("config_watch.zig");
+const time_travel = @import("time_travel.zig");
 
 const Pane = session.Pane;
 const PaneId = session.PaneId;
@@ -120,7 +121,10 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
         .read_buf = read_buf,
         .last_focus = first.id,
         .last_tab = ws.currentTab().id,
+        .travel = time_travel.Hub.open(a, cfg),
     };
+    gui.travel.activate();
+    defer gui.travel.deinit();
     gui.setupPane(first);
     gui.fitWindow(window.width, window.height);
     if (loop.startup_layout) gui.buildStartupLayout();
@@ -188,6 +192,7 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
             const p = ws.pane(id) orelse continue;
             if (fds.items[3 + 2 * i + 1].revents & io.POLL.IN != 0) {
                 if (try p.ai.onWake(&p.ui, p.term, std.time.milliTimestamp())) gui.touch(p);
+                if (gui.travel.takeDirty()) gui.touchAll();
             }
             p.ai.tick(p.term, std.time.milliTimestamp());
             if (p.ui.tickNotice(std.time.milliTimestamp())) gui.touch(p);
@@ -247,6 +252,35 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
     if (env_mod.get("DT_PERF_STATS") != null) pace.report();
 }
 
+fn commandStarted(ctx: *anyopaque) void {
+    const p: *Pane = @ptrCast(@alignCast(ctx));
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = terminal.shell_integration.cwdFromUri(p.term.cwd_uri, &buf) orelse "";
+    time_travel.notifyStart(.{
+        .pane = p.id,
+        .started = p.term.shell.started,
+        .cwd = cwd,
+        .remote = p.ssh_display.len > 0,
+        .command = p.term.shell.pending orelse "",
+        .ai = &p.ai,
+    });
+}
+
+fn noteCommand(self: *Gui, p: *Pane) void {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = terminal.shell_integration.cwdFromUri(p.term.cwd_uri, &buf) orelse p.track.cwd.items;
+    const command = p.term.shell.pending orelse if (p.term.shell.lastCommand()) |c| c.text else "";
+    const exit_code = if (p.term.shell.lastCommand()) |c| c.exit_code else null;
+    self.travel.observe(.{
+        .pane = p.id,
+        .started = p.term.shell.started,
+        .cwd = cwd,
+        .remote = p.ssh_display.len > 0,
+        .command = command,
+        .ai = &p.ai,
+    }, p.term.shell.finished, exit_code);
+}
+
 fn paneAiSettings(cfg: *const config.Config, remote: []const u8) ai_controller.Settings {
     var s = ai_controller.Settings.fromConfig(cfg);
     s.remote = remote;
@@ -269,6 +303,7 @@ const Gui = struct {
     pace: *el.Pacer,
     plugins: *plugin_bridge.Bridge,
     read_buf: []u8,
+    travel: time_travel.Hub,
     window_focused: bool = true,
     need_present: bool = false,
     /// Expose/resize: redraw even if the frame is unchanged.
@@ -305,13 +340,18 @@ const Gui = struct {
 
     fn present(self: *Gui, force: bool) !bool {
         try self.vk.render();
+        if (self.travel.isOpen()) {
+            self.ws.full = true;
+            for (self.ws.panes.items) |p| p.dirty = true;
+        }
         const comp = try self.ws.compose(self.chrome);
+        if (self.travel.isOpen()) self.travel.draw(self.focusedPane().id, self.ws.cells.items, comp.rows, comp.cols);
         const fp = self.focusedPane();
         var v = frame_mod.View.fromTerminal(fp.term);
         // Reverse video (DECSCNM) is whole-window: only with one pane shown.
         if (self.ws.visibleCount() > 1) v.reverse_video = false;
         v.focused = self.window_focused;
-        v.cursor_visible = comp.cursor_visible;
+        v.cursor_visible = comp.cursor_visible and !self.travel.isOpen();
         v.marks = self.ws.marks.items;
         v.palette = self.palette;
         v.selection_bg = self.palette.selection_bg;
@@ -364,6 +404,8 @@ const Gui = struct {
         el.applyCursorShape(p.term, self.cfg.cursor_shape);
         el.applyColumnSwitch(p.term, self.cfg.allow_column_switch, false);
         p.ai.filter = self.plugins.aiFilter();
+        p.term.command_start = commandStarted;
+        p.term.command_start_ctx = p;
     }
 
     /// A new pane running the shell (or an SSH session) of `req`.
@@ -513,6 +555,9 @@ const Gui = struct {
             else => {},
         };
         if (self.ws.drag == .pane and self.ws.drag.pane == id) self.ws.drag = .none;
+        p.term.command_start = null;
+        p.term.command_start_ctx = null;
+        self.travel.drop(id);
         const removed_tab = self.ws.detachPane(id);
         self.plugins.removeTrack(&p.track);
         if (self.plugins.host) |h| {
@@ -679,7 +724,9 @@ const Gui = struct {
             }
             p.ui.sync(p.term);
             self.plugins.afterOutput(&p.track, std.time.milliTimestamp());
+            noteCommand(self, p);
             try self.pluginEffects();
+            if (self.travel.isOpen()) self.touchAll();
             const is_focus = p == self.focusedPane();
             if (!p.visible and !p.activity) {
                 p.activity = true;
@@ -718,6 +765,7 @@ const Gui = struct {
             },
             .action => |a| try self.handleAction(a),
             .paste => |pv| {
+                if (self.travel.isOpen()) return;
                 if (pv.purpose == .plugin) {
                     if (self.plugins.host) |h| h.clipboardResult(pv.data);
                     return;
@@ -749,6 +797,12 @@ const Gui = struct {
     }
 
     fn handleInput(self: *Gui, bytes: []const u8) !void {
+        if (self.travel.isOpen()) {
+            const result = self.travel.onText(self.focusedPane().id, bytes);
+            if (result == .close) self.travel.close();
+            self.touchAll();
+            return;
+        }
         if (self.ws.confirm != null) {
             if (bytes.len == 1) switch (bytes[0]) {
                 'y', 'Y', '\r' => try self.answerConfirm(true),
@@ -781,6 +835,12 @@ const Gui = struct {
     }
 
     fn handleKey(self: *Gui, key: input.Key, mods: input.Mods) !void {
+        if (self.travel.isOpen()) {
+            const result = self.travel.onKey(self.focusedPane().id, key);
+            if (result == .close) self.travel.close();
+            self.touchAll();
+            return;
+        }
         if (self.ws.confirm != null) {
             switch (key) {
                 .enter, .kp_enter => try self.answerConfirm(true),
@@ -825,6 +885,20 @@ const Gui = struct {
 
     fn handleAction(self: *Gui, a: events.ActionEvent) !void {
         const act = a.action;
+        if (self.travel.isOpen()) {
+            if (act == .time_travel) {
+                self.travel.toggle(self.focusedPane().id);
+            } else if (act == .ai_dismiss) {
+                _ = self.travel.cancel(self.focusedPane().id);
+            }
+            self.touchAll();
+            return;
+        }
+        if (act == .time_travel) {
+            self.travel.toggle(self.focusedPane().id);
+            self.touchAll();
+            return;
+        }
         // While a prompt is up only the palettes stay reachable.
         if ((self.ws.confirm != null or self.ws.rename != null) and act != .command_palette) return self.keyFallback(a);
         if (self.chrome.palette != null and act != .command_palette and act != .ssh_palette) return self.keyFallback(a);
@@ -927,6 +1001,15 @@ const Gui = struct {
 
     fn handleMouse(self: *Gui, m: events.MouseInput) !void {
         const ws = self.ws;
+        if (self.travel.isOpen()) {
+            if (m.action == .press and m.button == .left) {
+                const ch: i32 = @intCast(self.cellH());
+                const row: u16 = @intCast(std.math.clamp(@divFloor(m.y, ch), 0, @as(i32, ws.rows) - 1));
+                self.travel.click(self.focusedPane().id, row, ws.rows);
+                self.touchAll();
+            }
+            return;
+        }
         if (self.chrome.palette != null or ws.confirm != null) return;
         const cw: i32 = @intCast(self.cellW());
         const ch: i32 = @intCast(self.cellH());
@@ -1278,6 +1361,7 @@ const Gui = struct {
         self.pace.frame_ns = el.frameNs(next.max_fps);
         self.pace.read_budget = @as(usize, next.read_budget_kb) * 1024;
         el.installBindings(next);
+        self.travel.apply(next);
         if (old.status_bar != next.status_bar) try self.setStatusBar(next.status_bar);
         self.frame.invalidate();
     }

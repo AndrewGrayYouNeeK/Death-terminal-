@@ -16,7 +16,7 @@ const io = @import("../platform/io.zig");
 const posix = std.posix;
 const openai = @import("openai.zig");
 
-pub const Kind = enum { suggest, explain };
+pub const Kind = enum { suggest, explain, summarize };
 
 pub const Status = enum(u8) {
     /// Nothing has failed (or the last request worked).

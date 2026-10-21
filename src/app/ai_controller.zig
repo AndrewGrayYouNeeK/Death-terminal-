@@ -10,6 +10,7 @@ const terminal = @import("../terminal/terminal.zig");
 const config = @import("../config/config.zig");
 const ui_mod = @import("ui.zig");
 const engine_mod = @import("../ai/engine.zig");
+const openai = @import("../ai/openai.zig");
 const context = @import("../ai/context.zig");
 const si = terminal.shell_integration;
 
@@ -74,6 +75,25 @@ pub const Controller = struct {
     shown_status: ?engine_mod.Status = null,
     /// Plugins' `ai_suggestion` hook (set by the event loop).
     filter: ?Filter = null,
+    /// Time Travel one-line summaries (`Kind.summarize`). The callback
+    /// runs while `text` is still alive.
+    on_summary: ?SummaryFn = null,
+    summary_ctx: ?*anyopaque = null,
+    summary_for: u64 = 0,
+    summary_gen: u64 = 0,
+
+    pub const SummaryFn = *const fn (ctx: *anyopaque, id: u64, text: []const u8, done: bool, failed: bool) void;
+
+    pub fn suggesting(self: *const Controller) bool {
+        return self.suggest_anchor != null;
+    }
+
+    pub fn submitSummary(self: *Controller, messages: []const openai.Message) !u64 {
+        const e = self.engine orelse return error.NoEngine;
+        const gen = try e.submit(.summarize, messages, 48, 1);
+        self.summary_gen = gen;
+        return gen;
+    }
 
     pub const FilterResult = union(enum) {
         keep,
@@ -312,6 +332,10 @@ pub const Controller = struct {
                     try ui.setAiNotice(self.explain_title.items, if (body.len > 0) body else "(no answer)", now_ms);
                 }
                 changed = true;
+            } else if (u.kind == .summarize and u.gen == self.summary_gen) {
+                if (self.on_summary) |cb| if (self.summary_ctx) |ctx| {
+                    cb(ctx, self.summary_for, u.text, u.done, u.failed != null);
+                };
             }
         }
         changed = self.syncStatus(ui) or changed;

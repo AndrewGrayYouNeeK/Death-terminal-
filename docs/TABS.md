@@ -11,7 +11,7 @@ grid and scrollback, selection, search, AI suggestions and "explain" context. Th
 
 | Keys | Action |
 |---|---|
-| Ctrl+Shift+T | New tab (starts in the focused pane's directory) |
+| Ctrl+Shift+T | New tab (starts in the focused pane's directory). Time Travel is Ctrl+Alt+T (Cmd+Option+T on macOS). Cmd+Shift+T stays New Tab because Command without Option is matched as Ctrl+Shift |
 | Ctrl+Shift+Alt+W | Close the tab |
 | Ctrl+PgDn / Ctrl+Tab | Next tab |
 | Ctrl+PgUp / Ctrl+Shift+Tab | Previous tab |

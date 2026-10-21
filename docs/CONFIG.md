@@ -93,6 +93,11 @@ config is reloaded.
 | `shell.env` | `{}` | Extra environment, e.g. `{ EDITOR = "nvim" }`. These values beat inherited ones and even `TERM` (**restart**) |
 | `shell.cwd` | `""` | Starting directory. `""` inherits it; a leading `~` means `$HOME` (**restart**) |
 | `shell.integration` | `true` | Load the OSC 133 prompt marks for bash/zsh/fish so AI suggestions know the typed command, history and exit codes ([AI.md](AI.md#shell-integration-osc-133)) (**restart**) |
+| `time_travel.enabled` | `true` | Snapshot the working tree before each command. See [TIME_TRAVEL.md](TIME_TRAVEL.md) |
+| `time_travel.max_dir_mb` | `200` | Skip a snapshot (and refuse a rewind that could not be undone) above this size, 1–1048576 |
+| `time_travel.retention` | `50` | How many snapshots to keep per pane, 1–10000 |
+| `time_travel.ai_summary` | `true` | One-line AI summary when a command changed files (`ai.enabled` must also be on) |
+| `time_travel.excludes` | `node_modules`, `.git/objects`, build dirs | Gitignore-style patterns. `{}` keeps everything a root `.gitignore` does not reject. Remove `.git/objects` to snapshot git objects |
 | `ai.enabled` | `true` | AI command suggestions on/off (`--no-ai` overrides). See [AI.md](AI.md) |
 | `ai.endpoint` | `"http://localhost:11434/v1"` | Base URL (http/https). Ollama and other OpenAI-compatible servers use `/chat/completions`. `api.x.ai` and `us.api.x.ai` use `/responses` (Grok 4.7) |
 | `ai.model` | `"qwen2.5-coder:0.5b"` | Model name (`grok-4.7` on xAI) |

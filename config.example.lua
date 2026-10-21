@@ -92,6 +92,19 @@ config.shell.env = {}                -- e.g. { EDITOR = "nvim" } (restart)
 config.shell.cwd = ""                -- "" = inherit; "~" is expanded (restart)
 config.shell.integration = true      -- OSC 133 prompt marks for bash/zsh/fish (restart)
 
+-- Snapshots of the shell's directory, taken when a command starts (OSC 133 C).
+-- Ctrl+Alt+T opens the timeline (Cmd+Option+T on macOS). Ctrl+Shift+T stays New Tab.
+config.time_travel = {
+  enabled = true,
+  max_dir_mb = 200,                  -- skip a snapshot above this many megabytes
+  retention = 50,                    -- snapshots kept per pane
+  ai_summary = true,                 -- one line from the AI when files changed
+  excludes = {                       -- gitignore-style; drop ".git/objects" to store git objects
+    "node_modules", ".git/objects", "zig-cache", ".zig-cache", "zig-out",
+    "target", "__pycache__", ".venv", "venv", "dist",
+  },
+}
+
 -- AI command suggestions (docs/AI.md) --------------------------------------
 config.ai.enabled = true             -- --no-ai overrides
 config.ai.endpoint = "http://localhost:11434/v1"  -- any OpenAI-compatible API (Ollama by default)

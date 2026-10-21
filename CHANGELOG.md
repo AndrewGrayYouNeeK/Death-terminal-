@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Time Travel: before each OSC 133 command, snapshot the shell's directory (APFS clonefile, Linux reflink, or a copy) into a content-addressed store, then record the added/removed/modified files. Ctrl+Alt+T (Cmd+Option+T on macOS) scrubs that timeline and rewinds the folder; the rewind confirms and can be undone. Ctrl+Shift+T stays New Tab. `config.time_travel` sets `enabled`, `max_dir_mb`, `retention`, `ai_summary` and `excludes` (see [docs/TIME_TRAVEL.md](docs/TIME_TRAVEL.md))
 - Bundled `youneek-time` plugin: a YouNeeK Time status segment (civil hour, 100 minutes per hour, `#7CFF6B`, local suncalc moon phase). The status bar is on by default. `config.plugins["youneek-time"]` can disable it, switch to regular `HH:MM`, pick 12/24h, set a timezone, and turn on an hourly toast (`settings.chime`, off by default)
 - Installable desktop packages from `zig build release -Dpackages=true`: macOS `.app` plus `.dmg` (`packaging/macos/make-dmg.sh`; `hdiutil` on a Mac, HFS-hybrid UDIF on Linux), Windows NSIS setup exe with the app icon and a Start Menu shortcut (`packaging/windows/build-installer.sh`), alongside the existing Linux AppImage, `.deb` (installs `deathterminal.desktop`) and `.rpm`. The tag release workflow uploads them. Code signing stays a documented TODO (`packaging/SIGNING.md`)
 - `docs/MOBILE.md`: iOS/Android plan. No mobile target is built

@@ -58,6 +58,11 @@ Context-aware, not just history-based.
 - Lua 5.4 config with live reload (see [docs/CONFIG.md](docs/CONFIG.md))
 - Sandboxed Lua plugins, each in its own state with memory/CPU limits and only the permissions you grant: hooks for commands (OSC 133), output, cwd, title, bell, focus, keys, SSH and AI suggestions; command palette (Ctrl+Shift+P), keybindings, status bar, toasts, timers, themes; `deathterminal --plugins list|enable|disable` (see [docs/PLUGINS.md](docs/PLUGINS.md))
 
+### ⏪ Time Travel
+- Before each command (OSC 133 C), a cheap snapshot of that shell's directory: copy-on-write where the filesystem allows it (APFS clonefile, Linux reflink), then a byte copy. Content-addressed under the data directory
+- After the command, a diff of added, removed and modified files. Ctrl+Alt+T (Cmd+Option+T on macOS) scrubs the session and rewinds that folder to just before the command; the rewind asks first and can be undone
+- Ctrl+Shift+T stays New Tab. Huge trees, `node_modules`, `.git/objects` and anything outside the directory (including symlinks) are skipped. See [docs/TIME_TRAVEL.md](docs/TIME_TRAVEL.md)
+
 ### 🗂 Tabs + Split Panes
 - Tabs and horizontal/vertical splits, each pane with its own shell, scrollback, selection, search and AI context
 - Themed tab bar with cwd, activity, bell and exit-status markers; drag to reorder, double-click to rename; drag dividers to resize; zoom, equalize, optional dimming of inactive panes
@@ -133,6 +138,7 @@ in [docs/MOBILE.md](docs/MOBILE.md) and is not built.
 - Built-in SSH (libssh2, Linux only): profiles + `~/.ssh/config`, ProxyJump, agent/key/keyboard-interactive/password auth, known_hosts checks, remote PTY with resize, `-L/-R/-D` forwards togglable at runtime (Ctrl+Shift+S), keepalive/reconnect; `zig build test-ssh` against a local sshd (see [docs/SSH.md](docs/SSH.md))
 - Lua plugins: sandboxed per-plugin states, permission grants in config.lua, hooks, command palette (Ctrl+Shift+P), status bar (on by default), toasts, timers, themes, four example plugins including the bundled YouNeeK Time clock (see [docs/PLUGINS.md](docs/PLUGINS.md))
 - Tabs and split panes: layout tree, keyboard/mouse resize and focus, zoom, equalize, tab bar, confirm-close for running programs, startup layouts, plugin tab/pane events and actions (see [docs/TABS.md](docs/TABS.md))
+- Time Travel: per-command snapshots of the working tree, a scrubbable timeline (Ctrl+Alt+T / Cmd+Option+T) and an undoable rewind (see [docs/TIME_TRAVEL.md](docs/TIME_TRAVEL.md))
 - CI: Linux build + unit tests, Windows and macOS cross-compiles; a `v*` tag opens a draft GitHub release
 - Packaging: `zig build release -Dpackages=true` builds an AppImage, `.deb` (with a `.desktop` file) and `.rpm`, a Windows zip plus NSIS installer, and a macOS `.app` plus `.dmg`. A `v*` tag publishes them. Signing is not done yet ([packaging/SIGNING.md](packaging/SIGNING.md))
 - 80/132-column DECCOLM: headless grids resize; GUI panes keep their width and only clear, home, and reset margins
