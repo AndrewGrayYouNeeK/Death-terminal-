@@ -15,8 +15,8 @@
     }
   },
   // Production limits. Deploy this file, not wrangler.test.jsonc.
-  // Custom domain (uncomment once the youneek.xyz zone is on this account):
-  // "routes": [{ "pattern": "relay.youneek.xyz", "custom_domain": true }],
+  // Live custom domain. https://relay.youneek.xyz/health
+  "routes": [{ "pattern": "relay.youneek.xyz", "custom_domain": true }],
   "vars": {
     "MAX_SESSIONS": "128",
     "MAX_PER_IP": "8",

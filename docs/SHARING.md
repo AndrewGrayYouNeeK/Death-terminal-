@@ -132,10 +132,9 @@ relay, the guest dials the relay. The host is already waiting there. Both
 sockets are outbound, so a guest NAT and a host NAT do not need a forwarded
 port. IPv6 is not in the invite.
 
-Until `relay.youneek.xyz` answers, a guest who is not on the LAN cannot join
-an invite that uses the default URL. The LAN path still works. Point
-`config.share.relay` at the deployed `wss://….workers.dev` URL, or at
-`"off"`. See [Deploy the hosted relay](#deploy-the-hosted-relay).
+The default invite names `wss://relay.youneek.xyz`, which is live
+(`https://relay.youneek.xyz/health`). A guest off the LAN uses that relay.
+`"off"` keeps the share on the LAN. See [Deploy the hosted relay](#deploy-the-hosted-relay).
 
 ## Invite
 
@@ -249,8 +248,11 @@ record payloads. Observability redacts the query string, which is where
 
 ### Deploy the hosted relay
 
-This repository does not deploy the Worker. Andrew deploys it from a machine
-that is logged into the Cloudflare account that should own `youneek.xyz`:
+The Worker is deployed. `https://relay.youneek.xyz/health` returns ok, and
+`relay/wrangler.jsonc` routes `relay.youneek.xyz` as a custom domain. The app
+default `wss://relay.youneek.xyz` matches that. `"off"` is LAN only.
+
+To redeploy from the Cloudflare account that owns `youneek.xyz`:
 
 ```sh
 cd relay
@@ -259,25 +261,10 @@ npx wrangler login
 npx wrangler deploy
 ```
 
-`npm ci` uses `relay/.npmrc` (`legacy-peer-deps=true`). Wrangler prints a
-`https://youneek-share-relay.<account>.workers.dev` URL. Until the custom
-domain exists, set that URL in the app:
-
-```lua
-config.share.relay = "wss://youneek-share-relay.<account>.workers.dev"
-```
-
-To serve `relay.youneek.xyz`, the `youneek.xyz` zone has to be on that
-account. Uncomment the `routes` entry in `relay/wrangler.jsonc`:
-
-```jsonc
-"routes": [{ "pattern": "relay.youneek.xyz", "custom_domain": true }],
-```
-
-Redeploy. The app default is already `wss://relay.youneek.xyz`, so
-`config.share.relay = ""` then works with no further client change. Do not
-deploy `relay/wrangler.test.jsonc`. Do not put an API token in the repo.
-`npx wrangler deploy --dry-run` checks the config without publishing.
+`npm ci` uses `relay/.npmrc` (`legacy-peer-deps=true`). Do not deploy
+`relay/wrangler.test.jsonc`. Do not put an API token in the repo.
+`npx wrangler deploy --dry-run` checks the config without publishing. A
+`workers.dev` URL still works if you set `config.share.relay` to it.
 
 `npx wrangler dev` in `relay/` speaks the same WebSocket protocol on
 localhost. The Zig tests use an in-process `ws://` mock instead of that
