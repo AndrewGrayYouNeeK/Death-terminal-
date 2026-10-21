@@ -4,9 +4,11 @@
 //!
 //! UNTESTED AT RUNTIME: this file is cross-compiled from Linux only. The
 //! design keeps the dependency surface small: the Objective-C runtime and
-//! frameworks are loaded with dlopen (see objc.zig), there is no
-//! NSApplicationDelegate or NSView subclass, and events are read straight
-//! off the AppKit queue.
+//! frameworks are loaded with dlopen (see objc.zig). There is no
+//! NSApplicationDelegate. A runtime NSView subclass is the content view and
+//! first responder so Command chords arrive through `performKeyEquivalent:`
+//! (AppKit does not deliver those as `keyDown:`). Other events are read
+//! straight off the AppKit queue.
 //!
 //! Waiting: AppKit wants its main thread blocked in
 //! nextEventMatchingMask, but the event loop also waits on PTY / wake fds.
@@ -77,7 +79,18 @@ pub const State = struct {
     primary_text: ?[]u8 = null,
     paste_buf: std.ArrayListUnmanaged(u8) = .{},
     waiter: ?*Waiter = null,
+    /// Last key event already given to the matcher. AppKit can deliver the
+    /// same Command chord twice (performKeyEquivalent: and keyDown:).
+    key_stamp: f64 = -1,
+    key_code: u16 = 0,
+    key_seen: bool = false,
+    key_taken: bool = false,
+    /// Main-menu key equivalents cleared so Hide/Quit cannot swallow Cmd+Shift+letter.
+    menu_disarmed: bool = false,
 };
+
+/// The one window. View callbacks have no ivar slot (no SDK).
+var cocoa_key_state: ?*State = null;
 
 // ------------------------------------------------------------------ waiter
 
@@ -175,7 +188,12 @@ pub fn open(st: *State, allocator: std.mem.Allocator, title: []const u8, width: 
     msg(void, st.window, "setAcceptsMouseMovedEvents:", .{objc.YES});
     setTitle(st, title);
 
-    st.view = msg(Id, st.window, "contentView", .{});
+    try ensureContentClass();
+    const view = msg(Id, objc.alloc("DTContentView"), "initWithFrame:", .{rect});
+    if (view == null) return error.NoWindow;
+    msg(void, st.window, "setContentView:", .{view});
+    st.view = view;
+    cocoa_key_state = st;
     st.layer = msg(Id, objc.class("CAMetalLayer"), "layer", .{});
     if (st.layer == null) return error.NoMetalLayer;
     msg(void, st.view, "setLayer:", .{st.layer});
@@ -185,6 +203,8 @@ pub fn open(st: *State, allocator: std.mem.Allocator, title: []const u8, width: 
     msg(void, st.window, "makeKeyAndOrderFront:", .{@as(Id, null)});
     msg(void, st.app, "finishLaunching", .{});
     msg(void, st.app, "activateIgnoringOtherApps:", .{objc.YES});
+    disarmMenu(st);
+    _ = msg(objc.BOOL, st.window, "makeFirstResponder:", .{st.view});
 
     syncGeometry(st, false);
 
@@ -196,6 +216,7 @@ pub fn open(st: *State, allocator: std.mem.Allocator, title: []const u8, width: 
 }
 
 pub fn close(st: *State) void {
+    if (cocoa_key_state == st) cocoa_key_state = null;
     if (st.waiter) |w| {
         w.reclaim();
         w.mutex.lock();
@@ -236,6 +257,7 @@ pub fn wait(st: *State, fds: []io.PollFd, timeout_ms: i32) usize {
             msg(Id, objc.class("NSDate"), "distantFuture", .{})
         else
             msg(Id, objc.class("NSDate"), "dateWithTimeIntervalSinceNow:", .{@as(f64, @floatFromInt(timeout_ms)) / 1000.0});
+        disarmMenu(st);
         const ev = msg(Id, st.app, "nextEventMatchingMask:untilDate:inMode:dequeue:", .{ any_event_mask, until, st.run_mode, objc.YES });
         if (ev != null) handleEvent(st, ev);
     }
@@ -360,6 +382,7 @@ fn pump(st: *State) void {
     if (st.app == null) return;
     const pool = objc.rt.poolPush();
     defer objc.rt.poolPop(pool);
+    disarmMenu(st);
     const past = msg(Id, objc.class("NSDate"), "distantPast", .{});
     var n: usize = 0;
     while (n < 256) : (n += 1) {
@@ -415,7 +438,7 @@ fn handleEvent(st: *State, ev: Id) void {
             if (msg(i16, ev, "subtype", .{}) == wake_subtype) return;
         },
         NSEventType.key_down => {
-            if (handleKey(st, ev)) return;
+            if (deliverKey(st, ev, .key_down)) return;
         },
         NSEventType.key_up, NSEventType.flags_changed => return,
         NSEventType.left_down, NSEventType.left_up, NSEventType.right_down, NSEventType.right_up, NSEventType.other_down, NSEventType.other_up, NSEventType.mouse_moved, NSEventType.left_dragged, NSEventType.right_dragged, NSEventType.other_dragged => {
@@ -430,9 +453,28 @@ fn handleEvent(st: *State, ev: Id) void {
     msg(void, st.app, "sendEvent:", .{ev});
 }
 
+const KeyVia = enum { key_down, key_equivalent };
+
+/// One key event, once. `performKeyEquivalent:` and the poll loop can both
+/// see a Command chord; the second call returns the first result.
+fn deliverKey(st: *State, ev: Id, via: KeyVia) bool {
+    const stamp = msg(f64, ev, "timestamp", .{});
+    const code = msg(u16, ev, "keyCode", .{});
+    if (st.key_seen and stamp == st.key_stamp and code == st.key_code) return st.key_taken;
+    // Record before handling. performKeyEquivalent: can re-enter while AppKit
+    // hides the app, and the poll loop can see the same event afterwards.
+    st.key_seen = true;
+    st.key_stamp = stamp;
+    st.key_code = code;
+    st.key_taken = true;
+    const taken = matchKey(st, ev, via);
+    st.key_taken = taken;
+    return taken;
+}
+
 /// Returns true when the key was consumed (not forwarded to AppKit, which
 /// would beep for keys no responder handles).
-fn handleKey(st: *State, ev: Id) bool {
+fn matchKey(st: *State, ev: Id, via: KeyVia) bool {
     const flags = msg(u64, ev, "modifierFlags", .{});
     const code = msg(u16, ev, "keyCode", .{});
     const mac = macFlags(flags);
@@ -444,17 +486,37 @@ fn handleKey(st: *State, ev: Id) bool {
     if (keysymOf(code, chars)) |sym| {
         const plan = macMatchPlan(sym, chars, mac);
         if (plan.quit) {
+            logCommand(ev, via, mac, sym, "quit");
             st.queue.pushClose();
             return true;
         }
+        switch (plan.hide) {
+            .app => {
+                logCommand(ev, via, mac, sym, "hide");
+                if (st.app != null) msg(void, st.app, "hide:", .{@as(Id, null)});
+                return true;
+            },
+            .others => {
+                logCommand(ev, via, mac, sym, "hide-others");
+                if (st.app != null) msg(void, st.app, "hideOtherApplications:", .{@as(Id, null)});
+                return true;
+            },
+            .none => {},
+        }
         for (plan.mods) |slot| if (slot) |m| {
             if (events.matchBinding(sym, m)) |a| {
+                logCommand(ev, via, mac, sym, @tagName(a.action));
                 st.queue.pushAction(a);
                 return true;
             }
         };
-        // Unmatched Command keys belong to AppKit (Hide, Hide Others, Minimize).
-        if (mac.command) return false;
+        // Unmatched Command keys: the menu equivalents were cleared, so
+        // returning false lets the poll loop forward the event. Nothing
+        // in the menu is waiting for it.
+        if (mac.command) {
+            logCommand(ev, via, mac, sym, "unbound");
+            return false;
+        }
     } else if (mac.command) {
         if (commandQuits(chars, flags)) {
             st.queue.pushClose();
@@ -480,6 +542,80 @@ fn handleKey(st: *State, ev: Id) bool {
     if (std.unicode.utf8Decode(text) catch null) |cp| if (cp >= 0xF700 and cp <= 0xF8FF) return true;
     st.queue.pushText(text, false);
     return true;
+}
+
+fn logCommand(ev: Id, via: KeyVia, mac: MacFlags, sym: u32, what: []const u8) void {
+    if (!mac.command) return;
+    if (objc.isTrue(msg(objc.BOOL, ev, "isARepeat", .{}))) return;
+    const letter: u8 = if (sym >= 'a' and sym <= 'z') @intCast(sym - 32) else '?';
+    std.debug.print("cocoa: {s} {s}{s}{s}{s}{c} -> {s}\n", .{
+        if (via == .key_equivalent) "performKeyEquivalent" else "keyDown",
+        if (mac.command) "Cmd+" else "",
+        if (mac.shift) "Shift+" else "",
+        if (mac.option) "Option+" else "",
+        if (mac.control) "Ctrl+" else "",
+        letter,
+        what,
+    });
+}
+
+fn viewAcceptsFirstResponder(_: Id, _: objc.Sel) callconv(.C) objc.BOOL {
+    return objc.YES;
+}
+
+/// Command chords are delivered here, not to keyDown:.
+fn viewKeyEquivalent(_: Id, _: objc.Sel, ev: Id) callconv(.C) objc.BOOL {
+    const st = cocoa_key_state orelse return objc.NO;
+    if (ev == null) return objc.NO;
+    if (msg(u64, ev, "type", .{}) != NSEventType.key_down) return objc.NO;
+    if (msg(u64, ev, "modifierFlags", .{}) & Flag.command == 0) return objc.NO;
+    return if (deliverKey(st, ev, .key_equivalent)) objc.YES else objc.NO;
+}
+
+fn viewKeyDown(_: Id, _: objc.Sel, ev: Id) callconv(.C) void {
+    const st = cocoa_key_state orelse return;
+    if (ev == null) return;
+    _ = deliverKey(st, ev, .key_down);
+}
+
+var content_class_ready = false;
+
+fn ensureContentClass() !void {
+    if (content_class_ready or objc.class("DTContentView") != null) {
+        content_class_ready = true;
+        return;
+    }
+    const super = objc.class("NSView");
+    if (super == null) return error.NoWindow;
+    const cls = objc.allocateClassPair(super, "DTContentView") orelse return error.NoWindow;
+    const ok = objc.addMethod(cls, "acceptsFirstResponder", @ptrCast(&viewAcceptsFirstResponder), "c@:") and
+        objc.addMethod(cls, "canBecomeKeyView", @ptrCast(&viewAcceptsFirstResponder), "c@:") and
+        objc.addMethod(cls, "keyDown:", @ptrCast(&viewKeyDown), "v@:@") and
+        objc.addMethod(cls, "performKeyEquivalent:", @ptrCast(&viewKeyEquivalent), "c@:@");
+    objc.registerClassPair(cls);
+    if (!ok) return error.NoWindow;
+    content_class_ready = true;
+}
+
+fn disarmMenu(st: *State) void {
+    if (st.menu_disarmed or st.app == null) return;
+    const menu = msg(Id, st.app, "mainMenu", .{});
+    if (menu == null) return;
+    clearMenuKeys(menu, 0);
+    st.menu_disarmed = true;
+}
+
+fn clearMenuKeys(menu: Id, depth: u8) void {
+    if (menu == null or depth > 8) return;
+    const n = msg(isize, menu, "numberOfItems", .{});
+    var i: isize = 0;
+    while (i < n) : (i += 1) {
+        const item = msg(Id, menu, "itemAtIndex:", .{i});
+        if (item == null) continue;
+        msg(void, item, "setKeyEquivalent:", .{objc.nsString("")});
+        const sub = msg(Id, item, "submenu", .{});
+        if (sub != null) clearMenuKeys(sub, depth + 1);
+    }
 }
 
 fn handleMouse(st: *State, ev: Id, ty: u64) void {
@@ -693,8 +829,11 @@ fn macFlagBits(f: MacFlags) u64 {
     return bits;
 }
 
+const HideTarget = enum { none, app, others };
+
 const MacPlan = struct {
     quit: bool = false,
+    hide: HideTarget = .none,
     mods: [3]?input.Mods = .{ null, null, null },
 };
 
@@ -705,8 +844,10 @@ const MacPlan = struct {
 /// Option is tried first as Ctrl+Alt, so Cmd+Option+T is Time Travel and
 /// does not take New Tab.
 ///
-/// Bare Cmd+H is Hide and Cmd+Option+H is Hide Others: those are not
-/// translated, so Share is Cmd+Shift+H and stop is Cmd+Shift+Option+H.
+/// Bare Cmd+H hides the app and Cmd+Option+H hides the others. Those are
+/// not bindings, so Share is Cmd+Shift+H and stop is Cmd+Shift+Option+H.
+/// The menu's key equivalents are cleared; hiding is done from here, because
+/// a menu item for "h" would also swallow Cmd+Shift+H.
 /// G, J and Q also require Shift (Cmd+Q quits; Cmd+Shift+Q asks).
 /// With no Command key, the physical Control/Option/Shift set is used.
 /// That path matches Ctrl+Shift+H when AppKit delivers the event, because
@@ -721,7 +862,9 @@ fn macMatchPlan(sym: u32, chars: []const u8, flags: MacFlags) MacPlan {
     }
     if (commandQuits(chars, macFlagBits(flags))) return .{ .quit = true };
     // Hide / Hide Others. Shift (or Control) means it is one of our chords.
-    if (sym == 'h' and !flags.shift and !flags.control) return .{};
+    if (sym == 'h' and !flags.shift and !flags.control) {
+        return .{ .hide = if (flags.option) .others else .app };
+    }
     const needs_shift = events.macCommandNeedsShift(sym);
     const command_alts = [2]?input.Mods{
         .{ .ctrl = true, .shift = true },
@@ -745,6 +888,18 @@ fn macMatchPlan(sym: u32, chars: []const u8, flags: MacFlags) MacPlan {
         .{ .ctrl = true },
         command_alts[1],
     } };
+}
+
+const KeyDelivery = enum { key_down, key_equivalent, system };
+
+/// Where AppKit delivers the event, and where we have to read it.
+/// Command+letter (including Command+Shift+letter) is sent to
+/// `performKeyEquivalent:` on the key view and is not delivered as `keyDown:`.
+/// Reading only `keyDown:` makes every Cmd shortcut dead. Bare Cmd+H is Hide.
+fn keyDelivery(flags: MacFlags, sym: ?u32) KeyDelivery {
+    if (!flags.command) return .key_down;
+    if (sym) |s| if (s == 'h' and !flags.shift and !flags.control) return .system;
+    return .key_equivalent;
 }
 
 /// Cmd+Q quits. Shift or Option keeps the key for bindings (Cmd+Shift+Q asks).
@@ -832,4 +987,38 @@ test "cocoa: mac chords for share, ask, and time travel" {
     try std.testing.expectEqual(events.Action.new_tab, resolveMac(&b, 0x11, "T", cmd_shift).action.?);
     try std.testing.expectEqual(events.Action.time_travel, resolveMac(&b, 0x11, "\x14", .{ .control = true, .option = true }).action.?);
     try std.testing.expectEqual(events.Action.copy, resolveMac(&b, 0x08, "c", cmd).action.?);
+}
+
+test "cocoa: Cmd+Shift+letter reaches the matcher through performKeyEquivalent" {
+    const cmd: MacFlags = .{ .command = true };
+    const cmd_shift: MacFlags = .{ .command = true, .shift = true };
+    const cmd_opt: MacFlags = .{ .command = true, .option = true };
+    // AppKit does not send these as keyDown. The view's performKeyEquivalent:
+    // must hand them to macMatchPlan.
+    try std.testing.expectEqual(KeyDelivery.key_equivalent, keyDelivery(cmd_shift, 'h'));
+    try std.testing.expectEqual(KeyDelivery.key_equivalent, keyDelivery(cmd_shift, 'g'));
+    try std.testing.expectEqual(KeyDelivery.key_equivalent, keyDelivery(cmd_shift, 'j'));
+    try std.testing.expectEqual(KeyDelivery.key_equivalent, keyDelivery(cmd_shift, 'q'));
+    try std.testing.expectEqual(KeyDelivery.key_equivalent, keyDelivery(cmd_opt, 't'));
+    try std.testing.expectEqual(KeyDelivery.key_equivalent, keyDelivery(cmd, 'c'));
+    try std.testing.expectEqual(KeyDelivery.key_equivalent, keyDelivery(cmd, 'q'));
+    try std.testing.expectEqual(KeyDelivery.system, keyDelivery(cmd, 'h'));
+    try std.testing.expectEqual(KeyDelivery.system, keyDelivery(cmd_opt, 'h'));
+    try std.testing.expectEqual(KeyDelivery.key_down, keyDelivery(.{ .control = true, .shift = true }, 'h'));
+    try std.testing.expectEqual(KeyDelivery.key_down, keyDelivery(.{}, 'a'));
+
+    const hide = macMatchPlan('h', "h", cmd);
+    try std.testing.expectEqual(HideTarget.app, hide.hide);
+    try std.testing.expect(hide.mods[0] == null);
+    try std.testing.expect(!hide.quit);
+    try std.testing.expectEqual(HideTarget.others, macMatchPlan('h', "h", cmd_opt).hide);
+    const share = macMatchPlan('h', "H", cmd_shift);
+    try std.testing.expectEqual(HideTarget.none, share.hide);
+    try std.testing.expect(share.mods[0] != null);
+
+    const b = events.Bindings.defaults();
+    try std.testing.expectEqual(events.Action.share_pane, resolveMac(&b, 0x04, "H", cmd_shift).action.?);
+    try std.testing.expectEqual(events.Action.share_grant, resolveMac(&b, 0x05, "G", cmd_shift).action.?);
+    try std.testing.expectEqual(events.Action.share_join, resolveMac(&b, 0x26, "J", cmd_shift).action.?);
+    try std.testing.expectEqual(events.Action.ai_ask, resolveMac(&b, 0x0C, "Q", cmd_shift).action.?);
 }

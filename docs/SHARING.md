@@ -8,8 +8,8 @@ ciphertext.
 
 ```sh
 # host, in the window: Ctrl+Shift+H  (macOS: Cmd+Shift+H, or the command palette)
-# the notice and stderr print:
-deathterminal --join dt1....
+# a banner shows the address and this command, and copies it to the clipboard:
+deathterminal --share                  # same thing from the shell: prints the invite and stays up
 
 # guest
 deathterminal --join dt1....
@@ -18,7 +18,18 @@ deathterminal --gui --join dt1....     # same view, in a window
 ```
 
 `Ctrl+Shift+J` (macOS: `Cmd+Shift+J`) opens a join prompt in the window. Paste
-the code or the `deathterminal://join/` link.
+the code or the `deathterminal://join/` link. The command palette also lists
+`Share: copy invite`.
+
+The host banner is the join address: LAN IP, port, and `deathterminal --join`
+with the full code. That same text is on the clipboard. If listening or joining
+fails, the window says why: a bad invite code, a refused connection, a timeout,
+or the firewall.
+
+On macOS the first share listens on a new port. The system may ask to allow
+incoming connections. Allow them. If you deny the prompt, the guest times out
+or the connection is refused. The same prompt can appear for `deathterminal
+--share`.
 
 ## What is shared
 
@@ -48,13 +59,13 @@ is the boundary: input is queued into the pane only when access is control,
 the gate is open, and the bytes are non-empty. A new guest after a kick starts
 at read-only again.
 
-The host's shared pane shows a banner on row 0 (local overlay, not sent):
+The host's shared pane shows a banner on row 0 (local overlay, not sent). The rows under it are the invite (address, then `deathterminal --join` and the code), in amber on black, also not sent:
 
 | State | Banner |
 | --- | --- |
-| Waiting | `SHARING \| waiting for a guest \| F12 stop` |
-| Read-only guest | `BEING WATCHED \| read-only \| F12 kick \| Ctrl+Shift+G grant` |
-| Guest has control | `BEING WATCHED \| guest has CONTROL \| F12 kick \| Ctrl+Shift+G revoke` |
+| Waiting | `SHARING <ip>:<port> \| waiting for a guest \| invite copied \| F12 stop` |
+| Read-only guest | `BEING WATCHED \| read-only \| F12 kick \| Ctrl+Shift+G grant \| <ip>:<port>` |
+| Guest has control | `BEING WATCHED \| guest has CONTROL \| F12 kick \| Ctrl+Shift+G revoke \| <ip>:<port>` |
 
 On macOS the grant/revoke hint is `Cmd+Shift+G`, the chord that reaches the app.
 
@@ -78,6 +89,7 @@ are not share shortcuts. The command palette lists `Share: share this pane`.
 | `share_kick` — kick the guest, or stop if you are only waiting | `F12` | `F12` |
 | `share_stop` — stop the share | `Ctrl+Shift+Alt+H` | `Cmd+Shift+Option+H` |
 | `share_join` — paste an invite | `Ctrl+Shift+J` | `Cmd+Shift+J` |
+| `share_copy` — copy the invite again | command palette | command palette (`Share: copy invite`) |
 
 ## Config
 
@@ -210,7 +222,9 @@ being a splice and would break the handshake on purpose.
 
 ## Headless guest
 
-The default build is headless. `--join` without `--gui` attaches, drains the
-local PTY so it cannot overwrite the remote grid, and prints the host's
-screen. `Ctrl+C` leaves. In read-only mode, arrow keys move the local cursor.
-After the host grants control, those bytes go to the host's pane.
+The default build is headless. `--share` listens, prints the invite on stdout
+(the LAN address and `deathterminal --join …`), and keeps the local shell.
+`--join` without `--gui` attaches, drains the local PTY so it cannot overwrite
+the remote grid, and prints the host's screen. `Ctrl+C` leaves. In read-only
+mode, arrow keys move the local cursor. After the host grants control, those
+bytes go to the host's pane.
