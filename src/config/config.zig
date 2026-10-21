@@ -239,6 +239,14 @@ pub const Config = struct {
     shell_env: std.ArrayList([]const u8),
     /// Starting directory ("" = inherit; "~" is expanded).
     shell_cwd: []const u8 = "",
+    /// Ghost Run: confirm risky commands before Enter reaches the shell.
+    ghost_run_enabled: bool = true,
+    /// Ask the AI engine for a plain-English explanation on the overlay.
+    ghost_run_ai: bool = true,
+    /// `config.ghost_run.patterns`. Empty until a custom list is assigned.
+    ghost_patterns: std.ArrayList([]const u8),
+    /// False uses the built-in patterns. Assigning a list, even `{}`, replaces them.
+    ghost_patterns_set: bool = false,
     /// Offer a shortcut when the same command sequence repeats in one project.
     muscle_enabled: bool = true,
     /// How many times a sequence must repeat before it is offered.
@@ -260,6 +268,7 @@ pub const Config = struct {
             .ssh_profiles = std.ArrayList(SshProfile).init(allocator),
             .startup_layout = std.ArrayList(LayoutTab).init(allocator),
             .plugins = std.ArrayList(PluginConfig).init(allocator),
+            .ghost_patterns = std.ArrayList([]const u8).init(allocator),
         };
     }
 
@@ -270,6 +279,7 @@ pub const Config = struct {
         self.ssh_profiles.deinit();
         self.startup_layout.deinit();
         self.plugins.deinit();
+        self.ghost_patterns.deinit();
         self.arena.deinit();
         self.allocator.destroy(self.arena);
     }

@@ -92,6 +92,13 @@ config.shell.env = {}                -- e.g. { EDITOR = "nvim" } (restart)
 config.shell.cwd = ""                -- "" = inherit; "~" is expanded (restart)
 config.shell.integration = true      -- OSC 133 prompt marks for bash/zsh/fish (restart)
 
+-- Ghost Run (docs/GHOST_RUN.md): Enter on a risky command shows a preview
+-- before the shell sees it. y runs it, n / Esc cancels. Enter does not confirm.
+config.ghost_run.enabled = true
+config.ghost_run.ai_explain = true   -- plain-English note when config.ai is on
+-- Assigning patterns replaces the built-in list (an empty list matches nothing):
+-- config.ghost_run.patterns = { "rm -r", "git reset --hard", "dd", ">" }
+
 -- AI command suggestions (docs/AI.md) --------------------------------------
 config.ai.enabled = true             -- --no-ai overrides
 config.ai.endpoint = "http://localhost:11434/v1"  -- any OpenAI-compatible API (Ollama by default)

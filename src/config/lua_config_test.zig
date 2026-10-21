@@ -209,7 +209,7 @@ test "lua config: config.example.lua is valid and matches the defaults" {
     try t.expectEqual(@as(usize, 0), d.items.items.len);
     var def = config.Config.init(t.allocator);
     defer def.deinit();
-    inline for (.{ "rows", "cols", "scale", "backend", "headless", "font_size", "line_height", "font_retro", "font_ligatures", "cursor_shape", "max_fps", "read_budget_kb", "scrollback_lines", "scrollbar", "scroll_lines", "copy_on_select", "paste_confirm", "default_keybindings", "ai_enabled", "ai_timeout_ms", "ai_debounce_ms", "ai_max_tokens", "ai_explain_max_tokens", "ai_history", "ai_output_lines", "ai_ask_enabled", "ai_ask_max_lines", "shell_integration", "muscle_enabled", "muscle_min_repeats", "muscle_max_len", "ssh_enabled", "ssh_keepalive_s", "confirm_close", "dim_inactive", "inherit_cwd", "allow_column_switch", "status_bar" }) |name| {
+    inline for (.{ "rows", "cols", "scale", "backend", "headless", "font_size", "line_height", "font_retro", "font_ligatures", "cursor_shape", "max_fps", "read_budget_kb", "scrollback_lines", "scrollbar", "scroll_lines", "copy_on_select", "paste_confirm", "default_keybindings", "ai_enabled", "ai_timeout_ms", "ai_debounce_ms", "ai_max_tokens", "ai_explain_max_tokens", "ai_history", "ai_output_lines", "ai_ask_enabled", "ai_ask_max_lines", "shell_integration", "muscle_enabled", "muscle_min_repeats", "muscle_max_len", "ssh_enabled", "ssh_keepalive_s", "confirm_close", "dim_inactive", "inherit_cwd", "allow_column_switch", "status_bar", "ghost_run_enabled", "ghost_run_ai" }) |name| {
         try t.expectEqual(@field(def, name), @field(cfg, name));
     }
     inline for (.{ "font_family", "theme", "present_mode", "osc52", "word_chars", "url_open_command", "shell_program", "shell_cwd", "ai_endpoint", "ai_model", "ai_reasoning", "ai_api_key_env", "ai_accept_key", "ssh_config_file", "ssh_known_hosts", "tab_bar" }) |name| {
@@ -217,6 +217,40 @@ test "lua config: config.example.lua is valid and matches the defaults" {
     }
     try t.expectEqual(def.palette().hash(), cfg.palette().hash());
     try t.expectEqual(@as(usize, 0), cfg.shell_args.items.len + cfg.shell_env.items.len + cfg.ssh_profiles.items.len + cfg.startup_layout.items.len);
+    try t.expect(!cfg.ghost_patterns_set);
+    try t.expectEqual(@as(usize, 0), cfg.ghost_patterns.items.len);
+}
+
+test "lua config: ghost_run patterns replace the defaults" {
+    var d = config.Diagnostics.init(t.allocator);
+    defer d.deinit();
+    var cfg = loadStr(
+        \\config.ghost_run.enabled = false
+        \\config.ghost_run.ai_explain = false
+        \\config.ghost_run.patterns = { "dd", "mkfs*" }
+        \\assert(config.ghost_run.patterns[1] == "dd")
+        \\assert(config.ghost_run.enabled == false)
+    , &d);
+    defer cfg.deinit();
+    d.print();
+    try t.expectEqual(@as(usize, 0), d.items.items.len);
+    try t.expect(!cfg.ghost_run_enabled);
+    try t.expect(!cfg.ghost_run_ai);
+    try t.expect(cfg.ghost_patterns_set);
+    try t.expectEqual(@as(usize, 2), cfg.ghost_patterns.items.len);
+    try t.expectEqualStrings("mkfs*", cfg.ghost_patterns.items[1]);
+
+    d.clear();
+    var empty = loadStr("config.ghost_run.patterns = {}\n", &d);
+    defer empty.deinit();
+    try t.expectEqual(@as(usize, 0), d.items.items.len);
+    try t.expect(empty.ghost_patterns_set);
+    try t.expectEqual(@as(usize, 0), empty.ghost_patterns.items.len);
+
+    d.clear();
+    var bad = loadStr("config.ghost_run.patterns = { \"\" }\n", &d);
+    defer bad.deinit();
+    try t.expect(d.items.items.len > 0);
 }
 
 test "lua config: load() falls back to defaults on errors" {

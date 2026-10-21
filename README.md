@@ -44,6 +44,11 @@ Context-aware, not just history-based.
 - Secrets (tokens, keys, passwords, env assignments) are redacted before anything is sent; offline endpoints just show a small "AI offline" badge
 - bash/zsh/fish OSC 133 shell integration, injected automatically (see [docs/AI.md](docs/AI.md))
 
+### 👻 Ghost Run
+- Enter on a risky command (`rm -r` / `-rf`, `git reset --hard`, `git clean`, `git push --force`, `dd`, `mkfs`, `chmod -R`, `chown -R`, `mv` over an existing path, `find -delete`, truncating redirects, `curl | sh`, and the rest of the built-in list) is held back
+- A local read-only preview estimates the impact (directory walks, `git diff` / `git clean -n`) and can add a plain-English AI note. The command is not executed to build that preview
+- `y` runs it, `n` or Esc cancels, and `t` runs it after a Time Travel snapshot when that feature is registered (see [docs/GHOST_RUN.md](docs/GHOST_RUN.md))
+
 ### 🔁 Muscle Memory
 - Local only: repeated command sequences in one project (the same 2–5 commands, three or more times) raise “You run these together a lot. Make it a shortcut?”
 - Accepting asks for a name and writes `~/.config/death-terminal/shortcuts.lua`. Typing that name, or picking it in the command palette, runs the sequence and stops on the first failure

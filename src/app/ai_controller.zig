@@ -12,6 +12,7 @@ const ui_mod = @import("ui.zig");
 const engine_mod = @import("../ai/engine.zig");
 const context = @import("../ai/context.zig");
 const ask = @import("../ai/ask.zig");
+const ghost_explain = @import("../ghost/explain.zig");
 const si = terminal.shell_integration;
 
 const Terminal = terminal.Terminal;
@@ -83,6 +84,12 @@ pub const Controller = struct {
     /// True while the ask bar is up, so a debounced suggestion cannot replace the request.
     ask_hold: bool = false,
     ask_active: bool = false,
+    /// Ghost Run explanation. `onWake` stores it here so `take` cannot
+    /// drop it before the overlay reads it. Not shown as the error notice.
+    ghost_gen: u64 = 0,
+    ghost_text: std.ArrayList(u8),
+    ghost_done: bool = false,
+    ghost_failed: bool = false,
     shown_status: ?engine_mod.Status = null,
     /// Plugins' `ai_suggestion` hook (set by the event loop).
     filter: ?Filter = null,
@@ -107,6 +114,7 @@ pub const Controller = struct {
             .suggest_input = std.ArrayList(u8).init(allocator),
             .explain_title = std.ArrayList(u8).init(allocator),
             .ask_title = std.ArrayList(u8).init(allocator),
+            .ghost_text = std.ArrayList(u8).init(allocator),
         };
         self.startEngine();
         return self;
@@ -118,6 +126,7 @@ pub const Controller = struct {
         self.explain_title.deinit();
         self.ask_title.deinit();
         self.freeAskRegion();
+        self.ghost_text.deinit();
     }
 
     fn startEngine(self: *Controller) void {
@@ -144,6 +153,9 @@ pub const Controller = struct {
             ui.clearGhost();
             ui.setAiStatus(null);
             self.shown_status = null;
+            self.ghost_gen = 0;
+            self.ghost_done = true;
+            self.ghost_failed = true;
             return;
         }
         if (!settings.ask_enabled and ui.askIsOpen()) self.cancelAsk(ui);
@@ -313,6 +325,40 @@ pub const Controller = struct {
         try ui.setAiNotice(self.explain_title.items, "thinking\u{2026}", now_ms);
     }
 
+    /// Plain-English Ghost Run note. Does not use the "explain last error" notice.
+    /// The command has not run. `impact` is the local read-only estimate.
+    pub fn requestGhostExplain(self: *Controller, command: []const u8, impact: []const u8, cwd: []const u8) !void {
+        const e = self.engine orelse return;
+        self.due_ms = null;
+        self.suggest_anchor = null;
+        var arena_state = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_state.deinit();
+        const msgs = try ghost_explain.messages(arena_state.allocator(), command, impact, cwd);
+        self.ghost_text.clearRetainingCapacity();
+        self.ghost_done = false;
+        self.ghost_failed = false;
+        self.ghost_gen = try e.submit(.ghost_explain, msgs, self.settings.explain_max_tokens, 6);
+    }
+
+    pub fn cancelGhostExplain(self: *Controller) void {
+        if (self.ghost_gen == 0) return;
+        self.ghost_gen = 0;
+        self.ghost_done = false;
+        self.ghost_failed = false;
+        self.ghost_text.clearRetainingCapacity();
+        if (self.engine) |e| e.cancelAll();
+    }
+
+    pub const GhostExplain = struct {
+        text: []const u8,
+        done: bool,
+        failed: bool,
+    };
+
+    pub fn ghostExplainState(self: *const Controller) GhostExplain {
+        return .{ .text = self.ghost_text.items, .done = self.ghost_done, .failed = self.ghost_failed };
+    }
+
     /// The engine signalled: collect streamed text. Returns whether the
     /// UI changed.
     pub fn onWake(self: *Controller, ui: *Ui, term: *const Terminal, now_ms: i64) !bool {
@@ -343,6 +389,13 @@ pub const Controller = struct {
                 },
                 .ask => if (u.gen == self.ask_gen) {
                     changed = try self.onAskUpdate(ui, term, u, now_ms) or changed;
+                },
+                .ghost_explain => if (u.gen == self.ghost_gen and self.ghost_gen != 0) {
+                    self.ghost_text.clearRetainingCapacity();
+                    self.ghost_text.appendSlice(u.text) catch {};
+                    self.ghost_done = u.done;
+                    self.ghost_failed = u.failed != null;
+                    changed = true;
                 },
             }
         }
