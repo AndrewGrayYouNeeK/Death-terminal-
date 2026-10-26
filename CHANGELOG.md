@@ -193,7 +193,7 @@ First versioned release. Everything below (milestones 1–12) ships in it.
 - Fixed ANSI parser duplicate switch case and Execute action typing for Zig 0.13
 
 ### Removed
-- Cross-repository `REPOSITORY_AUDIT.md` (Base44/Vercel deployment audit unrelated to this project)
+- Cross-repository `REPOSITORY_AUDIT.md` (Vercel deployment audit unrelated to this project)
 
 ### Added (prior releases)
 - build.zig.zon for dependency management
