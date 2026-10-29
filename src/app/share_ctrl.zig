@@ -198,7 +198,9 @@ pub const Controller = struct {
         }
         const addr = std.fmt.bufPrint(&self.addr, "{s}:{d}", .{ adv, host.port() }) catch adv;
         self.addr_len = addr.len;
-        const inv = std.fmt.bufPrint(&self.invite, "{s}:{d}\ndeathterminal --join {s}\n", .{ adv, host.port(), host.code }) catch
+        const shown = if (self.short_on) short_code.hyphen(&self.short_raw) else [_]u8{0} ** 7;
+        const join_code: []const u8 = if (self.short_on) shown[0..] else host.code;
+        const inv = std.fmt.bufPrint(&self.invite, "{s}:{d}\ndeathterminal --join {s}\n", .{ adv, host.port(), join_code }) catch
             std.fmt.bufPrint(&self.invite, "deathterminal --join {s}\n", .{host.code}) catch "";
         self.invite_len = inv.len;
         self.announce_pending = self.invite_len > 0;

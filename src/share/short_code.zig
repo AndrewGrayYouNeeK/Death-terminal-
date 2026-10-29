@@ -10,6 +10,7 @@ const certs = @import("certs.zig");
 const invite = @import("invite.zig");
 const io = @import("../platform/io.zig");
 const netdial = @import("../net/dial.zig");
+const trace = @import("trace.zig");
 
 pub const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 pub const len: usize = 6;
@@ -77,16 +78,30 @@ pub fn normalize(dst: *[len]u8, text: []const u8) bool {
     return n == len;
 }
 
-/// Register `code`'s invite. 409 means try another code. null means give up.
+/// Register the invite. 409 tries another code. null means give up; the
+/// reason is a `DT_SHARE_DEBUG` line (`share: short code ...`).
 pub fn register(host: []const u8, port: u16, secret: *const [invite.secret_len]u8, relay: []const u8) ?[len]u8 {
     var attempt: u8 = 0;
     while (attempt < 3) : (attempt += 1) {
         const code = randomCode();
-        const status = put(&code, host, port, secret, relay) catch return null;
-        if (status == 201) return code;
-        if (status == 409) continue;
+        trace.log("short code PUT /v1/code/{s}", .{code[0..]});
+        const status = put(&code, host, port, secret, relay) catch |err| {
+            trace.log("short code failed ({s})", .{@errorName(err)});
+            return null;
+        };
+        if (status == 201) {
+            const shown = hyphen(&code);
+            trace.log("short code registered {s}", .{shown[0..]});
+            return code;
+        }
+        if (status == 409) {
+            trace.log("short code {s} taken", .{code[0..]});
+            continue;
+        }
+        trace.log("short code HTTP {d}", .{status});
         return null;
     }
+    trace.log("short code failed (no code)", .{});
     return null;
 }
 
@@ -278,6 +293,21 @@ test "short code: hyphen, spaces, and case" {
     var wide: [16]u8 = undefined;
     const n = spaced(&code, &wide);
     try std.testing.expectEqualStrings("K 7 Q - 4 M Z", wide[0..n]);
+}
+
+test "short code: workers.dev register then resolve" {
+    const secret = [_]u8{0x42} ** invite.secret_len;
+    const raw = register("192.0.2.1", 9, &secret, invite.default_ws_relay) orelse return error.RegisterFailed;
+    const shown = hyphen(&raw);
+    const text = try std.fmt.allocPrint(std.testing.allocator, "{s}", .{shown[0..]});
+    defer std.testing.allocator.free(text);
+    const code = try resolve(std.testing.allocator, text);
+    defer std.testing.allocator.free(code);
+    var owned = try invite.decodeOwned(std.testing.allocator, code);
+    defer owned.deinit();
+    try std.testing.expectEqualSlices(u8, &secret, &owned.secret);
+    try std.testing.expectEqualStrings("192.0.2.1", owned.host);
+    try std.testing.expectEqual(@as(u16, 9), owned.port);
 }
 
 test "short code: json invite" {
