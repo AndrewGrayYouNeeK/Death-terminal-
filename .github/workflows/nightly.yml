@@ -1,8 +1,10 @@
-# Publish macOS binaries on a rolling orphan branch named nightly.
-# No tags and no GitHub Releases. install.sh downloads them from
-# https://media.githubusercontent.com/media/AndrewGrayYouNeeK/Death-terminal-/nightly/macos/<arch>/deathterminal
-# The branch is one commit, replaced on every push to main, so the binary
-# history does not grow.
+# Cross-compile macOS binaries on Linux and publish them on a rolling orphan
+# branch named nightly. No tags and no GitHub Releases. install.sh downloads
+# them from raw.githubusercontent.com (plain git blobs, not Git LFS):
+# https://raw.githubusercontent.com/AndrewGrayYouNeeK/Death-terminal-/nightly/macos/<arch>/deathterminal
+# The branch is one commit, replaced on every push to main, so history does
+# not grow. Icon pngs are copied onto the same commit so DT_REF=nightly can
+# fetch them too.
 name: Nightly macOS binaries
 
 on:
@@ -29,7 +31,7 @@ jobs:
           tar -xf zig.tar.xz
           echo "$PWD/zig-linux-x86_64-0.13.0" >> "$GITHUB_PATH"
 
-      - name: Build ReleaseSafe ${{ matrix.arch }}-macos
+      - name: Cross-compile ReleaseSafe ${{ matrix.arch }}-macos from Linux
         run: zig build -Dtarget=${{ matrix.arch }}-macos -Doptimize=ReleaseSafe
 
       - name: Record checksum
@@ -49,6 +51,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -58,9 +62,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          mkdir -p nightly-src/macos
+          mkdir -p nightly-src/macos nightly-src/packaging/icons
           cp -a artifacts/macos-aarch64/. nightly-src/macos/aarch64/
           cp -a artifacts/macos-x86_64/. nightly-src/macos/x86_64/
+          cp -a packaging/icons/png nightly-src/packaging/icons/png
           cd nightly-src
           git init -b nightly
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

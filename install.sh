@@ -10,13 +10,14 @@
 #
 # Re-run the same command to update.
 #
-# macOS: downloads a prebuilt arm64 or x86_64 binary from the rolling
-# `nightly` branch when one is published, and does not need Zig. It installs
-# ~/Applications/YouNeeK Death Terminal.app (double-clickable), a Desktop
-# symlink to that app, and ~/.local/bin/deathterminal. Quarantine is stripped
-# and the bundle is ad-hoc signed. If no prebuilt exists yet, Zig 0.13.0 is
-# downloaded into ~/.deathterminal/zig and the app is built from source.
-# Linux always builds from source.
+# macOS: downloads a prebuilt arm64 or x86_64 binary. Those binaries are
+# cross-compiled on Linux and published on the rolling `nightly` branch.
+# Zig 0.13 cannot link on current macOS, so a missing prebuilt is an error,
+# not a source build. The app is ~/Applications/YouNeeK Death Terminal.app,
+# a Desktop symlink, and ~/.local/bin/deathterminal. Quarantine is stripped
+# and the bundle is ad-hoc signed.
+# DT_REF selects the git ref for the prebuilt binary and the icon pngs
+# (default: nightly). Linux still builds from source with Zig 0.13.
 
 set -eu
 
@@ -33,8 +34,10 @@ MANIFEST="$PREFIX/installed-files.txt"
 APP_BUNDLE="YouNeeK Death Terminal.app"
 APP_PATH="$HOME/Applications/$APP_BUNDLE"
 DESKTOP_LINK="$HOME/Desktop/$APP_BUNDLE"
-PREBUILT_BASE="${DEATHTERMINAL_PREBUILT_BASE:-https://media.githubusercontent.com/media/AndrewGrayYouNeeK/Death-terminal-/nightly}"
-ICON_BASE="${DEATHTERMINAL_ICON_BASE:-https://raw.githubusercontent.com/AndrewGrayYouNeeK/Death-terminal-/main/packaging/icons/png}"
+# Git ref for prebuilt macOS binaries and icon pngs. Default is the rolling
+# nightly branch. Override to test a branch before it is merged:
+#   curl -fsSL https://raw.githubusercontent.com/${REPO}/<branch>/install.sh | DT_REF=nightly sh
+DT_REF=${DT_REF:-nightly}
 
 say() {
   printf '==> %s\n' "$*"
@@ -53,8 +56,10 @@ Usage: install.sh [--uninstall]
 
 macOS (arm64 and Intel): installs ~/Applications/YouNeeK Death Terminal.app,
 a Desktop symlink you can double-click, and ~/.local/bin/deathterminal.
-A prebuilt binary is used when the nightly branch has one, so Zig is not
-required. Linux installs ~/.local/bin/deathterminal by building from source.
+A prebuilt binary is required. Zig 0.13 cannot link on current macOS, so a
+missing prebuilt stops with an error. Set DT_REF to choose the git ref
+(default nightly). Linux installs ~/.local/bin/deathterminal by building
+from source.
 Run again to update. --uninstall removes the app, the Desktop symlink, the
 CLI, MoltenVK files this script installed, and ~/.deathterminal.
 ~/.config/death-terminal is kept.
@@ -347,11 +352,29 @@ macos_unquarantine_and_sign() {
   esac
 }
 
-# Fetch the rolling nightly binary. Returns 1 when it is missing or the
-# checksum does not match, so the caller can build from source instead.
+# raw.githubusercontent.com, not media.githubusercontent.com. The nightly
+# branch stores plain git blobs (not Git LFS), and raw serves those blobs.
+prebuilt_root() {
+  if [ -n "${DEATHTERMINAL_PREBUILT_BASE:-}" ]; then
+    printf '%s\n' "$DEATHTERMINAL_PREBUILT_BASE"
+    return 0
+  fi
+  printf '%s\n' "https://raw.githubusercontent.com/${REPO}/${DT_REF}"
+}
+
+icon_root() {
+  if [ -n "${DEATHTERMINAL_ICON_BASE:-}" ]; then
+    printf '%s\n' "$DEATHTERMINAL_ICON_BASE"
+    return 0
+  fi
+  printf '%s\n' "https://raw.githubusercontent.com/${REPO}/${DT_REF}/packaging/icons/png"
+}
+
+# Fetch the prebuilt macOS binary. Returns 1 when it is missing or the
+# checksum does not match. macOS does not fall back to a source build.
 fetch_prebuilt() {
   prebuilt_path=$1
-  base="$PREBUILT_BASE/macos/${zig_arch}"
+  base="$(prebuilt_root)/macos/${zig_arch}"
   shafile="$PREFIX/downloads/deathterminal-${zig_arch}.sha256"
   mkdir -p "$PREFIX/downloads"
   say "Looking for a prebuilt ${zig_arch} macOS binary"
@@ -388,7 +411,7 @@ macos_copy_icons() {
     if [ -n "${DEATHTERMINAL_ICON_DIR:-}" ]; then
       cp "$DEATHTERMINAL_ICON_DIR/$name" "$stage/$name" || die "missing icon $name"
     else
-      download "$ICON_BASE/$name" "$stage/$name"
+      download "$(icon_root)/$name" "$stage/$name"
     fi
     cp "$stage/$name" "$resources/$name"
   done
@@ -534,14 +557,36 @@ build_from_source() {
   BUILT_BIN="$PREFIX/src/zig-out/bin/deathterminal"
 }
 
+die_no_prebuilt() {
+  url="$(prebuilt_root)/macos/${zig_arch}/deathterminal"
+  cat >&2 <<EOF
+error: no prebuilt Death Terminal for ${zig_arch}-macos.
+
+Zig 0.13 cannot link programs on current macOS. The linker reports undefined
+symbols from libSystem (_getcwd, _abort, _sigaction, _posix_memalign,
+_malloc_size, _getenv, _fork, _bzero, _arc4random_buf, _sysctlbyname), so this
+installer does not try to build from source on a Mac.
+
+The macOS binaries are cross-compiled on Linux and stored on the git ref
+"${DT_REF}" (override with DT_REF). This URL did not return a checksummed
+binary:
+
+  ${url}
+  ${url}.sha256
+
+Test this branch before it is merged:
+
+  curl -fsSL https://raw.githubusercontent.com/${REPO}/cursor/window-share-fixes-0c84/install.sh | DT_REF=nightly sh
+EOF
+  exit 1
+}
+
 install_macos() {
   prebuilt="$PREFIX/downloads/deathterminal-${zig_arch}"
   if fetch_prebuilt "$prebuilt"; then
     binary=$prebuilt
   else
-    say "Building from source for ${zig_arch}-macos. This downloads Zig 0.13 if you do not already have it."
-    build_from_source
-    binary=$BUILT_BIN
+    die_no_prebuilt
   fi
   macos_make_app "$binary"
   macos_place_moltenvk

@@ -126,7 +126,7 @@ macOS (Apple Silicon and Intel) and Linux (x86_64 and aarch64):
 curl -fsSL https://raw.githubusercontent.com/AndrewGrayYouNeeK/Death-terminal-/main/install.sh | sh
 ```
 
-On a Mac that installs `~/Applications/YouNeeK Death Terminal.app`, puts a symlink on the Desktop, and adds `~/.local/bin/deathterminal`. Double-click the Desktop app. A prebuilt binary is used when one has been published to the `nightly` branch, so Zig is not required. Linux still builds from source.
+On a Mac that installs `~/Applications/YouNeeK Death Terminal.app`, puts a symlink on the Desktop, and adds `~/.local/bin/deathterminal`. Double-click the Desktop app. The binary is the prebuilt one from the `nightly` branch (cross-compiled on Linux). Zig 0.13 cannot link on current macOS, so a missing prebuilt stops with an error instead of compiling. Linux still builds from source.
 
 ```sh
 export PATH="$HOME/.local/bin:$PATH"
