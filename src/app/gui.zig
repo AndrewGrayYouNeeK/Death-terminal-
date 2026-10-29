@@ -1259,6 +1259,7 @@ const Gui = struct {
             .copy => {
                 if (self.share.overlayText()) |t| {
                     self.window.setClipboard(.clipboard, t);
+                    self.share.markCopied(now);
                     try fp.ui.setNotice(.info, "Share: invite copied", &.{}, NOTICE_MS, now);
                     self.touchAll();
                     return;
@@ -1268,6 +1269,7 @@ const Gui = struct {
             .share_copy => {
                 if (self.share.inviteText()) |t| {
                     self.window.setClipboard(.clipboard, t);
+                    self.share.markCopied(now);
                     try fp.ui.setNotice(.info, "Share: invite copied", &.{}, NOTICE_MS, now);
                     std.debug.print("gui: share_copy\n", .{});
                 } else {
@@ -1435,8 +1437,10 @@ const Gui = struct {
                     p.ui.sel = null;
                     p.ui.dragging = false;
                     if (self.share.takeOverlayCopy()) |t| {
+                        const now = std.time.milliTimestamp();
                         self.window.setClipboard(.clipboard, t);
-                        try p.ui.setNotice(.info, "Share: invite copied", &.{}, NOTICE_MS, std.time.milliTimestamp());
+                        self.share.markCopied(now);
+                        try p.ui.setNotice(.info, "Share: invite copied", &.{}, NOTICE_MS, now);
                     }
                     self.touch(p);
                     return;
@@ -1736,9 +1740,12 @@ const Gui = struct {
 
     fn showShare(self: *Gui) !void {
         var dirty = false;
+        const now = std.time.milliTimestamp();
+        if (self.share.tickBanner(now)) dirty = true;
         if (self.share.takeAnnounce()) |text| {
             self.window.setClipboard(.clipboard, text);
-            try self.focusedPane().ui.setNotice(.info, "Shared Haunting — invite copied", &.{}, null, std.time.milliTimestamp());
+            self.share.markCopied(now);
+            try self.focusedPane().ui.setNotice(.info, "Shared Haunting — invite copied", &.{}, null, now);
             std.debug.print("gui: invite copied to the clipboard\n", .{});
             dirty = true;
         }

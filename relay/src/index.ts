@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { handleCode, ShareCodes } from "./codes";
 import {
   otherRole,
   parseRole,
@@ -10,9 +11,12 @@ import {
   type Role,
 } from "./limits";
 
+export { ShareCodes };
+
 export interface Env {
   SESSION: DurableObjectNamespace<ShareSession>;
   GATE: DurableObjectNamespace<RelayGate>;
+  CODES: DurableObjectNamespace<ShareCodes>;
   ALLOW_TEST_HOOKS?: string;
   MAX_SESSIONS?: string;
   MAX_PER_IP?: string;
@@ -404,6 +408,16 @@ export default {
     const url = new URL(request.url);
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
       return Response.json({ ok: true, service: "youneek-share-relay" });
+    }
+    const codePath = /^\/v1\/code\/([A-Za-z0-9-]{6,8})$/.exec(url.pathname);
+    if (codePath) {
+      const ip = request.headers.get("CF-Connecting-IP") ?? "local";
+      try {
+        return await handleCode(request, env, codePath[1], ip);
+      } catch (err) {
+        log("error", { message: err instanceof Error ? err.message : "unknown" });
+        return new Response("relay error", { status: 500 });
+      }
     }
     const sessionId = parseSessionId(url.pathname);
     if (!sessionId) return new Response("not found", { status: 404 });

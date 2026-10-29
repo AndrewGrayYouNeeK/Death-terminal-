@@ -114,7 +114,7 @@ const Dial = struct {
                     continue;
                 },
                 .ws => ws_relay.open(self.ws_url[0..self.ws_url_len], self.role, &self.id, cancel, self.wait_peer) catch |err| {
-                    if (err != error.Cancelled and !cancel.check() and self.useHostedFallback()) continue;
+                    if (err != error.Cancelled and !cancel.check() and self.useHostedFallback(err)) continue;
                     self.remember(err);
                     if (!self.retry(err, cancel)) return;
                     continue;
@@ -132,17 +132,18 @@ const Dial = struct {
     /// `relay.youneek.xyz` can answer an empty 404 or a 403 before the Worker
     /// runs. The session id is the Durable Object name, so the workers.dev
     /// hostname of the same Worker pairs with a peer that took the same path.
-    fn useHostedFallback(self: *Dial) bool {
+    fn useHostedFallback(self: *Dial, err: anyerror) bool {
         if (self.used_fallback) return false;
         if (!invite.isDefaultHostedRelay(self.ws_url[0..self.ws_url_len])) return false;
         const detail = ws_relay.takeDetail();
-        if (!invite.edgeRejectedUpgrade(detail)) return false;
+        if (!invite.hostedShouldFallback(detail, @errorName(err))) return false;
         const next = invite.hosted_ws_fallback;
         if (next.len > self.ws_url.len) return false;
         self.used_fallback = true;
         @memcpy(self.ws_url[0..next.len], next);
         self.ws_url_len = next.len;
-        std.debug.print("share: relay.youneek.xyz rejected the WebSocket ({s}); dialing {s}\n", .{ detail, next });
+        const why = if (detail.len > 0) detail else @errorName(err);
+        std.debug.print("share: relay.youneek.xyz failed ({s}); dialing {s}\n", .{ why, next });
         return true;
     }
 
@@ -986,6 +987,20 @@ test "guest uses the relay when the LAN port does not answer" {
     try std.testing.expectEqual(@as(u21, 'Q'), msg.readCell(guest.grid.items[0..msg.wire_len]).cp);
     try std.testing.expect(mock.forwardedLen() > 0);
     try std.testing.expect(!mock.contains(&secret));
+    try std.testing.expect(mock.guestCount() >= 1);
+}
+
+test "guest dials the relay when the invite LAN address is unreachable" {
+    io.ensureSockets();
+    const mock = try ws_relay.Mock.start(std.testing.allocator);
+    defer mock.deinit();
+    var url_buf: [80]u8 = undefined;
+    const url = try std.fmt.bufPrint(&url_buf, "ws://127.0.0.1:{d}", .{mock.port()});
+    const host = try Host.listen(std.testing.allocator, "127.0.0.1", 0, "192.0.2.1", url, null);
+    defer host.deinit();
+    const guest = try Guest.start(std.testing.allocator, host.code);
+    defer guest.deinit();
+    try waitOpenFor(host, guest, 80, 50);
     try std.testing.expect(mock.guestCount() >= 1);
 }
 

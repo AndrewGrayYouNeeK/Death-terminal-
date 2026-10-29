@@ -37,7 +37,7 @@ CLIPBOARD.
 
 | Keys | Action |
 |---|---|
-| Ctrl+Shift+C | `copy` selection to CLIPBOARD (with no selection it does nothing: it is never sent to the shell, so it can't act as Ctrl+C). On macOS, Cmd+C does this too |
+| Ctrl+Shift+C | `copy` selection to CLIPBOARD (with no selection it does nothing: it is never sent to the shell, so it can't act as Ctrl+C). On macOS, Cmd+C and Edit → Copy do this too, writing `public.utf8-plain-text` to the general pasteboard |
 | Ctrl+Shift+V | `paste` CLIPBOARD. On macOS, Cmd+V pastes, including bracketed paste when the application asked for it (?2004) |
 | Cmd+A (macOS) | `select_all`. Linux and Windows stay on Ctrl+Shift+Alt+A |
 | Shift+Insert | `paste_selection` (PRIMARY) |

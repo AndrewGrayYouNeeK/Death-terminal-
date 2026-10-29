@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const vk = @import("vulkan_c.zig");
 const loader_mod = @import("loader.zig");
+const win32 = @import("../platform/win32_backend.zig");
 
 const CreateXlibSurfaceFn = if (builtin.os.tag == .linux) *const fn (vk.VkInstance, *const vk.raw.VkXlibSurfaceCreateInfoKHR, ?*const anyopaque, *vk.VkSurfaceKHR) callconv(.C) vk.VkResult else *const fn () callconv(.C) void;
 const CreateWaylandSurfaceFn = if (builtin.os.tag == .linux) *const fn (vk.VkInstance, *const vk.raw.VkWaylandSurfaceCreateInfoKHR, ?*const anyopaque, *vk.VkSurfaceKHR) callconv(.C) vk.VkResult else *const fn () callconv(.C) void;
@@ -309,16 +310,35 @@ pub const GpuPresent = struct {
 
     /// Wait until no frame is in flight (before destroying or rewriting
     /// resources the GPU may still read). Never called per frame.
+    ///
+    /// The wait is sliced. On Windows each slice pumps the window queue:
+    /// a DXGI present does not finish while this thread sits inside
+    /// `vkWaitForFences`, so a maximize (WM_SIZE → recreate) used to freeze.
     pub fn waitIdle(self: *GpuPresent, h: Handles) void {
         if (h.device == null) return;
-        const wait = self.vkWaitForFences orelse return;
         var fences: [MAX_FRAMES_IN_FLIGHT]vk.VkFence = undefined;
         var n: u32 = 0;
         for (self.in_flight) |f| if (f != null) {
             fences[n] = f;
             n += 1;
         };
-        if (n > 0) _ = wait(h.device, n, &fences, vk.VK_TRUE, std.math.maxInt(u64));
+        if (n == 0) return;
+        _ = self.waitFences(h, n, &fences);
+    }
+
+    /// True when every fence signals. After about two seconds, gives up so
+    /// a lost present cannot pin the window.
+    fn waitFences(self: *GpuPresent, h: Handles, n: u32, fences: [*]const vk.VkFence) bool {
+        const wait = self.vkWaitForFences orelse return true;
+        const slice: u64 = 50 * std.time.ns_per_ms;
+        var spins: u32 = 0;
+        while (spins < 40) : (spins += 1) {
+            const rc = wait(h.device, n, fences, vk.VK_TRUE, slice);
+            if (rc == vk.VK_SUCCESS) return true;
+            if (builtin.os.tag == .windows) win32.pump();
+        }
+        std.debug.print("    → GPU fence wait gave up; continuing\n", .{});
+        return false;
     }
 
     /// Wait for this slot's previous frame, acquire an image and begin the
@@ -331,7 +351,9 @@ pub const GpuPresent = struct {
         const slot = self.slot;
         const fence = self.in_flight[slot];
         // Blocks only when the GPU is MAX_FRAMES_IN_FLIGHT frames behind.
-        _ = wait_fences(h.device, 1, @ptrCast(&fence), vk.VK_TRUE, std.math.maxInt(u64));
+        // Same sliced wait as resize: an infinite wait here freezes maximize.
+        if (!self.waitFences(h, 1, @ptrCast(&fence))) return error.OutOfDate;
+        _ = wait_fences;
 
         var index: u32 = 0;
         const acq = acquire(h.device, self.swapchain, std.math.maxInt(u64), self.image_available[slot], null, &index);
@@ -344,7 +366,7 @@ pub const GpuPresent = struct {
         if (index >= self.images.len) return error.BadImageIndex;
         // An image acquired out of order may still be in use by another slot.
         if (self.images_in_flight[index]) |other| {
-            if (other != fence) _ = wait_fences(h.device, 1, @ptrCast(&other), vk.VK_TRUE, std.math.maxInt(u64));
+            if (other != fence and !self.waitFences(h, 1, @ptrCast(&other))) return error.OutOfDate;
         }
         self.images_in_flight[index] = fence;
         _ = reset_fences(h.device, 1, @ptrCast(&fence));

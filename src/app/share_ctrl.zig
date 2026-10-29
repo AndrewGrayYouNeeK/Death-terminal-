@@ -15,6 +15,7 @@ const terminal = @import("../terminal/terminal.zig");
 const invite = @import("../share/invite.zig");
 const msg = @import("../share/msg.zig");
 const session = @import("../share/session.zig");
+const short_code = @import("../share/short_code.zig");
 
 const Cell = terminal.Cell;
 const Mark = frame_mod.Mark;
@@ -79,6 +80,16 @@ pub const Controller = struct {
     err_pending: bool = false,
     banner: [180]u8 = undefined,
     banner_len: usize = 0,
+    /// `[Copy]` flips to `Copied!` until this timestamp, then back.
+    showing_copied: bool = false,
+    copied_until: i64 = 0,
+    /// Spaced short code columns at the start of the banner, drawn bold.
+    bold_cols: u16 = 0,
+    short_on: bool = false,
+    short_raw: [short_code.len]u8 = [_]u8{0} ** short_code.len,
+    /// `deathterminal --join K7Q-4MZ\n` when a short code was registered.
+    copy_buf: [80]u8 = undefined,
+    copy_len: usize = 0,
     fp: []u64 = &.{},
     fp_rows: u16 = 0,
     fp_cols: u16 = 0,
@@ -172,6 +183,19 @@ pub const Controller = struct {
         self.host = host;
         self.pane = pane;
         self.bound = true;
+        self.short_on = false;
+        self.copy_len = 0;
+        self.bold_cols = 0;
+        if (relay_cfg.kind == .ws and invite.isDefaultHostedRelay(relay_url)) {
+            if (short_code.register(adv, host.port(), &host.secret, relay_url)) |raw| {
+                self.short_raw = raw;
+                self.short_on = true;
+                const shown = short_code.hyphen(&raw);
+                if (std.fmt.bufPrint(&self.copy_buf, "deathterminal --join {s}\n", .{&shown})) |line| {
+                    self.copy_len = line.len;
+                } else |_| {}
+            }
+        }
         const addr = std.fmt.bufPrint(&self.addr, "{s}:{d}", .{ adv, host.port() }) catch adv;
         self.addr_len = addr.len;
         const inv = std.fmt.bufPrint(&self.invite, "{s}:{d}\ndeathterminal --join {s}\n", .{ adv, host.port(), host.code }) catch
@@ -206,6 +230,7 @@ pub const Controller = struct {
     pub fn takeOverlayCopy(self: *Controller) ?[]const u8 {
         if (!self.ov_copy) return null;
         self.ov_copy = false;
+        if (self.ov_kind == .all and self.copy_len > 0) return self.copy_buf[0..self.copy_len];
         return self.overlayText();
     }
 
@@ -298,7 +323,12 @@ pub const Controller = struct {
             return;
         }
         self.stop();
-        const guest = session.Guest.start(self.a, self.pending[0..self.pending_len]) catch |err| {
+        const resolved = short_code.resolve(self.a, self.pending[0..self.pending_len]) catch |err| {
+            self.setErr(@errorName(err));
+            return;
+        };
+        defer self.a.free(resolved);
+        const guest = session.Guest.start(self.a, resolved) catch |err| {
             self.setErr(@errorName(err));
             return;
         };
@@ -329,6 +359,11 @@ pub const Controller = struct {
         self.clearOverlaySel();
         self.addr_len = 0;
         self.banner_len = 0;
+        self.showing_copied = false;
+        self.copied_until = 0;
+        self.bold_cols = 0;
+        self.short_on = false;
+        self.copy_len = 0;
         self.a.free(self.fp);
         self.fp = &.{};
         self.fp_rows = 0;
@@ -683,7 +718,7 @@ pub const Controller = struct {
             self.paintPointer(cells, marks, stride, x, y, w, h, p);
         }
         if (self.banner_len > 0) {
-            self.paintBar(cells, marks, stride, x, y, w, self.banner[0..self.banner_len], self.barColors());
+            self.paintBar(cells, marks, stride, x, y, w, self.banner[0..self.banner_len], self.barColors(), self.bold_cols);
         }
         if (self.host != null and self.invite_len > 0 and h > 1) {
             const rows = @min(h - 1, 6);
@@ -695,7 +730,7 @@ pub const Controller = struct {
         var buf: [180]u8 = undefined;
         const text = self.prompt.?.items;
         const shown = std.fmt.bufPrint(&buf, " join: {s}_", .{text}) catch " join: ";
-        self.paintBar(cells, marks, stride, x, y, w, shown, paint_reading);
+        self.paintBar(cells, marks, stride, x, y, w, shown, paint_reading, 0);
     }
 
     fn paintPointer(self: *Controller, cells: []Cell, marks: []Mark, stride: u16, x: u16, y: u16, w: u16, h: u16, p: msg.Pointer) void {
@@ -817,7 +852,7 @@ pub const Controller = struct {
         self.ov_hi = hi;
     }
 
-    fn paintBar(self: *Controller, cells: []Cell, marks: []Mark, stride: u16, x: u16, y: u16, w: u16, text: []const u8, colors: BarPaint) void {
+    fn paintBar(self: *Controller, cells: []Cell, marks: []Mark, stride: u16, x: u16, y: u16, w: u16, text: []const u8, colors: BarPaint, bold_cols: u16) void {
         _ = self;
         var i: u16 = 0;
         while (i < w) : (i += 1) {
@@ -826,6 +861,7 @@ pub const Controller = struct {
             var cell = Cell.init();
             cell.fg_color = colors.fg;
             cell.bg_color = colors.bg;
+            cell.bold = i < bold_cols and i < text.len and text[i] != ' ';
             cell.char = if (i < text.len) text[i] else ' ';
             cells[at] = cell;
             if (at < marks.len) marks[at] = .none;
@@ -865,13 +901,44 @@ pub const Controller = struct {
             self.copyBanner(status);
             return;
         }
-        const formatted = if (h.phase == .waiting)
-            std.fmt.bufPrint(&self.banner, " SHARING {s} | waiting for a guest | invite copied | F12 stop", .{self.addr[0..self.addr_len]})
+        const word = if (self.showing_copied) "Copied!" else "[Copy]";
+        self.bold_cols = 0;
+        const formatted = if (self.short_on) blk: {
+            var wide: [16]u8 = undefined;
+            const sn = short_code.spaced(&self.short_raw, &wide);
+            self.bold_cols = 1 + @as(u16, @intCast(sn));
+            break :blk std.fmt.bufPrint(&self.banner, " {s}  {s} | {s} | F12 stop", .{ wide[0..sn], word, self.addr[0..self.addr_len] });
+        } else if (h.phase == .waiting)
+            std.fmt.bufPrint(&self.banner, " SHARING {s} {s} | waiting for a guest | F12 stop", .{ self.addr[0..self.addr_len], word })
         else
-            std.fmt.bufPrint(&self.banner, "{s} | {s}", .{ status, self.addr[0..self.addr_len] });
+            std.fmt.bufPrint(&self.banner, "{s} | {s} {s}", .{ status, self.addr[0..self.addr_len], word });
         if (formatted) |t| {
             self.banner_len = t.len;
         } else |_| self.copyBanner(status);
+    }
+
+    /// Remember a clipboard write. The banner shows `Copied!` for two seconds.
+    pub fn markCopied(self: *Controller, now: i64) void {
+        self.showing_copied = true;
+        self.copied_until = now + 2000;
+        self.rebuildBanner();
+    }
+
+    /// Restore `[Copy]` after the confirmation expires. True when the text changed.
+    pub fn tickBanner(self: *Controller, now: i64) bool {
+        if (!self.showing_copied or now < self.copied_until) return false;
+        self.showing_copied = false;
+        self.copied_until = 0;
+        self.rebuildBanner();
+        return true;
+    }
+
+    /// True when `col` is on the banner's `[Copy]` or `Copied!` label.
+    pub fn copyControlAt(self: *const Controller, col: u16) bool {
+        const text = self.banner[0..self.banner_len];
+        const label = if (self.showing_copied) "Copied!" else "[Copy]";
+        const at = std.mem.indexOf(u8, text, label) orelse return false;
+        return col >= at and col < at + label.len;
     }
 
     fn copyBanner(self: *Controller, text: []const u8) void {
@@ -956,6 +1023,8 @@ fn lineBounds(text: []const u8, at: usize) Span {
 fn explainFailure(name: []const u8) []const u8 {
     if (std.mem.indexOfScalar(u8, name, ' ') != null) return name;
     if (std.mem.eql(u8, name, "BadInvite")) return "bad invite code";
+    if (std.mem.eql(u8, name, "NotFound")) return "that join code expired or was used up";
+    if (std.mem.eql(u8, name, "RateLimited")) return "too many join attempts - wait and try again";
     if (std.mem.eql(u8, name, "Refused") or std.mem.eql(u8, name, "ConnectionRefused")) {
         return "connection refused - the host is not listening, or the firewall blocked it";
     }
@@ -1059,7 +1128,20 @@ test "host invite shows the address, port, and join command" {
     try std.testing.expect(std.mem.indexOf(u8, text, "\ndeathterminal --join dt1.") != null);
     try std.testing.expect(c.takeAnnounce() != null);
     try std.testing.expect(std.mem.indexOf(u8, c.banner[0..c.banner_len], "127.0.0.1:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, c.banner[0..c.banner_len], "invite copied") != null);
+    try std.testing.expect(std.mem.indexOf(u8, c.banner[0..c.banner_len], "[Copy]") != null);
+    try std.testing.expect(c.copyControlAt(@intCast(std.mem.indexOf(u8, c.banner[0..c.banner_len], "[Copy]").?)));
+    c.short_raw = "K7Q4MZ".*;
+    c.short_on = true;
+    c.rebuildBanner();
+    try std.testing.expect(std.mem.indexOf(u8, c.banner[0..c.banner_len], "K 7 Q - 4 M Z") != null);
+    try std.testing.expect(c.bold_cols > 10);
+    c.short_on = false;
+    c.rebuildBanner();
+    c.markCopied(1_000);
+    try std.testing.expect(std.mem.indexOf(u8, c.banner[0..c.banner_len], "Copied!") != null);
+    try std.testing.expect(!c.tickBanner(2_000));
+    try std.testing.expect(c.tickBanner(3_000));
+    try std.testing.expect(std.mem.indexOf(u8, c.banner[0..c.banner_len], "[Copy]") != null);
     try std.testing.expect(std.mem.indexOf(u8, c.banner[0..c.banner_len], "F12 stop") != null);
 
     const again = try std.testing.allocator.dupe(u8, c.inviteText().?);

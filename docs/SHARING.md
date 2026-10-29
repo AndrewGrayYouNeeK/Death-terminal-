@@ -45,10 +45,13 @@ exit with `error: Unexpected` when stdin is not a terminal. macOS loads trust
 anchors from the Security framework, then a PEM file, then the roots
 bundled in the binary. It does not read the system keychain file.
 
-Click the banner, or click the invite without dragging, to copy the whole
-invite again. Drag to highlight a slice. Double-click a word and
-triple-click a line. The highlight is the selection color. Cmd+C (Ctrl+Shift+C
-elsewhere) copies that slice.
+The banner leads with a short code such as `K 7 Q - 4 M Z` when the hosted
+relay accepted it. `[Copy]` puts `deathterminal --join K7Q-4MZ` on the
+clipboard, then the banner reads `Copied!` for two seconds. The guest can
+also paste that code into the join prompt. A long `dt1` invite still works.
+The short code is stored on the workers.dev relay for about an hour and only
+a few lookups. Drag the invite to highlight a slice. Double-click a word and
+triple-click a line. Cmd+C (Ctrl+Shift+C elsewhere) copies that slice.
 
 ## What is shared
 
@@ -82,7 +85,7 @@ The host's shared pane shows a banner on row 0 (local overlay, not sent). The ro
 
 | State | Banner |
 | --- | --- |
-| Waiting | `SHARING <ip>:<port> \| waiting for a guest \| invite copied \| F12 stop` |
+| Waiting | `K 7 Q - 4 M Z  [Copy] \| <ip>:<port> \| F12 stop` when a short code was registered, otherwise `SHARING <ip>:<port> [Copy] \| waiting for a guest \| F12 stop` |
 | Read-only guest | `BEING WATCHED \| read-only \| F12 kick \| Ctrl+Shift+G grant \| <ip>:<port>` |
 | Guest has control | `BEING WATCHED \| guest has CONTROL \| F12 kick \| Ctrl+Shift+G revoke \| <ip>:<port>` |
 
