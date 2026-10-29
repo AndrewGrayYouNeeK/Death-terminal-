@@ -30,10 +30,12 @@
   "durable_objects": {
     "bindings": [
       { "name": "SESSION", "class_name": "ShareSession" },
-      { "name": "GATE", "class_name": "RelayGate" }
+      { "name": "GATE", "class_name": "RelayGate" },
+      { "name": "CODES", "class_name": "ShareCodes" }
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["ShareSession", "RelayGate"] }
+    { "tag": "v1", "new_sqlite_classes": ["ShareSession", "RelayGate"] },
+    { "tag": "v2", "new_sqlite_classes": ["ShareCodes"] }
   ]
 }

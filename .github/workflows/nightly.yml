@@ -1,0 +1,75 @@
+# Cross-compile macOS binaries on Linux and publish them on a rolling orphan
+# branch named nightly. No tags and no GitHub Releases. install.sh downloads
+# them from raw.githubusercontent.com (plain git blobs, not Git LFS):
+# https://raw.githubusercontent.com/AndrewGrayYouNeeK/Death-terminal-/nightly/macos/<arch>/deathterminal
+# The branch is one commit, replaced on every push to main, so history does
+# not grow. Icon pngs are copied onto the same commit so DT_REF=nightly can
+# fetch them too.
+name: Nightly macOS binaries
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: github.repository == 'AndrewGrayYouNeeK/Death-terminal-'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [aarch64, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        run: |
+          curl -sL https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz -o zig.tar.xz
+          tar -xf zig.tar.xz
+          echo "$PWD/zig-linux-x86_64-0.13.0" >> "$GITHUB_PATH"
+
+      - name: Cross-compile ReleaseSafe ${{ matrix.arch }}-macos from Linux
+        run: zig build -Dtarget=${{ matrix.arch }}-macos -Doptimize=ReleaseSafe
+
+      - name: Record checksum
+        run: |
+          mkdir -p "out/macos/${{ matrix.arch }}"
+          cp zig-out/bin/deathterminal "out/macos/${{ matrix.arch }}/deathterminal"
+          chmod 755 "out/macos/${{ matrix.arch }}/deathterminal"
+          sha256sum "out/macos/${{ matrix.arch }}/deathterminal" | awk '{ print $1 }' > "out/macos/${{ matrix.arch }}/deathterminal.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: out/macos/${{ matrix.arch }}/
+
+  publish:
+    if: github.repository == 'AndrewGrayYouNeeK/Death-terminal-'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Push the rolling nightly branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir -p nightly-src/macos nightly-src/packaging/icons
+          cp -a artifacts/macos-aarch64/. nightly-src/macos/aarch64/
+          cp -a artifacts/macos-x86_64/. nightly-src/macos/x86_64/
+          cp -a packaging/icons/png nightly-src/packaging/icons/png
+          cd nightly-src
+          git init -b nightly
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add macos
+          git commit -m "Nightly macOS binaries from ${GITHUB_SHA}"
+          git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:nightly

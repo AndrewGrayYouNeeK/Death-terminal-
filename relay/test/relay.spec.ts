@@ -53,6 +53,7 @@ async function asBytes(data: unknown): Promise<Uint8Array> {
 describe("share relay", () => {
   afterEach(async () => {
     await env.GATE.getByName("global").reset();
+    await env.CODES.getByName("global").reset();
   });
 
   it("reads limits and rejects a bad path", async () => {
@@ -145,5 +146,43 @@ describe("share relay", () => {
       // The alarm was already due and the runtime ran it.
     }
     expect(await closed).toBe(4001);
+  });
+
+  it("maps a short code to the invite, then stops after repeated lookups", async () => {
+    const body = JSON.stringify({
+      host: "192.0.2.1",
+      port: 9,
+      secret: "00112233445566778899aabbccddeeff",
+      relay: "wss://relay.youneek.xyz",
+    });
+    const put = await worker.fetch("https://youneek-share-relay.youneekartifacts.workers.dev/v1/code/K7Q-4MZ", {
+      method: "PUT",
+      body,
+    });
+    expect(put.status).toBe(201);
+    const got = await worker.fetch("https://youneek-share-relay.youneekartifacts.workers.dev/v1/code/k7q4mz");
+    expect(got.status).toBe(200);
+    expect(await got.json()).toEqual({
+      host: "192.0.2.1",
+      port: 9,
+      secret: "00112233445566778899aabbccddeeff",
+      relay: "wss://relay.youneek.xyz",
+    });
+    const clash = await worker.fetch("https://youneek-share-relay.youneekartifacts.workers.dev/v1/code/K7Q4MZ", {
+      method: "PUT",
+      body,
+    });
+    expect(clash.status).toBe(409);
+    const bad = await worker.fetch("https://youneek-share-relay.youneekartifacts.workers.dev/v1/code/K7Q-4M0", {
+      method: "PUT",
+      body,
+    });
+    expect(bad.status).toBe(400);
+    for (let i = 0; i < 7; i += 1) {
+      const again = await worker.fetch("https://youneek-share-relay.youneekartifacts.workers.dev/v1/code/K7Q4MZ");
+      expect(again.status).toBe(200);
+    }
+    const gone = await worker.fetch("https://youneek-share-relay.youneekartifacts.workers.dev/v1/code/K7Q4MZ");
+    expect(gone.status).toBe(404);
   });
 });

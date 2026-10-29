@@ -179,6 +179,10 @@ const Win = if (is_windows) struct {
     const MWMO_INPUTAVAILABLE: windows.DWORD = 0x0004;
     const FD_READ: i32 = 1;
     const FD_ACCEPT: i32 = 8;
+    /// Fires once when a non-blocking connect finishes (success or failure).
+    /// Without it, a Windows guest waits out the whole LAN probe on an
+    /// unreachable invite address before it can dial the relay.
+    const FD_CONNECT: i32 = 16;
     const FD_CLOSE: i32 = 32;
 
 
@@ -206,7 +210,7 @@ const Win = if (is_windows) struct {
             // another's wake-up.
             const ev = ws2.WSACreateEvent();
             defer _ = ws2.WSACloseEvent(ev);
-            for (live) |f| _ = ws2.WSAEventSelect(f.fd, ev, FD_READ | FD_ACCEPT | FD_CLOSE);
+            for (live) |f| _ = ws2.WSAEventSelect(f.fd, ev, FD_READ | FD_ACCEPT | FD_CONNECT | FD_CLOSE);
             const ms: windows.DWORD = if (timeout_ms < 0) windows.INFINITE else @intCast(timeout_ms);
             const handles = [1]windows.HANDLE{ev};
             if (with_messages) {

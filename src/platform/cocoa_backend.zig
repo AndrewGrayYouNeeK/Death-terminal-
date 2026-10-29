@@ -302,8 +302,14 @@ pub fn setClipboard(st: *State, target: events.ClipTarget, text: []const u8) voi
             const pool = objc.rt.poolPush();
             defer objc.rt.poolPop(pool);
             const pb = msg(Id, objc.class("NSPasteboard"), "generalPasteboard", .{});
+            if (pb == null) {
+                std.debug.print("cocoa: clipboard write failed (no pasteboard)\n", .{});
+                return;
+            }
             _ = msg(isize, pb, "clearContents", .{});
-            _ = msg(objc.BOOL, pb, "setString:forType:", .{ objc.nsString(text), objc.constant("NSPasteboardTypeString") });
+            if (!setPasteboardString(pb, text)) {
+                std.debug.print("cocoa: clipboard write failed ({d} bytes)\n", .{text.len});
+            }
         },
     }
 }
@@ -316,11 +322,47 @@ pub fn requestClipboard(st: *State, target: events.ClipTarget, purpose: events.P
             const pool = objc.rt.poolPush();
             defer objc.rt.poolPop(pool);
             const pb = msg(Id, objc.class("NSPasteboard"), "generalPasteboard", .{});
-            const s = msg(Id, pb, "stringForType:", .{objc.constant("NSPasteboardTypeString")});
+            const s = if (pb == null) null else pasteboardString(pb);
             st.paste_buf.appendSlice(st.allocator, objc.utf8(s)) catch {};
         },
     }
     st.queue.pushPaste(st.paste_buf.items, target, purpose);
+}
+
+/// `NSPasteboardTypeString` is this UTI. A `dlsym` of the AppKit constant
+/// is not required, and on some macOS builds that symbol is not visible.
+const pasteboard_type_utf8 = "public.utf8-plain-text";
+const pasteboard_type_legacy = "NSStringPboardType";
+
+fn setPasteboardString(pb: Id, text: []const u8) bool {
+    const s = objc.nsString(text);
+    const names = [_][]const u8{ pasteboard_type_utf8, pasteboard_type_legacy };
+    for (names) |name| {
+        if (pasteboardRoundTrip(pb, s, objc.nsString(name), text)) return true;
+    }
+    if (objc.constant("NSPasteboardTypeString")) |sym| {
+        if (pasteboardRoundTrip(pb, s, sym, text)) return true;
+    }
+    return false;
+}
+
+fn pasteboardRoundTrip(pb: Id, s: Id, ty: Id, text: []const u8) bool {
+    if (ty == null) return false;
+    _ = msg(objc.BOOL, pb, "setString:forType:", .{ s, ty });
+    return std.mem.eql(u8, objc.utf8(msg(Id, pb, "stringForType:", .{ty})), text);
+}
+
+fn pasteboardString(pb: Id) Id {
+    const names = [_][]const u8{ pasteboard_type_utf8, pasteboard_type_legacy };
+    for (names) |name| {
+        const s = msg(Id, pb, "stringForType:", .{objc.nsString(name)});
+        if (s != null) return s;
+    }
+    if (objc.constant("NSPasteboardTypeString")) |sym| {
+        const s = msg(Id, pb, "stringForType:", .{sym});
+        if (s != null) return s;
+    }
+    return null;
 }
 
 /// CAMetalLayer for vkCreateMetalSurfaceEXT.
@@ -590,16 +632,90 @@ fn viewKeyDown(_: Id, _: objc.Sel, ev: Id) callconv(.C) void {
     _ = deliverKey(st, ev, .key_down);
 }
 
-/// AppKit's `sendEvent:` for a mouse-down runs a tracking loop and delivers
-/// `mouseDragged:` / `mouseUp:` to the view. Those events never come back
-/// out of `nextEventMatchingMask`. Without these methods the drag and the
-/// button-up are dropped, so a press starts an inactive selection and
-/// nothing highlights.
+/// AppKit's `sendEvent:` for a mouse-down does not leave `mouseDragged:` and
+/// `mouseUp:` in the queue for a later `nextEventMatchingMask`. A press
+/// alone starts an inactive selection, so nothing highlights and Cmd+C has
+/// nothing to copy. Pull the rest of the gesture here.
 fn viewMouse(_: Id, _: objc.Sel, ev: Id) callconv(.C) void {
     const st = cocoa_key_state orelse return;
     if (ev == null) return;
-    if (!claimMouse(st, ev)) return;
-    handleMouse(st, ev, msg(u64, ev, "type", .{}));
+    if (st.window != null and st.view != null) {
+        _ = msg(objc.BOOL, st.window, "makeFirstResponder:", .{st.view});
+    }
+    const ty = msg(u64, ev, "type", .{});
+    if (claimMouse(st, ev)) handleMouse(st, ev, ty);
+    const mask = mouseTrackMask(ty);
+    if (mask == 0 or st.app == null) return;
+    const pool = objc.rt.poolPush();
+    defer objc.rt.poolPop(pool);
+    const deadline = std.time.milliTimestamp() + 30_000;
+    var n: u32 = 0;
+    while (n < 100_000 and std.time.milliTimestamp() < deadline) : (n += 1) {
+        const until = msg(Id, objc.class("NSDate"), "dateWithTimeIntervalSinceNow:", .{@as(f64, 0.05)});
+        const next = msg(Id, st.app, "nextEventMatchingMask:untilDate:inMode:dequeue:", .{ mask, until, st.run_mode, objc.YES });
+        if (next == null) continue;
+        const nt = msg(u64, next, "type", .{});
+        if (claimMouse(st, next)) handleMouse(st, next, nt);
+        if (!mouseIsDrag(nt)) return;
+    }
+}
+
+/// Layer-hosting views (`setLayer:` then `setWantsLayer:`) can make the
+/// default `hitTest:` return nil, so `sendEvent:` never reaches
+/// `mouseDown:`. Return this view for points inside its bounds.
+fn viewHitTest(self: Id, _: objc.Sel, point: objc.NSPoint) callconv(.C) Id {
+    if (self == null) return null;
+    const local = msg(objc.NSPoint, self, "convertPoint:fromView:", .{ point, @as(Id, null) });
+    const bounds = msg(objc.NSRect, self, "bounds", .{});
+    const x0 = bounds.origin.x;
+    const y0 = bounds.origin.y;
+    const x1 = x0 + bounds.size.width;
+    const y1 = y0 + bounds.size.height;
+    if (local.x >= x0 and local.y >= y0 and local.x < x1 and local.y < y1) return self;
+    return null;
+}
+
+fn viewAcceptsFirstMouse(_: Id, _: objc.Sel, _: Id) callconv(.C) objc.BOOL {
+    return objc.YES;
+}
+
+fn viewEdit(_: Id, _: objc.Sel, _: Id, action: events.Action) void {
+    const st = cocoa_key_state orelse return;
+    st.queue.pushAction(.{ .action = action, .sym = 0, .mods = .{} });
+}
+
+fn viewCopy(id: Id, sel: objc.Sel, sender: Id) callconv(.C) void {
+    viewEdit(id, sel, sender, .copy);
+}
+
+fn viewPaste(id: Id, sel: objc.Sel, sender: Id) callconv(.C) void {
+    viewEdit(id, sel, sender, .paste);
+}
+
+fn viewSelectAll(id: Id, sel: objc.Sel, sender: Id) callconv(.C) void {
+    viewEdit(id, sel, sender, .select_all);
+}
+
+/// Event-mask bits for the drag and the button-up that follow `down`.
+/// Zero when `down` is not a mouse-down (the caller does not track).
+fn mouseTrackMask(down: u64) u64 {
+    const drag: u64 = switch (down) {
+        NSEventType.left_down => NSEventType.left_dragged,
+        NSEventType.right_down => NSEventType.right_dragged,
+        NSEventType.other_down => NSEventType.other_dragged,
+        else => return 0,
+    };
+    const up: u64 = switch (down) {
+        NSEventType.left_down => NSEventType.left_up,
+        NSEventType.right_down => NSEventType.right_up,
+        NSEventType.other_down => NSEventType.other_up,
+        else => return 0,
+    };
+    return (@as(u64, 1) << @intCast(drag)) | (@as(u64, 1) << @intCast(up));
+}
+
+fn mouseIsDrag(ty: u64) bool {
+    return ty == NSEventType.left_dragged or ty == NSEventType.right_dragged or ty == NSEventType.other_dragged;
 }
 
 /// Selectors installed on `DTContentView`. The test below checks this list
@@ -607,8 +723,13 @@ fn viewMouse(_: Id, _: objc.Sel, ev: Id) callconv(.C) void {
 const content_selectors = [_]struct { name: [:0]const u8, types: [:0]const u8 }{
     .{ .name = "acceptsFirstResponder", .types = "c@:" },
     .{ .name = "canBecomeKeyView", .types = "c@:" },
+    .{ .name = "acceptsFirstMouse:", .types = "c@:@" },
+    .{ .name = "hitTest:", .types = "@@:{CGPoint=dd}" },
     .{ .name = "keyDown:", .types = "v@:@" },
     .{ .name = "performKeyEquivalent:", .types = "c@:@" },
+    .{ .name = "copy:", .types = "v@:@" },
+    .{ .name = "paste:", .types = "v@:@" },
+    .{ .name = "selectAll:", .types = "v@:@" },
     .{ .name = "mouseDown:", .types = "v@:@" },
     .{ .name = "mouseDragged:", .types = "v@:@" },
     .{ .name = "mouseUp:", .types = "v@:@" },
@@ -622,8 +743,13 @@ const content_selectors = [_]struct { name: [:0]const u8, types: [:0]const u8 }{
 
 fn contentImp(name: [:0]const u8) *const anyopaque {
     if (std.mem.eql(u8, name, "acceptsFirstResponder") or std.mem.eql(u8, name, "canBecomeKeyView")) return @ptrCast(&viewAcceptsFirstResponder);
+    if (std.mem.eql(u8, name, "acceptsFirstMouse:")) return @ptrCast(&viewAcceptsFirstMouse);
+    if (std.mem.eql(u8, name, "hitTest:")) return @ptrCast(&viewHitTest);
     if (std.mem.eql(u8, name, "keyDown:")) return @ptrCast(&viewKeyDown);
     if (std.mem.eql(u8, name, "performKeyEquivalent:")) return @ptrCast(&viewKeyEquivalent);
+    if (std.mem.eql(u8, name, "copy:")) return @ptrCast(&viewCopy);
+    if (std.mem.eql(u8, name, "paste:")) return @ptrCast(&viewPaste);
+    if (std.mem.eql(u8, name, "selectAll:")) return @ptrCast(&viewSelectAll);
     return @ptrCast(&viewMouse);
 }
 
@@ -998,10 +1124,15 @@ fn commandQuits(chars: []const u8, flags: u64) bool {
 test "cocoa: content view takes mouse and Command-key events" {
     const need = [_][]const u8{
         "acceptsFirstResponder",
+        "acceptsFirstMouse:",
+        "hitTest:",
         "mouseDown:",
         "mouseDragged:",
         "mouseUp:",
         "performKeyEquivalent:",
+        "copy:",
+        "paste:",
+        "selectAll:",
     };
     for (need) |name| {
         var found = false;
@@ -1010,6 +1141,13 @@ test "cocoa: content view takes mouse and Command-key events" {
         }
         try std.testing.expect(found);
     }
+    const left = mouseTrackMask(NSEventType.left_down);
+    try std.testing.expect(left & (@as(u64, 1) << NSEventType.left_dragged) != 0);
+    try std.testing.expect(left & (@as(u64, 1) << NSEventType.left_up) != 0);
+    try std.testing.expect(mouseIsDrag(NSEventType.left_dragged));
+    try std.testing.expect(!mouseIsDrag(NSEventType.left_up));
+    try std.testing.expectEqual(@as(u64, 0), mouseTrackMask(NSEventType.left_dragged));
+    try std.testing.expectEqualStrings(pasteboard_type_utf8, "public.utf8-plain-text");
 }
 
 test "cocoa: view pixels flip Y and apply the backing scale" {

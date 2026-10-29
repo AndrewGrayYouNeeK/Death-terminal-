@@ -109,6 +109,10 @@ pub const WinPty = struct {
         const pair = try io.socketPair();
         inner.sock_loop = pair[0];
         inner.sock_thread = pair[1];
+        // The reader must not block when the UI is inside ResizePseudoConsole
+        // and therefore not reading this socket. A full socket plus a full
+        // ConPTY pipe is the maximize deadlock.
+        io.setNonBlocking(inner.sock_thread) catch {};
         inner.cancel = CreateEventW(null, windows.TRUE, windows.FALSE, null) orelse return error.Unexpected;
         return .{ .inner = inner };
     }
@@ -238,20 +242,38 @@ pub const WinPty = struct {
         in.sock_thread = io.none;
     }
 
+    /// Bytes the reader will hold when the UI socket is full. A maximized
+    /// console repaints well under this, so ResizePseudoConsole can finish
+    /// while the window thread is still inside that call.
+    const stash_cap: usize = 8 * 1024 * 1024;
+
+    fn flushStash(in: *Inner, stash: *std.ArrayList(u8)) void {
+        while (stash.items.len > 0) {
+            const n = io.write(in.sock_thread, stash.items) catch |err| switch (err) {
+                error.WouldBlock => return,
+                else => return,
+            };
+            if (n == 0) return;
+            std.mem.copyForwards(u8, stash.items[0 .. stash.items.len - n], stash.items[n..]);
+            stash.shrinkRetainingCapacity(stash.items.len - n);
+        }
+    }
+
     fn readerMain(in: *Inner) void {
+        var stash = std.ArrayList(u8).init(alloc);
+        defer stash.deinit();
         var buf: [16 * 1024]u8 = undefined;
         while (true) {
+            flushStash(in, &stash);
             var n: DWORD = 0;
             if (k32.ReadFile(in.out_read.?, &buf, buf.len, &n, null) == 0 or n == 0) break;
             // Keep draining even after the loop went away, so a closing
             // console never blocks on a full pipe.
             if (in.loop_closed.load(.seq_cst)) continue;
-            var off: usize = 0;
-            while (off < n) {
-                const sent = io.write(in.sock_thread, buf[off..n]) catch break;
-                off += sent;
-            }
+            if (stash.items.len < stash_cap) stash.appendSlice(buf[0..n]) catch {};
+            flushStash(in, &stash);
         }
+        flushStash(in, &stash);
         // End of stream: the loop's read returns 0.
         _ = windows.ws2_32.shutdown(in.sock_thread, 1);
     }

@@ -253,6 +253,19 @@ pub fn edgeRejectedUpgrade(detail: []const u8) bool {
     return false;
 }
 
+/// Dial `workers.dev` after the custom domain misses. A Windows guest often
+/// never sees the empty 404: the TLS handshake or the connect times out, and
+/// stopping there leaves the host waiting on workers.dev alone.
+pub fn hostedShouldFallback(detail: []const u8, err_name: []const u8) bool {
+    if (std.mem.indexOf(u8, detail, "not found") != null) return false;
+    if (std.mem.indexOf(u8, detail, "429") != null) return false;
+    if (edgeRejectedUpgrade(detail)) return true;
+    return std.mem.eql(u8, err_name, "Tls") or
+        std.mem.eql(u8, err_name, "Timeout") or
+        std.mem.eql(u8, err_name, "Closed") or
+        std.mem.eql(u8, err_name, "WouldBlock");
+}
+
 /// Config value. Empty selects the hosted relay. `off` is LAN only.
 pub fn resolveConfigured(text: []const u8) error{BadRelay}!Classified {
     if (text.len == 0) return classifyRelay(default_ws_relay);
@@ -329,4 +342,10 @@ test "relay config: default hosted url, off, or a custom splice" {
     try std.testing.expect(!edgeRejectedUpgrade("HTTP/1.1 404 Not Found body not found req GET /v1/zz"));
     try std.testing.expect(!edgeRejectedUpgrade("HTTP/1.1 429 Too Many Requests body ip"));
     try std.testing.expect(!edgeRejectedUpgrade("Cancelled"));
+    try std.testing.expect(hostedShouldFallback("HTTP/1.1 404 Not Found body  req GET", "RelayRejected"));
+    try std.testing.expect(hostedShouldFallback("", "Tls"));
+    try std.testing.expect(hostedShouldFallback("", "Timeout"));
+    try std.testing.expect(!hostedShouldFallback("HTTP/1.1 404 Not Found body not found", "RelayRejected"));
+    try std.testing.expect(!hostedShouldFallback("429", "RelayRejected"));
+    try std.testing.expect(!hostedShouldFallback("", "Cancelled"));
 }

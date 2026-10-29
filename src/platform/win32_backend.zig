@@ -79,6 +79,13 @@ pub fn presentRgba(st: *State, pixels: []const u32, width: u32, height: u32) voi
     if (builtin.os.tag == .windows) Win.presentRgba(st, pixels, width, height);
 }
 
+/// Dispatch queued window messages without handling them as app events.
+/// DXGI completes a present on this thread; a fence wait that does not pump
+/// never returns, which is the maximize freeze.
+pub fn pump() void {
+    if (builtin.os.tag == .windows) Win.pump();
+}
+
 pub fn hwndPtr(st: *const State) ?*anyopaque {
     return @ptrCast(st.hwnd);
 }
@@ -194,6 +201,15 @@ const Win = if (builtin.os.tag == .windows) struct {
         st.* = .{};
     }
 
+    fn pump() void {
+        var msg: w.MSG = undefined;
+        var n: u32 = 0;
+        while (n < 32 and w.PeekMessageW(&msg, null, 0, 0, w.PM_REMOVE) != 0) : (n += 1) {
+            _ = w.TranslateMessage(&msg);
+            _ = w.DispatchMessageW(&msg);
+        }
+    }
+
     fn poll(st: *State) Event {
         var msg: w.MSG = undefined;
         while (w.PeekMessageW(&msg, null, 0, 0, w.PM_REMOVE) != 0) {
@@ -280,14 +296,19 @@ const Win = if (builtin.os.tag == .windows) struct {
                 return 0;
             },
             w.WM_SIZE => {
-                const wpx: u32 = @intCast(lparam & 0xFFFF);
-                const hpx: u32 = @intCast((lparam >> 16) & 0xFFFF);
-                if (wpx > 0 and hpx > 0 and (wpx != st.width or hpx != st.height)) {
-                    st.width = wpx;
-                    st.height = hpx;
-                    st.pending_resize = true;
+                // SIZE_MINIMIZED (1) reports 0×0. Recording that and recreating
+                // the swapchain from the window thread is what freezes a restore.
+                const kind: usize = @intCast(wparam);
+                if (kind != 1) {
+                    const wpx: u32 = @intCast(lparam & 0xFFFF);
+                    const hpx: u32 = @intCast((lparam >> 16) & 0xFFFF);
+                    if (wpx > 0 and hpx > 0 and (wpx != st.width or hpx != st.height)) {
+                        st.width = wpx;
+                        st.height = hpx;
+                        st.pending_resize = true;
+                    }
                 }
-                return 0;
+                return w.DefWindowProcW(hwnd, msg, wparam, lparam);
             },
             w.WM_DPICHANGED => {
                 const dpi_x: u32 = @intCast(wparam & 0xFFFF);
