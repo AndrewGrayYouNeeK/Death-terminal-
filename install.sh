@@ -8,8 +8,15 @@
 # Windows (no administrator): install.ps1
 #   irm https://raw.githubusercontent.com/AndrewGrayYouNeeK/Death-terminal-/main/install.ps1 | iex
 #
-# Re-run the same command to update. Zig 0.13.0 is downloaded into
-# ~/.deathterminal/zig when `zig` 0.13 is not already on PATH.
+# Re-run the same command to update.
+#
+# macOS: downloads a prebuilt arm64 or x86_64 binary from the rolling
+# `nightly` branch when one is published, and does not need Zig. It installs
+# ~/Applications/YouNeeK Death Terminal.app (double-clickable), a Desktop
+# symlink to that app, and ~/.local/bin/deathterminal. Quarantine is stripped
+# and the bundle is ad-hoc signed. If no prebuilt exists yet, Zig 0.13.0 is
+# downloaded into ~/.deathterminal/zig and the app is built from source.
+# Linux always builds from source.
 
 set -eu
 
@@ -23,6 +30,11 @@ MOLTENVK_VERSION=1.4.2
 MOLTENVK_SHA256=f95765a6229cb7b915990a2890ce12ebe36a730b021545d3d52ae69ce4c4024e
 MOLTENVK_URL="https://github.com/KhronosGroup/MoltenVK/releases/download/v${MOLTENVK_VERSION}/MoltenVK-macos.tar"
 MANIFEST="$PREFIX/installed-files.txt"
+APP_BUNDLE="YouNeeK Death Terminal.app"
+APP_PATH="$HOME/Applications/$APP_BUNDLE"
+DESKTOP_LINK="$HOME/Desktop/$APP_BUNDLE"
+PREBUILT_BASE="${DEATHTERMINAL_PREBUILT_BASE:-https://media.githubusercontent.com/media/AndrewGrayYouNeeK/Death-terminal-/nightly}"
+ICON_BASE="${DEATHTERMINAL_ICON_BASE:-https://raw.githubusercontent.com/AndrewGrayYouNeeK/Death-terminal-/main/packaging/icons/png}"
 
 say() {
   printf '==> %s\n' "$*"
@@ -39,9 +51,13 @@ Usage: install.sh [--uninstall]
 
   curl -fsSL https://raw.githubusercontent.com/AndrewGrayYouNeeK/Death-terminal-/main/install.sh | sh
 
-Installs ~/.local/bin/deathterminal (macOS arm64/x86_64, Linux x86_64/aarch64).
-Run again to update. --uninstall removes the binary, MoltenVK files this
-script installed, and ~/.deathterminal. Your ~/.config/death-terminal is kept.
+macOS (arm64 and Intel): installs ~/Applications/YouNeeK Death Terminal.app,
+a Desktop symlink you can double-click, and ~/.local/bin/deathterminal.
+A prebuilt binary is used when the nightly branch has one, so Zig is not
+required. Linux installs ~/.local/bin/deathterminal by building from source.
+Run again to update. --uninstall removes the app, the Desktop symlink, the
+CLI, MoltenVK files this script installed, and ~/.deathterminal.
+~/.config/death-terminal is kept.
 
 Windows:
   irm https://raw.githubusercontent.com/AndrewGrayYouNeeK/Death-terminal-/main/install.ps1 | iex
@@ -76,17 +92,39 @@ verify_sha256() {
   fi
 }
 
+curl_to() {
+  curl_url=$1
+  curl_dest=$2
+  curl_tmp="$curl_dest.partial"
+  rm -f "$curl_tmp"
+  curl -fsSL --retry 3 --retry-delay 2 -o "$curl_tmp" "$curl_url" || {
+    rm -f "$curl_tmp"
+    return 1
+  }
+  mv -f "$curl_tmp" "$curl_dest"
+}
+
 download() {
   url=$1
   dest=$2
-  tmp="$dest.partial"
-  rm -f "$tmp"
   say "Downloading $url"
-  curl -fsSL --retry 3 --retry-delay 2 -o "$tmp" "$url" || die "download failed: $url"
-  mv -f "$tmp" "$dest"
+  curl_to "$url" "$dest" || die "download failed: $url"
 }
 
 detect_platform() {
+  if [ -n "${DEATHTERMINAL_OS:-}" ]; then
+    zig_os=$DEATHTERMINAL_OS
+    zig_arch=${DEATHTERMINAL_ARCH:-x86_64}
+    case "$zig_os" in
+      linux|macos) ;;
+      *) die "DEATHTERMINAL_OS must be linux or macos" ;;
+    esac
+    case "$zig_arch" in
+      x86_64|aarch64) ;;
+      *) die "DEATHTERMINAL_ARCH must be x86_64 or aarch64" ;;
+    esac
+    return 0
+  fi
   uname_s=$(uname -s)
   uname_m=$(uname -m)
   case "$uname_s" in
@@ -213,6 +251,7 @@ fetch_source() {
 }
 
 record_installed() {
+  mkdir -p "$(dirname "$MANIFEST")"
   printf '%s\n' "$1" >> "$MANIFEST"
 }
 
@@ -292,6 +331,10 @@ install_moltenvk() {
 
 macos_unquarantine_and_sign() {
   file=$1
+  if [ "${DEATHTERMINAL_SKIP_SIGN:-}" = "1" ]; then
+    say "Skipping quarantine clear and codesign for $file"
+    return 0
+  fi
   command -v xattr >/dev/null 2>&1 || die "xattr is required on macOS to clear quarantine on $file"
   command -v codesign >/dev/null 2>&1 || die "codesign is required on macOS to ad-hoc sign $file"
   xattr -c "$file" || die "xattr -c failed for $file"
@@ -302,6 +345,159 @@ macos_unquarantine_and_sign() {
       say "Cleared quarantine and ad-hoc signed $file"
       ;;
   esac
+}
+
+# Fetch the rolling nightly binary. Returns 1 when it is missing or the
+# checksum does not match, so the caller can build from source instead.
+fetch_prebuilt() {
+  prebuilt_path=$1
+  base="$PREBUILT_BASE/macos/${zig_arch}"
+  shafile="$PREFIX/downloads/deathterminal-${zig_arch}.sha256"
+  mkdir -p "$PREFIX/downloads"
+  say "Looking for a prebuilt ${zig_arch} macOS binary"
+  if ! curl_to "$base/deathterminal.sha256" "$shafile"; then
+    say "No prebuilt checksum published yet"
+    return 1
+  fi
+  expected=$(awk 'NR==1 { print $1 }' "$shafile")
+  if [ -z "$expected" ]; then
+    say "Prebuilt checksum file was empty"
+    return 1
+  fi
+  if ! curl_to "$base/deathterminal" "$prebuilt_path"; then
+    say "Prebuilt binary download failed"
+    return 1
+  fi
+  if ! sha_matches "$prebuilt_path" "$expected"; then
+    say "Prebuilt checksum did not match; ignoring it"
+    rm -f "$prebuilt_path"
+    return 1
+  fi
+  chmod 755 "$prebuilt_path" || die "cannot mark the prebuilt binary executable"
+  say "Verified prebuilt binary (Zig is not required)"
+  return 0
+}
+
+macos_copy_icons() {
+  resources=$1
+  iconset=$2
+  stage=$(dirname "$iconset")
+  mkdir -p "$iconset" "$resources" "$stage"
+  for s in 16 32 64 128 256 512; do
+    name="deathterminal-$s.png"
+    if [ -n "${DEATHTERMINAL_ICON_DIR:-}" ]; then
+      cp "$DEATHTERMINAL_ICON_DIR/$name" "$stage/$name" || die "missing icon $name"
+    else
+      download "$ICON_BASE/$name" "$stage/$name"
+    fi
+    cp "$stage/$name" "$resources/$name"
+  done
+  cp "$stage/deathterminal-16.png" "$iconset/icon_16x16.png"
+  cp "$stage/deathterminal-32.png" "$iconset/icon_16x16@2x.png"
+  cp "$stage/deathterminal-32.png" "$iconset/icon_32x32.png"
+  cp "$stage/deathterminal-64.png" "$iconset/icon_32x32@2x.png"
+  cp "$stage/deathterminal-128.png" "$iconset/icon_128x128.png"
+  cp "$stage/deathterminal-256.png" "$iconset/icon_128x128@2x.png"
+  cp "$stage/deathterminal-256.png" "$iconset/icon_256x256.png"
+  cp "$stage/deathterminal-512.png" "$iconset/icon_256x256@2x.png"
+  cp "$stage/deathterminal-512.png" "$iconset/icon_512x512.png"
+  if command -v iconutil >/dev/null 2>&1; then
+    iconutil -c icns "$iconset" -o "$resources/deathterminal.icns" || die "iconutil could not build deathterminal.icns"
+    say "Built $resources/deathterminal.icns"
+  else
+    say "iconutil is not available; the png icons are in the app bundle but Finder may not show them until iconutil can run"
+  fi
+}
+
+macos_make_app() {
+  binary=$1
+  [ -f "$binary" ] || die "no binary to bundle: $binary"
+  say "Creating $APP_PATH"
+  rm -rf "$APP_PATH"
+  mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources" "$APP_PATH/Contents/Frameworks"
+  cp "$binary" "$APP_PATH/Contents/MacOS/deathterminal"
+  chmod 755 "$APP_PATH/Contents/MacOS/deathterminal"
+  cat > "$APP_PATH/Contents/MacOS/deathterminal-gui" <<'SH'
+#!/bin/sh
+here=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+exec "$here/deathterminal" --gui "$@"
+SH
+  chmod 755 "$APP_PATH/Contents/MacOS/deathterminal-gui"
+  cat > "$APP_PATH/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>YouNeeK Death Terminal</string>
+  <key>CFBundleDisplayName</key><string>YouNeeK Death Terminal</string>
+  <key>CFBundleIdentifier</key><string>com.github.andrewgrayyouneek.deathterminal</string>
+  <key>CFBundleVersion</key><string>nightly</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleExecutable</key><string>deathterminal-gui</string>
+  <key>CFBundleIconFile</key><string>deathterminal</string>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+</dict>
+</plist>
+PLIST
+  iconset=$(mktemp -d) || die "mktemp failed"
+  macos_copy_icons "$APP_PATH/Contents/Resources" "$iconset/deathterminal.iconset"
+  rm -rf "$iconset"
+  record_installed "$APP_PATH"
+  say "App bundle ready at $APP_PATH"
+}
+
+macos_place_moltenvk() {
+  install_moltenvk
+  fw="$APP_PATH/Contents/Frameworks"
+  mac="$APP_PATH/Contents/MacOS"
+  mkdir -p "$fw"
+  for name in libMoltenVK.dylib libvulkan.1.dylib MoltenVK_icd.json; do
+    if [ -f "$BIN_DIR/$name" ]; then
+      cp "$BIN_DIR/$name" "$fw/$name"
+      ln -sfn "../Frameworks/$name" "$mac/$name"
+      record_installed "$fw/$name"
+      record_installed "$mac/$name"
+    fi
+  done
+}
+
+macos_sign_bundle() {
+  if [ "${DEATHTERMINAL_SKIP_SIGN:-}" = "1" ]; then
+    say "Skipping quarantine clear and codesign for $APP_PATH"
+    return 0
+  fi
+  command -v xattr >/dev/null 2>&1 || die "xattr is required on macOS to clear quarantine on the app"
+  command -v codesign >/dev/null 2>&1 || die "codesign is required on macOS to ad-hoc sign the app"
+  xattr -cr "$APP_PATH" || die "xattr -cr failed for $APP_PATH"
+  codesign --force --deep --sign - "$APP_PATH" || die "ad-hoc codesign failed for $APP_PATH"
+  say "Cleared quarantine and ad-hoc signed $APP_PATH"
+}
+
+macos_link_cli_and_desktop() {
+  mkdir -p "$BIN_DIR" "$HOME/Desktop"
+  ln -sfn "$APP_PATH/Contents/MacOS/deathterminal" "$BIN_PATH"
+  record_installed "$BIN_PATH"
+  say "CLI is $BIN_PATH"
+  ln -sfn "$APP_PATH" "$DESKTOP_LINK"
+  record_installed "$DESKTOP_LINK"
+  say "Desktop shortcut is $DESKTOP_LINK"
+}
+
+print_macos_instructions() {
+  printf '\n'
+  say "Double-click \"$DESKTOP_LINK\""
+  printf '\nThe app is also at:\n\n  %s\n\n' "$APP_PATH"
+  printf 'The deathterminal command is:\n\n  %s\n\n' "$BIN_PATH"
+  printf 'Add ~/.local/bin to PATH if it is not already there:\n\n'
+  # shellcheck disable=SC2016
+  printf '  export PATH="$HOME/.local/bin:$PATH"\n\n'
+  printf 'Run this script again to update.\n'
+  printf 'Uninstall:\n\n'
+  printf '  curl -fsSL https://raw.githubusercontent.com/AndrewGrayYouNeeK/Death-terminal-/main/install.sh | sh -s -- --uninstall\n\n'
 }
 
 print_run_instructions() {
@@ -318,17 +514,10 @@ print_run_instructions() {
   printf '  curl -fsSL https://raw.githubusercontent.com/AndrewGrayYouNeeK/Death-terminal-/main/install.sh | sh -s -- --uninstall\n\n'
 }
 
-build_and_install() {
-  if [ -x "$BIN_PATH" ]; then
-    say "Updating YouNeeK Death Terminal"
-  else
-    say "Installing YouNeeK Death Terminal"
-  fi
-  say "Platform: ${zig_os} ${zig_arch}"
+build_from_source() {
   ensure_zig
   fetch_source
-  mkdir -p "$PREFIX/cache" "$PREFIX/global-cache" "$BIN_DIR"
-  : > "$MANIFEST"
+  mkdir -p "$PREFIX/cache" "$PREFIX/global-cache"
   say "Building: $ZIG build -Doptimize=ReleaseSafe"
   if ! (
     cd "$PREFIX/src" &&
@@ -342,25 +531,58 @@ build_and_install() {
     die "build failed"
   fi
   [ -f "$PREFIX/src/zig-out/bin/deathterminal" ] || die "build did not produce zig-out/bin/deathterminal"
-  install_file "$PREFIX/src/zig-out/bin/deathterminal" "$BIN_PATH" 755
-  if [ "$zig_os" = "macos" ]; then
-    install_moltenvk
-    macos_unquarantine_and_sign "$BIN_PATH"
-    if [ -f "$BIN_DIR/libMoltenVK.dylib" ]; then
-      macos_unquarantine_and_sign "$BIN_DIR/libMoltenVK.dylib"
-    fi
-    if [ -f "$BIN_DIR/libvulkan.1.dylib" ]; then
-      macos_unquarantine_and_sign "$BIN_DIR/libvulkan.1.dylib"
-    fi
-    if [ -f "$BIN_DIR/MoltenVK_icd.json" ]; then
-      macos_unquarantine_and_sign "$BIN_DIR/MoltenVK_icd.json"
-    fi
+  BUILT_BIN="$PREFIX/src/zig-out/bin/deathterminal"
+}
+
+install_macos() {
+  prebuilt="$PREFIX/downloads/deathterminal-${zig_arch}"
+  if fetch_prebuilt "$prebuilt"; then
+    binary=$prebuilt
+  else
+    say "Building from source for ${zig_arch}-macos. This downloads Zig 0.13 if you do not already have it."
+    build_from_source
+    binary=$BUILT_BIN
   fi
+  macos_make_app "$binary"
+  macos_place_moltenvk
+  macos_sign_bundle
+  macos_link_cli_and_desktop
+  print_macos_instructions
+}
+
+build_and_install() {
+  if [ -x "$BIN_PATH" ] || [ -d "$APP_PATH" ]; then
+    say "Updating YouNeeK Death Terminal"
+  else
+    say "Installing YouNeeK Death Terminal"
+  fi
+  say "Platform: ${zig_os} ${zig_arch}"
+  mkdir -p "$BIN_DIR" "$PREFIX"
+  : > "$MANIFEST"
+  if [ "$zig_os" = "macos" ]; then
+    install_macos
+    return 0
+  fi
+  build_from_source
+  install_file "$BUILT_BIN" "$BIN_PATH" 755
   print_run_instructions
+}
+
+remove_path() {
+  target=$1
+  if [ -L "$target" ] || [ -f "$target" ]; then
+    rm -f "$target"
+    say "Removed $target"
+  elif [ -d "$target" ]; then
+    rm -rf "$target"
+    say "Removed $target"
+  fi
 }
 
 uninstall() {
   say "Uninstalling YouNeeK Death Terminal"
+  remove_path "$APP_PATH"
+  remove_path "$DESKTOP_LINK"
   if [ -f "$MANIFEST" ]; then
     while IFS= read -r f; do
       [ -n "$f" ] || continue
