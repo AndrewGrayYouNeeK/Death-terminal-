@@ -1,14 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect x="2" y="4" width="60" height="56" rx="10" fill="#111" stroke="#333" stroke-width="2"/>
-  <rect x="2" y="4" width="60" height="11" rx="10" fill="#2a2a2a"/>
-  <circle cx="10" cy="10" r="2.6" fill="#e5242b"/>
-  <circle cx="17" cy="10" r="2.6" fill="#666"/>
-  <circle cx="24" cy="10" r="2.6" fill="#666"/>
-  <path d="M32 18c-9 0-15 6-15 14 0 5 2 8 5 10v6h20v-6c3-2 5-5 5-10 0-8-6-14-15-14z" fill="#eee"/>
-  <ellipse cx="26" cy="32" rx="4" ry="4.5" fill="#111"/>
-  <ellipse cx="38" cy="32" rx="4" ry="4.5" fill="#111"/>
-  <path d="M32 37l-2.5 4h5z" fill="#111"/>
-  <path d="M26 44v4M30 44v4M34 44v4M38 44v4" stroke="#111" stroke-width="1.6"/>
-  <path d="M9 50l5 3-5 3" fill="none" stroke="#e5242b" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M16 54h7" stroke="#e5242b" stroke-width="2.4" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="YouNeeK Death Terminal">
+  <defs><filter id="g" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="1.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#0D1A14"/>
+  <g fill="#1ED67F" filter="url(#g)">
+    <path fill-rule="evenodd" d="M32 9c-10 0-16 6-16 14 0 4 1 6 2 8v4c0 2 2 3 4 3h4v4h12v-4h4c2 0 4-1 4-3v-4c1-2 2-4 2-8 0-8-6-14-16-14zM21 26c0-2 2-3 4-3s5 1 5 3-2 4-4 4-5-2-5-4zm22 0c0 2-3 4-5 4s-4-2-4-4 3-3 5-3 4 1 4 3zM32 30l3 6h-6z"/>
+    <path d="M21 45l9 4-9 4v-3l4-1-4-1z"/>
+    <rect x="32" y="50" width="11" height="3"/>
+  </g>
 </svg>

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="packaging/icons/png/deathterminal-256.png" width="160" height="160" alt="YouNeeK Death Terminal logo">
+  <img src="site/logo.png" width="160" height="160" alt="YouNeeK Death Terminal logo">
 </p>
 
 # YouNeeK Death Terminal

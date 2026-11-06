@@ -252,19 +252,18 @@ fn printBanner() !void {
     // Interactive launches only: skip when stderr is piped or redirected.
     if (!std.io.getStdErr().isTty()) return;
     const banner =
-        "  \x1b[90;40m╭──────────────────────────────╮\x1b[0m\n" ++
-        "  \x1b[90;40m│ \x1b[91;40m●\x1b[37;40m ● ●\x1b[90;40m                        │\x1b[0m\n" ++
-        "  \x1b[90;40m├──────────────────────────────┤\x1b[0m\n" ++
-        "  \x1b[90;40m│\x1b[97;40m           ▄██████▄           \x1b[90;40m│\x1b[0m\n" ++
-        "  \x1b[90;40m│\x1b[97;40m         ▄██████████▄         \x1b[90;40m│\x1b[0m\n" ++
-        "  \x1b[90;40m│\x1b[97;40m         ██▀  ██  ▀██         \x1b[90;40m│\x1b[0m\n" ++
-        "  \x1b[90;40m│\x1b[97;40m         ██▄▄▄▀▀▄▄▄██         \x1b[90;40m│\x1b[0m\n" ++
-        "  \x1b[90;40m│\x1b[97;40m          ▀███▄▄███▀          \x1b[90;40m│\x1b[0m\n" ++
-        "  \x1b[90;40m│\x1b[97;40m           █▌█▌█▌█▌           \x1b[90;40m│\x1b[0m\n" ++
-        "  \x1b[90;40m│\x1b[97;40m           ▀▀▀▀▀▀▀▀           \x1b[90;40m│\x1b[0m\n" ++
-        "  \x1b[90;40m│ \x1b[91;40m>_\x1b[90;40m                           │\x1b[0m\n" ++
-        "  \x1b[90;40m╰──────────────────────────────╯\x1b[0m\n" ++
-        "\x1b[1;91m  YouNeeK Death Terminal\x1b[0m\n" ++
+        "  \x1b[1;92m         ▄▄██████████▄▄\x1b[0m\n" ++
+        "  \x1b[1;92m       ▄████████████████▄\x1b[0m\n" ++
+        "  \x1b[1;92m      ████████████████████\x1b[0m\n" ++
+        "  \x1b[1;92m      ███▀    ████    ▀███\x1b[0m\n" ++
+        "  \x1b[1;92m      ███▄   ▄█▀▀█▄   ▄███\x1b[0m\n" ++
+        "  \x1b[1;92m       ▀█████▀ ▄▄ ▀█████▀\x1b[0m\n" ++
+        "  \x1b[1;92m         ▀███▄▄▄▄▄▄███▀\x1b[0m\n" ++
+        "  \x1b[1;32m          █▌█▌█▌█▌█▌█▌\x1b[0m\n" ++
+        "  \x1b[1;32m          ▀▀▀▀▀▀▀▀▀▀▀▀\x1b[0m\n" ++
+        "  \x1b[1;92m\x1b[0m\n" ++
+        "  \x1b[1;92m      >-\x1b[0m\n" ++
+        "\x1b[1;92m  YouNeeK Death Terminal\x1b[0m\n" ++
         "\n" ++
         "  Brutalist Terminal Emulator with AI-Powered Autocomplete\n" ++
         "\n";
