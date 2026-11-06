@@ -17,6 +17,32 @@
 
 #Requires -Version 5.1
 
+# Logo banner (embedded; skipped when output is redirected).
+function Show-DtLogo {
+  try { if ([Console]::IsOutputRedirected) { return } } catch { return }
+  try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
+  $rows = @(
+    'DarkGray~╭──────────────────────────────╮',
+    'DarkGray~│ |Red~●|Gray~ ● ●|DarkGray~                        │',
+    'DarkGray~├──────────────────────────────┤',
+    'DarkGray~│|White~           ▄██████▄           |DarkGray~│',
+    'DarkGray~│|White~         ▄██████████▄         |DarkGray~│',
+    'DarkGray~│|White~         ██▀  ██  ▀██         |DarkGray~│',
+    'DarkGray~│|White~         ██▄▄▄▀▀▄▄▄██         |DarkGray~│',
+    'DarkGray~│|White~          ▀███▄▄███▀          |DarkGray~│',
+    'DarkGray~│|White~           █▌█▌█▌█▌           |DarkGray~│',
+    'DarkGray~│|White~           ▀▀▀▀▀▀▀▀           |DarkGray~│',
+    'DarkGray~│ |Red~>_|DarkGray~                           │',
+    'DarkGray~╰──────────────────────────────╯'
+  )
+  foreach ($r in $rows) {
+    Write-Host '  ' -NoNewline
+    foreach ($s in $r.Split('|')) { $p = $s.Split('~', 2); Write-Host $p[1] -ForegroundColor $p[0] -BackgroundColor Black -NoNewline }
+    Write-Host ''
+  }
+  Write-Host '  YouNeeK Death Terminal' -ForegroundColor Red
+}
+
 function Write-Step {
     param([string]$Message)
     Write-Host "==> $Message"
@@ -573,6 +599,7 @@ function Uninstall-DeathTerminal {
 }
 
 function Main {
+    Show-DtLogo
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'
     try {

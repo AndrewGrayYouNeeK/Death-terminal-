@@ -21,6 +21,27 @@
 
 set -eu
 
+# Logo banner (embedded; printed only when stdout is a terminal).
+print_logo_banner() {
+  [ -t 1 ] || return 0
+  e=$(printf '\033')
+  cat <<DTLOGO
+  ${e}[90;40m╭──────────────────────────────╮${e}[0m
+  ${e}[90;40m│ ${e}[91;40m●${e}[37;40m ● ●${e}[90;40m                        │${e}[0m
+  ${e}[90;40m├──────────────────────────────┤${e}[0m
+  ${e}[90;40m│${e}[97;40m           ▄██████▄           ${e}[90;40m│${e}[0m
+  ${e}[90;40m│${e}[97;40m         ▄██████████▄         ${e}[90;40m│${e}[0m
+  ${e}[90;40m│${e}[97;40m         ██▀  ██  ▀██         ${e}[90;40m│${e}[0m
+  ${e}[90;40m│${e}[97;40m         ██▄▄▄▀▀▄▄▄██         ${e}[90;40m│${e}[0m
+  ${e}[90;40m│${e}[97;40m          ▀███▄▄███▀          ${e}[90;40m│${e}[0m
+  ${e}[90;40m│${e}[97;40m           █▌█▌█▌█▌           ${e}[90;40m│${e}[0m
+  ${e}[90;40m│${e}[97;40m           ▀▀▀▀▀▀▀▀           ${e}[90;40m│${e}[0m
+  ${e}[90;40m│ ${e}[91;40m>_${e}[90;40m                           │${e}[0m
+  ${e}[90;40m╰──────────────────────────────╯${e}[0m
+${e}[1;91m  YouNeeK Death Terminal${e}[0m
+DTLOGO
+}
+
 ZIG_VERSION=0.13.0
 PREFIX=${DEATHTERMINAL_HOME:-"$HOME/.deathterminal"}
 BIN_DIR="$HOME/.local/bin"
@@ -660,6 +681,7 @@ uninstall() {
 }
 
 main() {
+  print_logo_banner
   if [ -z "${HOME:-}" ]; then
     die "HOME is not set"
   fi

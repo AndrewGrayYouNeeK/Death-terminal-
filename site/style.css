@@ -272,3 +272,10 @@ code {
     border-top: 1px solid var(--red);
   }
 }
+
+.top .logo {
+  display: block;
+  width: 128px;
+  height: 128px;
+  margin-bottom: 1rem;
+}

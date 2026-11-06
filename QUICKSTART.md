@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="packaging/icons/png/deathterminal-256.png" width="96" height="96" alt="YouNeeK Death Terminal logo">
+</p>
+
 # Quick Start Guide
 
 Get YouNeeK Death Terminal up and running in minutes!
