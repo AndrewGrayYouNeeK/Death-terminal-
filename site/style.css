@@ -165,6 +165,60 @@ h3 {
   font-size: 1rem;
 }
 
+.item h3 {
+  margin: 0;
+}
+
+.toc {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.9rem;
+}
+
+.toc a {
+  color: #d8ffe9;
+}
+
+.item {
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--glass-edge);
+}
+
+.item p {
+  margin: 0.4rem 0 0;
+}
+
+.flag {
+  display: inline-block;
+  margin-left: 0.35rem;
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  vertical-align: 0.1em;
+}
+
+.how {
+  color: var(--dim);
+}
+
+kbd {
+  font-family: inherit;
+  font-size: 0.86em;
+  padding: 0.05rem 0.3rem;
+  border: 1px solid var(--glass-edge);
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.wrap code {
+  overflow-wrap: anywhere;
+}
+
 .download-primary {
   display: block;
   width: 100%;
