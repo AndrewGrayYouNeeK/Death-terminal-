@@ -107,7 +107,7 @@
       </article>
       <article class="item">
         <h3>Local model, or Grok</h3>
-        <p>The default endpoint is Ollama at <code>http://localhost:11434/v1</code> with <code>qwen2.5-coder:0.5b</code>, so nothing leaves the machine. Any OpenAI-compatible chat server works. <code>api.x.ai</code> and <code>us.api.x.ai</code> use the Responses API with model <code>grok-4.7</code>. Put the key in an env var named by <code>config.ai.api_key_env</code> (<code>XAI_API_KEY</code> for Grok). The key is not stored in the config file.</p>
+        <p>No config file is required. The default endpoint is Ollama at <code>http://localhost:11434/v1</code> with <code>qwen2.5-coder:0.5b</code>, so nothing leaves the machine. If Ollama is not running, the terminal stays usable and shows a small “AI offline” badge plus one hint: <code>ollama pull qwen2.5-coder:0.5b</code>. If Ollama is up but that model is missing, the hint says so. <code>deathterminal --ai-setup</code> prints the same check. Any OpenAI-compatible chat server works. <code>api.x.ai</code> and <code>us.api.x.ai</code> use the Responses API with model <code>grok-4.7</code>. Put the key in an env var named by <code>config.ai.api_key_env</code> (<code>XAI_API_KEY</code> for Grok). The key is not stored in the config file.</p>
         <p class="how">On xAI, <code>config.ai.reasoning</code> is <code>low</code>, <code>medium</code>, <code>high</code>, or <code>xhigh</code>. Empty means <code>low</code>. Reasoning cannot be turned off. Live search is off, and the response is not stored. The wait is at least 15 seconds.</p>
       </article>
       <article class="item">
@@ -291,7 +291,7 @@
       <h2 id="run-heading">Run it</h2>
       <article class="item">
         <h3>Window or headless</h3>
-        <p>The default is headless. <code>--gui</code> opens a native window (Wayland, X11, Win32, or Cocoa) and falls back to headless if that fails. <code>--version</code> and <code>--help</code> print and exit.</p>
+        <p>The default is headless. <code>--gui</code> opens a native window (Wayland, X11, Win32, or Cocoa) and falls back to headless if that fails. <code>--version</code> and <code>--help</code> print and exit. <code>--ai-setup</code> prints whether config, Ollama, the model, and the voice key are ready. It does not print the key.</p>
         <p class="how"><code>deathterminal --gui</code> · <code>--headless</code> · <code>--config &lt;file&gt;</code></p>
       </article>
       <article class="item">
@@ -338,6 +338,11 @@
 
       <h3>Windows</h3>
       <p>Run the setup .exe. Per-user install. The Start Menu shortcut launches the GUI. The exe is unsigned, so SmartScreen can warn until signing lands.</p>
+
+      <h3>First run</h3>
+      <p>No <code>config.lua</code> is required. The death theme and the other defaults are already on. AI suggestions are optional. The first time Ollama is missing, a short hint shows the pull command and then stays out of the way. Check it without opening a window:</p>
+      <pre><code>ollama pull qwen2.5-coder:0.5b
+deathterminal --ai-setup</code></pre>
 
       <h3>Linux</h3>
       <p>x86_64 packages.</p>

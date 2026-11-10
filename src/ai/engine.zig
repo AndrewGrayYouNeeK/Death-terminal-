@@ -323,7 +323,16 @@ pub const Engine = struct {
             error.Offline => "endpoint unreachable",
             error.Timeout => "request timed out",
             error.BadEndpoint => "bad ai.endpoint",
-            error.HttpStatus => std.fmt.bufPrint(&self.status_buf, "HTTP {d}", .{openai.last_status}) catch "HTTP error",
+            error.HttpStatus => blk: {
+                const detail = openai.lastDetail();
+                if (detail.len > 0) {
+                    const n = @min(detail.len, self.status_buf.len);
+                    @memcpy(self.status_buf[0..n], detail[0..n]);
+                    self.status_len = n;
+                    break :blk self.status_buf[0..self.status_len];
+                }
+                break :blk std.fmt.bufPrint(&self.status_buf, "HTTP {d}", .{openai.last_status}) catch "HTTP error";
+            },
             error.ApiError => "the API returned an error",
             error.BadResponse => "unexpected response",
             error.OutOfMemory => "out of memory",

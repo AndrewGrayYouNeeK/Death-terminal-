@@ -137,6 +137,15 @@ export PATH="$HOME/.local/bin:$PATH"
 deathterminal --gui
 ```
 
+Next: that works with no config file. The death theme and the other defaults are built in. AI suggestions stay off, with a small "AI offline" badge, until Ollama is running and the default model is present. One hint the first time tells you the next command. To turn local AI on:
+
+```sh
+ollama pull qwen2.5-coder:0.5b
+deathterminal --ai-setup
+```
+
+`--ai-setup` prints whether a config file was found (it is optional), whether Ollama is up, whether `qwen2.5-coder:0.5b` is installed, and whether `ELEVENLABS_API_KEY` is set. It does not print the key.
+
 Run either command again to update. Uninstall:
 
 ```powershell
