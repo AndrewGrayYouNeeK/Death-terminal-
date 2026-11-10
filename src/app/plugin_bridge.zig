@@ -212,6 +212,9 @@ pub const Bridge = struct {
                     pane,
                     tab,
                 }, &.{.{ .key = "command", .value = .{ .string = cmd } }});
+                if (registry.localSshTarget(cmd)) |dest| {
+                    h.emit(.ssh_connect, .{ .map = &.{ .{ .key = "target", .value = .{ .string = dest } }, .{ .key = "via", .value = .{ .string = "shell" } }, pane, tab } });
+                }
             }
         }
         if (t.shell.finished != tr.seen_finished) {

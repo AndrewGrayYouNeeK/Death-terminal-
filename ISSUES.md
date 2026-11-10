@@ -122,8 +122,8 @@
 - [x] Error handling and reporting (file:line, in-window notice)
 - [x] API documentation for script authors (docs/CONFIG.md, docs/PLUGINS.md)
 - [x] Example plugins (plugins/: git_branch, long_command, theme_cycle, youneek-time)
-- [ ] Plugin hot reload of `require`d modules (only manifest/init.lua mtimes trigger a restart)
-- [ ] SSH hooks for `ssh` run inside a local shell (only the built-in client reports)
+- [x] Plugin hot reload of `require`d modules (every `.lua` file under the plugin dir)
+- [x] SSH hooks for `ssh` run inside a local shell (`ssh_connect` with `via = "shell"`)
 
 ### Main Event Loop
 - [x] Event loop architecture
