@@ -15,8 +15,9 @@
 # resolves that directory from the executable (`../Frameworks`); dlopen does
 # not expand @executable_path. Without them the app uses Homebrew's
 # /opt/homebrew/lib, or falls back to the software renderer. The signing job
-# signs that dylib when the Apple secrets are set. The .icns is made with
-# iconutil (macOS only).
+# signs that dylib when the Apple secrets are set. The .icns is the
+# green-skull logo from site/logo.png (DeathTerminal.icns). iconutil
+# rebuilds it from DeathTerminal.iconset when that tool exists.
 set -euo pipefail
 STAGE=$(cd "${1:?stage dir}" && pwd)
 OUT=$(mkdir -p "${2:?out dir}" && cd "$2" && pwd)
@@ -26,7 +27,7 @@ NAME=$(basename "$STAGE")              # deathterminal-<ver>-<arch>-macos
 base=${NAME#deathterminal-}
 rest=${base%-*}                        # drop the os
 ARCH=${rest##*-}
-VER=${rest%-$ARCH}
+VER=${rest%-"$ARCH"}
 # Bundle name is the display name. The helper executable stays
 # deathterminal-gui so it does not collide with the deathterminal binary
 # on case-insensitive APFS.
@@ -35,7 +36,33 @@ APP="$OUT/$APP_BUNDLE"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
-sed "s/0\.1\.0/$VER/g" "$HERE/Info.plist" > "$APP/Contents/Info.plist"
+if [ -z "$VER" ]; then
+  echo "could not parse a version from $NAME" >&2
+  exit 1
+fi
+python3 - "$HERE/Info.plist" "$APP/Contents/Info.plist" "$VER" <<'PY'
+import plistlib
+import sys
+
+src, dst, ver = sys.argv[1:]
+text = open(src, encoding="utf-8").read()
+if "__VERSION__" not in text:
+    raise SystemExit("Info.plist has no __VERSION__ placeholder")
+text = text.replace("__VERSION__", ver)
+if "__VERSION__" in text:
+    raise SystemExit("version placeholder left in Info.plist")
+open(dst, "w", encoding="utf-8").write(text)
+with open(dst, "rb") as fh:
+    plist = plistlib.load(fh)
+short = plist.get("CFBundleShortVersionString")
+if short != ver or plist.get("CFBundleVersion") != ver:
+    raise SystemExit(f"CFBundleShortVersionString is {short!r}, staged build is {ver!r}")
+schemes = []
+for item in plist.get("CFBundleURLTypes") or []:
+    schemes.extend(item.get("CFBundleURLSchemes") or [])
+if "deathterminal" not in schemes:
+    raise SystemExit("CFBundleURLTypes is missing the deathterminal scheme")
+PY
 cp "$STAGE/bin/deathterminal" "$APP/Contents/MacOS/deathterminal"
 # Finder launches without arguments; open a window.
 cat > "$APP/Contents/MacOS/deathterminal-gui" <<'SH'
@@ -53,23 +80,28 @@ if [ -n "${MOLTENVK_DIR:-}" ]; then
   fi
 fi
 
-if command -v iconutil >/dev/null; then
-  ICONSET=$(mktemp -d)/deathterminal.iconset
-  mkdir -p "$ICONSET"
-  for s in 16 32 128 256 512; do
-    cp "$ROOT/packaging/icons/png/deathterminal-$s.png" "$ICONSET/icon_${s}x${s}.png"
-  done
-  cp "$ROOT/packaging/icons/png/deathterminal-32.png" "$ICONSET/icon_16x16@2x.png"
-  cp "$ROOT/packaging/icons/png/deathterminal-64.png" "$ICONSET/icon_32x32@2x.png"
-  cp "$ROOT/packaging/icons/png/deathterminal-256.png" "$ICONSET/icon_128x128@2x.png"
-  cp "$ROOT/packaging/icons/png/deathterminal-512.png" "$ICONSET/icon_256x256@2x.png"
-  iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/deathterminal.icns"
+# Green-skull .icns rendered from site/logo.png. Do not substitute
+# packaging/icons (a separate export; older art was a white skull).
+ICONSET="$HERE/DeathTerminal.iconset"
+ICNS="$HERE/DeathTerminal.icns"
+if [ ! -f "$ICNS" ]; then
+  echo "missing $ICNS; run python3 packaging/macos/render-icon.py" >&2
+  exit 1
 fi
+if command -v iconutil >/dev/null && [ -d "$ICONSET" ]; then
+  iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/deathterminal.icns"
+else
+  cp "$ICNS" "$APP/Contents/Resources/deathterminal.icns"
+fi
+python3 -c 'import sys; assert open(sys.argv[1], "rb").read(4) == b"icns", sys.argv[1]' \
+  "$APP/Contents/Resources/deathterminal.icns"
 
 # Ad-hoc signature only, and only when codesign exists (a local Mac).
 # Developer ID signing and notarization run in the release workflow when
 # the Apple secrets are set (packaging/SIGNING.md).
-command -v codesign >/dev/null && codesign --force --deep --sign - "$APP" || true
+if command -v codesign >/dev/null; then
+  codesign --force --deep --sign - "$APP" || true
+fi
 
 (cd "$OUT" && rm -f "DeathTerminal-$VER-$ARCH.zip" && \
   if command -v ditto >/dev/null; then ditto -c -k --keepParent "$APP_BUNDLE" "DeathTerminal-$VER-$ARCH.zip"; \

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.youneek.DeathTerminal</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Unlicense</project_license>
+  <name>YouNeeK Death Terminal</name>
+  <summary>Brutalist GPU terminal emulator</summary>
+  <description>
+    <p>
+      YouNeeK Death Terminal is a GPU-accelerated terminal emulator with
+      AI command suggestions, tabs and split panes, a built-in SSH client,
+      and sandboxed Lua plugins.
+    </p>
+    <p>
+      Vulkan is used when a driver is available. Otherwise the terminal
+      falls back to software rendering.
+    </p>
+  </description>
+  <launchable type="desktop-id">org.youneek.DeathTerminal.desktop</launchable>
+  <provides>
+    <binary>deathterminal</binary>
+  </provides>
+  <url type="homepage">https://github.com/AndrewGrayYouNeeK/Death-terminal-</url>
+  <url type="bugtracker">https://github.com/AndrewGrayYouNeeK/Death-terminal-/issues</url>
+  <url type="vcs-browser">https://github.com/AndrewGrayYouNeeK/Death-terminal-</url>
+  <developer id="org.youneek">
+    <name>YouNeeK</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Tabs and split panes</caption>
+      <image>https://raw.githubusercontent.com/AndrewGrayYouNeeK/Death-terminal-/main/docs/images/tabs.png</image>
+    </screenshot>
+  </screenshots>
+  <releases>
+    <release version="__VERSION__" date="__RELEASE_DATE__"/>
+  </releases>
+</component>

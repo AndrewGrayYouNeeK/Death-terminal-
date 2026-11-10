@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=YouNeeK Death Terminal
+GenericName=Terminal
+Comment=Brutalist GPU terminal emulator with AI suggestions, built-in SSH and Lua plugins
+Exec=deathterminal --gui
+Icon=org.youneek.DeathTerminal
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;shell;prompt;command;commandline;ssh;
+StartupNotify=true
+StartupWMClass=deathterminal
+MimeType=x-scheme-handler/deathterminal;
