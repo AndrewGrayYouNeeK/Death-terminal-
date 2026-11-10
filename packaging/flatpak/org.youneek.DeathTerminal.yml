@@ -1,0 +1,43 @@
+# Flatpak manifest for the x86_64 Linux release archive.
+# url and sha256 are placeholders. packaging/update-manifests.sh fills them
+# from SHA256SUMS and only then points url at a GitHub Release.
+# The icon installed below is resized from site/logo.png. The archive's
+# own hicolor icons are not installed.
+id: org.youneek.DeathTerminal
+runtime: org.freedesktop.Platform
+runtime-version: "26.08"
+sdk: org.freedesktop.Sdk
+command: deathterminal
+finish-args:
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+  - --share=network
+  - --filesystem=host
+  - --talk-name=org.freedesktop.Notifications
+modules:
+  - name: deathterminal
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 deathterminal-__VERSION__-x86_64-linux/bin/deathterminal /app/bin/deathterminal
+      - install -Dm644 org.youneek.DeathTerminal.desktop /app/share/applications/org.youneek.DeathTerminal.desktop
+      - install -Dm644 org.youneek.DeathTerminal.metainfo.xml /app/share/metainfo/org.youneek.DeathTerminal.metainfo.xml
+      - install -Dm644 deathterminal-__VERSION__-x86_64-linux/share/man/man1/deathterminal.1 /app/share/man/man1/deathterminal.1
+      - |
+        for size in 16 32 48 64 128 256 512; do
+          install -Dm644 "icons/hicolor/${size}x${size}/apps/org.youneek.DeathTerminal.png" \
+            "/app/share/icons/hicolor/${size}x${size}/apps/org.youneek.DeathTerminal.png"
+        done
+    sources:
+      - type: archive
+        only-arches:
+          - x86_64
+        url: __URL_LINUX_TARGZ_X86_64__
+        sha256: __SHA256_LINUX_TARGZ_X86_64__
+      - type: file
+        path: org.youneek.DeathTerminal.desktop
+      - type: file
+        path: org.youneek.DeathTerminal.metainfo.xml
+      - type: dir
+        path: icons
