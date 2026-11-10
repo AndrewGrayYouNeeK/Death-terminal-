@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>YouNeeK Death Terminal</title>
-  <meta name="description" content="YouNeeK Death Terminal. A brutalist, GPU-accelerated terminal with AI-native command workflows.">
+  <meta name="description" content="YouNeeK Death Terminal. Download it, and see every feature the terminal actually ships: AI, Ghost Run, Time Travel, Shared Haunting, and the rest.">
   <meta name="application-name" content="YouNeeK Death Terminal">
   <meta property="og:title" content="YouNeeK Death Terminal">
   <meta property="og:description" content="A brutalist, GPU-accelerated terminal with AI-native command workflows.">
@@ -79,15 +79,243 @@
       </div>
     </section>
 
-    <section class="features" aria-labelledby="features-heading">
-      <h2 id="features-heading">Features</h2>
-      <ul>
-        <li><strong>AI autocomplete.</strong> Ghost text from local Ollama or Grok (<code>grok-4.7</code> on <code>api.x.ai</code>). Tab accepts, Esc dismisses. Nothing is inserted until you accept.</li>
-        <li><strong>Vulkan GPU rendering.</strong> Swapchain and a glyph atlas, with a software fallback. No animations.</li>
-        <li><strong>SSH.</strong> <code>deathterminal --ssh</code>, Lua profiles, <code>~/.ssh/config</code>, and live forwards. Linux only.</li>
-        <li><strong>Lua themes and plugins.</strong> Sandboxed Lua 5.4, live reload, command palette.</li>
-        <li><strong>Tabs and splits.</strong> Each pane has its own shell, scrollback, selection, and AI context.</li>
+    <section class="features" aria-labelledby="guide-heading">
+      <h2 id="guide-heading">What it does</h2>
+      <p>Every item below is in the current tree. A flag means the code itself limits it. Keys are the defaults. On macOS, Command without Option is matched as Ctrl+Shift, except where a note says otherwise. <kbd>Cmd</kbd>+<kbd>Q</kbd> still quits. <kbd>Cmd</kbd>+<kbd>H</kbd> still hides the app.</p>
+      <ul class="toc">
+        <li><a href="#ai">AI</a></li>
+        <li><a href="#ghost-run">Ghost Run</a></li>
+        <li><a href="#muscle-memory">Muscle Memory</a></li>
+        <li><a href="#time-travel">Time Travel</a></li>
+        <li><a href="#sharing">Shared Haunting</a></li>
+        <li><a href="#ssh">SSH</a></li>
+        <li><a href="#panes">Tabs and text</a></li>
+        <li><a href="#rendering">Rendering</a></li>
+        <li><a href="#themes">Themes and clock</a></li>
+        <li><a href="#config">Config and plugins</a></li>
+        <li><a href="#run">Run it</a></li>
+        <li><a href="#limits">Limits</a></li>
       </ul>
+    </section>
+
+    <section class="features" id="ai" aria-labelledby="ai-heading">
+      <h2 id="ai-heading">AI</h2>
+      <article class="item">
+        <h3>Ghost text</h3>
+        <p>After you pause about 300&nbsp;ms at a prompt, dim text shows how the command might finish. The shell never sees it. Suggestions stay off the alternate screen (vim, less, htop) and only appear when the cursor is at the end of the line.</p>
+        <p class="how"><kbd>Tab</kbd> accept · <kbd>Esc</kbd> dismiss · <kbd>Alt</kbd>+<kbd>]</kbd> / <kbd>Alt</kbd>+<kbd>[</kbd> next and previous. <code>config.ai.accept_key</code> changes the accept chord.</p>
+      </article>
+      <article class="item">
+        <h3>Local model, or Grok</h3>
+        <p>The default endpoint is Ollama at <code>http://localhost:11434/v1</code> with <code>qwen2.5-coder:0.5b</code>, so nothing leaves the machine. Any OpenAI-compatible chat server works. <code>api.x.ai</code> and <code>us.api.x.ai</code> use the Responses API with model <code>grok-4.7</code>. Put the key in an env var named by <code>config.ai.api_key_env</code> (<code>XAI_API_KEY</code> for Grok). The key is not stored in the config file.</p>
+        <p class="how">On xAI, <code>config.ai.reasoning</code> is <code>low</code>, <code>medium</code>, <code>high</code>, or <code>xhigh</code>. Empty means <code>low</code>. Reasoning cannot be turned off. Live search is off, and the response is not stored. The wait is at least 15 seconds.</p>
+      </article>
+      <article class="item">
+        <h3>Explain the last error</h3>
+        <p>An overlay names the cause of the last failed command and suggests a fix. Esc closes it. If the endpoint is down, the overlay says so.</p>
+        <p class="how"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd></p>
+      </article>
+      <article class="item">
+        <h3>Ask the Output</h3>
+        <p>A prompt bar sends your question with the selection, otherwise the last command’s output, otherwise the visible screen. The answer cites lines, which are highlighted. Long output is cut to <code>config.ai.ask.max_lines</code> (default 200) and the overlay says so. Turn it off with <code>config.ai.ask.enabled = false</code>.</p>
+        <p class="how"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Q</kbd> · macOS <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>Q</kbd> · <kbd>Down</kbd> and <kbd>Enter</kbd> jump between cited lines · <kbd>Esc</kbd> closes</p>
+      </article>
+      <article class="item">
+        <h3>Redaction and the offline badge</h3>
+        <p>Tokens, keys, passwords, and env assignments are stripped before a request is sent. If the endpoint is down, a small “AI offline” badge shows and requests back off. <code>--no-ai</code> turns suggestions off.</p>
+      </article>
+      <article class="item">
+        <h3>Shell integration</h3>
+        <p>OSC 133 marks are injected for bash, zsh, and fish so suggestions, Muscle Memory, and Time Travel know the typed command, the directory, and the exit code. <code>config.shell.integration</code> defaults to on. It applies on the next start.</p>
+        <p class="how"><code>deathterminal --print-shell-integration bash</code> (or <code>zsh</code>, <code>fish</code>)</p>
+      </article>
+    </section>
+
+    <section class="features" id="ghost-run" aria-labelledby="ghost-heading">
+      <h2 id="ghost-heading">Ghost Run</h2>
+      <article class="item">
+        <h3>Hold a risky Enter</h3>
+        <p>Enter on a built-in risky pattern does not reach the shell. A local read-only preview estimates the impact. The command is not executed to build that preview. An optional plain-English note is added when <code>config.ghost_run.ai_explain</code> and <code>config.ai.enabled</code> are both on.</p>
+        <p class="how"><kbd>y</kbd> run · <kbd>n</kbd>, <kbd>Esc</kbd>, or <kbd>Ctrl</kbd>+<kbd>C</kbd> cancel · <kbd>t</kbd> snapshot with Time Travel, then run · a second <kbd>Enter</kbd> does not confirm</p>
+      </article>
+      <article class="item">
+        <h3>What it matches <span class="flag">Preview can be partial</span></h3>
+        <p>The built-in list covers <code>rm -r</code> / <code>-R</code> / <code>--recursive</code>, <code>git reset --hard</code>, <code>git clean</code> (not a dry run), force push, <code>dd</code>, <code>mkfs*</code>, <code>chmod -R</code>, <code>chown -R</code>, <code>find -delete</code> / <code>-exec</code> / <code>-execdir</code>, <code>mv</code> onto an existing path, a truncating <code>&gt;</code>, and <code>curl</code> or <code>wget</code> piped to a shell. Wrappers such as <code>sudo</code> and <code>env</code> are skipped. There is no regex. Assigning <code>config.ghost_run.patterns</code>, even to <code>{}</code>, replaces that list.</p>
+        <p>Directory walks stop after 4000 entries or about 200&nbsp;ms and say the preview is partial. Git estimates time out after about 1.5&nbsp;s. <code>mv</code> onto an existing path is not checked on an SSH pane. <code>t</code> is hidden in headless mode, because Time Travel does not register a snapshot there. If the snapshot fails, the command is not run.</p>
+      </article>
+    </section>
+
+    <section class="features" id="muscle-memory" aria-labelledby="muscle-heading">
+      <h2 id="muscle-heading">Muscle Memory</h2>
+      <article class="item">
+        <h3>Repeated sequences <span class="flag">This machine only</span></h3>
+        <p>The same 2–5 commands, in one project, at least three times, raises “You run these together a lot. Make it a shortcut?” Nothing is sent to a model. Commands that look like secrets are not stored.</p>
+        <p class="how"><kbd>y</kbd> or <kbd>Enter</kbd> name it · <kbd>n</kbd> or <kbd>Esc</kbd> dismiss that sequence · prefix the name with <code>*</code> to save it for every directory · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> can save, run, rename, or delete it</p>
+      </article>
+      <article class="item">
+        <h3>Run a shortcut</h3>
+        <p>Type the name at the prompt and press Enter, or pick it in the command palette. With shell integration, each command is sent on its own and the rest stop after a non-zero exit. Without it, the sequence is one line joined with <code>&amp;&amp;</code>. A project shortcut wins over a global one with the same name. The file is <code>shortcuts.lua</code> in the config directory.</p>
+        <p class="how"><code>config.muscle_memory.min_repeats</code> (default 3) · <code>config.muscle_memory.max_len</code> (default 5)</p>
+      </article>
+    </section>
+
+    <section class="features" id="time-travel" aria-labelledby="tt-heading">
+      <h2 id="tt-heading">Time Travel</h2>
+      <article class="item">
+        <h3>Rewind a directory <span class="flag">GUI only</span></h3>
+        <p>Before each command (OSC 133 C), the working directory from OSC 7 is snapshotted. After the command, the overlay can show added, removed, and modified paths. Headless mode does not take snapshots. An SSH pane is skipped, because the remote directory is not the local tree. Symlinks are stored as the link text and are not followed.</p>
+        <p class="how"><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>T</kbd> open or close · macOS <kbd>Cmd</kbd>+<kbd>Option</kbd>+<kbd>T</kbd> · <kbd>Up</kbd> / <kbd>Down</kbd> scrub · <kbd>Enter</kbd> then <kbd>y</kbd> rewind · <kbd>n</kbd> or <kbd>Esc</kbd> cancel · <kbd>u</kbd> undo the last rewind</p>
+      </article>
+      <article class="item">
+        <h3>What is kept</h3>
+        <p><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> and <kbd>Cmd</kbd>+<kbd>T</kbd> stay New Tab. Snapshots live under the data directory and try an APFS clone or a Linux reflink before a byte copy. A root <code>.gitignore</code> applies. The default excludes include <code>node_modules</code>, <code>.git/objects</code>, <code>zig-out</code>, <code>target</code>, virtualenvs, and <code>dist</code>. Trees bigger than <code>config.time_travel.max_dir_mb</code> (200) are skipped, and a rewind of a folder that has grown past that cap is refused. Each pane keeps <code>config.time_travel.retention</code> snapshots (50). A one-line AI summary is optional and uses the same redaction as other AI calls.</p>
+      </article>
+    </section>
+
+    <section class="features" id="sharing" aria-labelledby="share-heading">
+      <h2 id="share-heading">Shared Haunting</h2>
+      <article class="item">
+        <h3>Share the focused pane</h3>
+        <p>One other YouNeeK Death Terminal can watch the pane that was focused when the share started. Later focus changes do not follow. The guest gets the live cells, not the scrollback, and not other panes or the invite banner. The session is Noise (X25519 + ChaCha20-Poly1305). The relay only forwards opaque frames.</p>
+        <p class="how"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> · macOS <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>H</kbd> · or <code>deathterminal --share</code></p>
+      </article>
+      <article class="item">
+        <h3>Short code, LAN, then the relay</h3>
+        <p>A guest on the same Wi-Fi connects to the host directly. Anyone else uses the relay already in the invite. The default relay is <code>wss://relay.youneek.xyz</code>. If that custom domain returns an empty 404 or a 403 before the Worker runs, both sides dial <code>wss://youneek-share-relay.youneekartifacts.workers.dev</code> with the same session. <code>config.share.relay = "off"</code> keeps the share on the LAN. A <code>wss://</code> URL, or <code>deathterminal --share-relay &lt;host:port&gt;</code>, is a relay you run yourself. The TCP flag is a splice, not the default WebSocket path.</p>
+        <p>When the hosted relay accepts the session, the banner leads with a short code such as <code>K7Q-4MZ</code> (drawn with spaces). Copy puts <code>deathterminal --join K7Q-4MZ</code> on the clipboard. The short code is kept for about an hour and only a few lookups. A long <code>dt1</code> invite still works. <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd> (macOS <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>J</kbd>) opens a join prompt. <code>deathterminal --join</code> also takes a <code>deathterminal://join/</code> link.</p>
+      </article>
+      <article class="item">
+        <h3>Read-only, then control <span class="flag">Screen is not redacted</span></h3>
+        <p>The guest starts read-only. Arrows move their cursor. The host grants or revokes typing for this session. A new guest after a kick is read-only again. Passwords visible in the pane are sent as they appear. Do not share a pane you would not show.</p>
+        <p class="how"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>G</kbd> grant or revoke · macOS <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>G</kbd> · <kbd>F12</kbd> kick, or stop if you are still waiting · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>H</kbd> always stop · macOS <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>Option</kbd>+<kbd>H</kbd></p>
+      </article>
+      <article class="item">
+        <h3>What the wire leaves out <span class="flag">Partial</span></h3>
+        <p>Combining characters and underline styles are not sent. Colours are resolved RGB. A smaller guest window clips. <code>config.share.enabled = false</code> refuses to host. <code>--join</code> still works. The command palette has “Share: copy invite”.</p>
+      </article>
+    </section>
+
+    <section class="features" id="ssh" aria-labelledby="ssh-heading">
+      <h2 id="ssh-heading">SSH</h2>
+      <article class="item">
+        <h3>Built-in client <span class="flag">Linux only</span></h3>
+        <p>libssh2 1.11.1 is compiled in on Linux. On macOS and Windows, <code>--ssh</code> reports that it is unavailable. A target is a <code>config.ssh.profiles</code> name, a <code>~/.ssh/config</code> Host, or <code>user@host[:port]</code>. Host, HostName, User, Port, IdentityFile, ProxyJump, and Include are read. <code>Match</code> blocks are skipped.</p>
+        <p class="how"><code>deathterminal --ssh prod</code> · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> palette · <kbd>Enter</kbd> opens a tab · <kbd>Shift</kbd>+<kbd>Enter</kbd> splits right · <kbd>Alt</kbd>+<kbd>Enter</kbd> opens a window</p>
+      </article>
+      <article class="item">
+        <h3>Keys, prompts, and forwards</h3>
+        <p>Host keys use <code>~/.ssh/known_hosts</code>. An unknown host can be saved, accepted once, or rejected. A changed or <code>@revoked</code> key is refused, with no override. Auth tries ssh-agent, key files (including encrypted PEM, PKCS#8, and OpenSSH keys), keyboard-interactive, then password. Prompts stay in the terminal. Forwards are <code>-L</code>, <code>-R</code>, and <code>-D</code> (SOCKS). The palette toggles them on the focused session. Keepalives default to 30&nbsp;s. <code>reconnect = true</code> on a profile dials again after a drop.</p>
+        <p class="how"><code>deathterminal --ssh-ctl &lt;pid&gt; status|list|toggle &lt;n&gt;|add &lt;spec&gt;|reconnect</code></p>
+      </article>
+      <article class="item">
+        <h3>SSH limits <span class="flag">Partial</span></h3>
+        <p>No certificates, no <code>Match</code>, no X11 or agent forwarding, and no SFTP. ProxyJump hops do not follow their own jump. A profile <code>command</code> is typed into the remote shell, not sent as an exec request. <code>mv</code> overwrite checks from Ghost Run do not run on an SSH pane.</p>
+      </article>
+    </section>
+
+    <section class="features" id="panes" aria-labelledby="panes-heading">
+      <h2 id="panes-heading">Tabs, panes, and text</h2>
+      <article class="item">
+        <h3>Tabs and splits</h3>
+        <p>Each pane has its own shell or SSH session, grid, scrollback, selection, search, and AI context. The tab bar is automatic once there are two tabs (<code>config.tabs.bar</code> can force top, bottom, or hidden). Markers show a bell, a failed command, a running command, and new output. New tabs inherit the focused pane’s directory when the shell sent OSC 7.</p>
+        <p class="how"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd> new tab · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>W</kbd> close tab · <kbd>Ctrl</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd> cycle · <kbd>Alt</kbd>+<kbd>1</kbd>…<kbd>9</kbd> go to a tab · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> split right · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> split down · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>W</kbd> close pane · <kbd>Alt</kbd>+arrows focus · <kbd>Alt</kbd>+<kbd>Shift</kbd>+arrows resize · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> zoom pane · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>E</kbd> equalize</p>
+      </article>
+      <article class="item">
+        <h3>Mouse on the tab bar</h3>
+        <p>Click a tab to switch, drag to reorder, double-click to rename, click × or middle-click to close, and click + for a new tab. Drag a divider to resize. Closing a pane that is running a program (not just the shell) asks first.</p>
+        <p class="how"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>R</kbd> rename the tab</p>
+      </article>
+      <article class="item">
+        <h3>Selection, search, scrollback</h3>
+        <p>Drag to select. Double-click a word, triple-click a line, Shift+click to extend, Ctrl+Alt+drag for a block. Shift selects even when the app owns the mouse. Scrollback defaults to 10,000 lines, with a thumb while you are scrolled back. Search highlights matches.</p>
+        <p class="how"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> copy · macOS <kbd>Cmd</kbd>+<kbd>C</kbd> · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd> paste · macOS <kbd>Cmd</kbd>+<kbd>V</kbd> · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>A</kbd> select all · macOS <kbd>Cmd</kbd>+<kbd>A</kbd> · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd> search · <kbd>Shift</kbd>+<kbd>PgUp</kbd> / <kbd>PgDn</kbd> page · <kbd>Shift</kbd>+<kbd>Home</kbd> / <kbd>End</kbd> top and bottom</p>
+      </article>
+      <article class="item">
+        <h3>Clipboard and links</h3>
+        <p>Release copies to PRIMARY on Linux. <code>selection.copy_on_select</code> also copies to the clipboard. Multi-line paste asks when bracketed paste is off. OSC 52 defaults to write. Ctrl+click opens an OSC 8 link or a URL with <code>xdg-open</code>, <code>open</code>, or ShellExecute. No shell is involved.</p>
+      </article>
+    </section>
+
+    <section class="features" id="rendering" aria-labelledby="render-heading">
+      <h2 id="render-heading">Rendering and fonts</h2>
+      <article class="item">
+        <h3>Vulkan, then software</h3>
+        <p>A swapchain and a glyph atlas draw the grid. If Vulkan is missing, the software path still paints: XPutImage or wl_shm, a Win32 DIB, or a CGImage. There is no animation and the cursor does not blink, so an idle window does not wake the CPU. Present mode defaults to vsync (<code>fifo</code>). Redraws while output streams are capped at <code>config.render.max_fps</code> (120).</p>
+        <p class="how"><code>--backend auto|x11|wayland|win32|cocoa</code> · <code>--scale 1–4</code></p>
+      </article>
+      <article class="item">
+        <h3>JetBrains Mono, zoom, retro</h3>
+        <p>JetBrains Mono is embedded, so a window works with no system font. Ligatures are on and stay one cell wide. Ctrl+=, Ctrl+−, and Ctrl+0 zoom. <code>--font retro</code> or <code>config.font.retro = true</code> switches to the built-in 8×8 bitmap, which is ASCII plus box drawing and has no bold or italic. Linux uses fontconfig for fallback glyphs. Windows and macOS scan their font folders and build FreeType and HarfBuzz from source. Colour emoji uses COLR fonts. Bitmap emoji such as Apple Color Emoji is not loaded. Emoji ZWJ sequences are drawn as separate code points.</p>
+        <p class="how"><kbd>Ctrl</kbd>+<kbd>=</kbd> / <kbd>Ctrl</kbd>+<kbd>−</kbd> / <kbd>Ctrl</kbd>+<kbd>0</kbd> · <code>--font-family</code> · <code>--font-size</code> · <code>--line-height</code></p>
+      </article>
+    </section>
+
+    <section class="features" id="themes" aria-labelledby="themes-heading">
+      <h2 id="themes-heading">Themes and the YouNeeK Time clock</h2>
+      <article class="item">
+        <h3>death, and the other themes</h3>
+        <p><code>config.theme</code> defaults to <code>death</code>: light gray text, a black background, and a red cursor (<code>#FF0033</code>). Also bundled: <code>default</code> (classic ANSI), <code>dracula</code>, <code>gruvbox-dark</code>, <code>nord</code>, <code>solarized-dark</code>, and <code>solarized-light</code>. <code>config.colors.*</code> overrides one entry. Saving <code>config.lua</code> recolours text already on screen. Cursor shape is block, underline, or bar. Programs can still change it with DECSCUSR.</p>
+        <p class="how"><code>config.theme = "nord"</code> · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> reload now</p>
+      </article>
+      <article class="item">
+        <h3>YouNeeK Time <span class="flag">On by default</span></h3>
+        <p>The status bar shows a clock. The hour is the civil hour, in 12-hour or 24-hour form (<code>settings.hours</code>, default 24). Each hour has 100 YouNeeK minutes: one minute is 36 real seconds, so 14:30:00 civil is 14:50 and 14:59:59 is 14:99. <code>mode = "regular"</code> shows the civil minute instead. The moon phase is drawn next to the time. The accent is <code>#7CFF6B</code>. <code>settings.chime</code> toasts when the civil hour changes. It is off by default, and plugins cannot play a sound. Time zone is local, <code>UTC</code>, or an offset such as <code>-05:00</code>.</p>
+        <p class="how"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> show or hide the status bar · <code>config.plugins["youneek-time"].settings</code></p>
+      </article>
+      <article class="item">
+        <h3>Startup banner</h3>
+        <p>An interactive launch prints a green ASCII skull and “YouNeeK Death Terminal” on the terminal’s stderr. It is skipped when stderr is not a TTY. There is no separate window splash, and the mark is the green skull, not a terminal-window icon.</p>
+      </article>
+    </section>
+
+    <section class="features" id="config" aria-labelledby="config-heading">
+      <h2 id="config-heading">Config and plugins</h2>
+      <article class="item">
+        <h3>config.lua</h3>
+        <p>Lua 5.4 is compiled in. The file is <code>--config</code>, then <code>$XDG_CONFIG_HOME/death-terminal/config.lua</code>, then the system config dirs. Windows uses <code>%APPDATA%\death-terminal\config.lua</code>. A legacy <code>config.txt</code> still loads, with a deprecation note. Flags beat the file. Saving the file reloads it. A bad file at startup is ignored. A bad reload keeps the previous settings. Esc dismisses the error bar.</p>
+        <p class="how"><code>deathterminal --print-default-config</code> · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> · <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> command palette (macOS <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd>)</p>
+      </article>
+      <article class="item">
+        <h3>Plugins</h3>
+        <p>Each plugin is its own sandboxed Lua state, with a memory cap, a CPU budget, and only the permissions you grant. YouNeeK Time is embedded and loads on its own. <code>git_branch</code>, <code>long_command</code>, and <code>theme_cycle</code> ship as examples you copy into the plugins directory. <code>theme_cycle</code> adds palette entries for the next theme and a <code>crimson</code> theme. Its <code>Ctrl</code>+<code>Alt</code>+<code>T</code> line is rejected, because that chord is already Time Travel. <code>--lua-unsafe</code> gives <code>config.lua</code> the full Lua library, including <code>io</code> and <code>os.execute</code>.</p>
+        <p class="how"><code>deathterminal --plugins list|enable &lt;name&gt;|disable &lt;name&gt;</code> · <code>--no-plugins</code></p>
+      </article>
+    </section>
+
+    <section class="features" id="run" aria-labelledby="run-heading">
+      <h2 id="run-heading">Run it</h2>
+      <article class="item">
+        <h3>Window or headless</h3>
+        <p>The default is headless. <code>--gui</code> opens a native window (Wayland, X11, Win32, or Cocoa) and falls back to headless if that fails. <code>--version</code> and <code>--help</code> print and exit.</p>
+        <p class="how"><code>deathterminal --gui</code> · <code>--headless</code> · <code>--config &lt;file&gt;</code></p>
+      </article>
+      <article class="item">
+        <h3>One-command install</h3>
+        <p>These scripts are in the repo. They are separate from the release packages in the download section above. On Windows the PowerShell script installs a per-user <code>deathterminal.exe</code>, adds it to the user PATH, and makes a Start Menu shortcut that runs <code>--gui</code>. On macOS and Linux the shell script installs a prebuilt binary from the <code>nightly</code> branch. Zig 0.13 cannot link the GUI on current macOS, so a missing prebuilt stops instead of compiling. Run either command again to update.</p>
+        <p class="how"><code>irm https://raw.githubusercontent.com/AndrewGrayYouNeeK/Death-terminal-/main/install.ps1 | iex</code></p>
+        <p class="how"><code>curl -fsSL https://raw.githubusercontent.com/AndrewGrayYouNeeK/Death-terminal-/main/install.sh | sh</code></p>
+      </article>
+      <article class="item">
+        <h3>Uninstall</h3>
+        <p class="how"><code>$env:DEATHTERMINAL_UNINSTALL='1'; irm https://raw.githubusercontent.com/AndrewGrayYouNeeK/Death-terminal-/main/install.ps1 | iex</code></p>
+        <p class="how"><code>curl -fsSL https://raw.githubusercontent.com/AndrewGrayYouNeeK/Death-terminal-/main/install.sh | sh -s -- --uninstall</code></p>
+      </article>
+    </section>
+
+    <section class="features" id="limits" aria-labelledby="limits-heading">
+      <h2 id="limits-heading">Limits, stated in the code</h2>
+      <article class="item">
+        <h3>No phone build <span class="flag">Plan only</span></h3>
+        <p><code>docs/MOBILE.md</code> is a plan. There is no iOS or Android target. The VT grid and the software renderer are the portable pieces. The window, Vulkan surface, PTY, and SSH client are desktop code.</p>
+      </article>
+      <article class="item">
+        <h3>macOS and Windows <span class="flag">Not fully proven</span></h3>
+        <p>The Cocoa backend is in the tree and cross-compiles. The platforms note says it has not been run on a Mac. Live resize, IME, and dead keys are called out as untested. Windows GUI, Vulkan, and the palette were exercised under Wine. An interactive ConPTY shell was not, because Wine does not wire those handles. Real Windows is what that path is written for.</p>
+      </article>
+      <article class="item">
+        <h3>Terminal compatibility <span class="flag">Partial</span></h3>
+        <p><code>TERM</code> is <code>xterm-256color</code>. Headless checks cover vim, less, htop, and tmux, including 256 colours and splits. Not implemented: sixel, soft fonts, VT52, left and right margins, double-width lines, reflow on resize, blinking text, and underline colour. 80/132-column mode resizes a headless grid only. In a window it clears and homes, and the width stays the window’s. OSC 52 is handled. The selection UI is outside the emulator.</p>
+      </article>
     </section>
 
     <section class="install" aria-labelledby="install-heading">
