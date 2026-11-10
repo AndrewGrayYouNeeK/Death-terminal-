@@ -250,7 +250,7 @@ fn installMainMenu(st: *State) void {
 
     const bar = msg(Id, objc.alloc("NSMenu"), "init", .{});
     if (bar == null) return;
-    addMenu(bar, del, "YouNeeK Death Terminal", "app");
+    _ = addMenu(bar, del, "YouNeeK Death Terminal", "app");
     const window = addMenu(bar, del, "Window", "window");
     msg(void, st.app, "setMainMenu:", .{bar});
     if (window != null) msg(void, st.app, "setWindowsMenu:", .{window});
