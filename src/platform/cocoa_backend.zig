@@ -4,8 +4,12 @@
 //!
 //! UNTESTED AT RUNTIME: this file is cross-compiled from Linux only. The
 //! design keeps the dependency surface small: the Objective-C runtime and
-//! frameworks are loaded with dlopen (see objc.zig). There is no
-//! NSApplicationDelegate. A runtime NSView subclass is the content view and
+//! frameworks are loaded with dlopen (see objc.zig). A small
+//! NSApplicationDelegate installs the About / Hide / Quit / Window menus
+//! and the GURL Apple Event (`kAEGetURL` on `kInternetEventClass`). A
+//! clicked deathterminal://join/ link is stored for the GUI, which joins
+//! the focused pane the same way `--join` does. A runtime NSView subclass
+//! is the content view and
 //! first responder so Command chords arrive through `performKeyEquivalent:`
 //! (AppKit does not deliver those as `keyDown:`). Other events are read
 //! straight off the AppKit queue.
@@ -19,9 +23,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const events = @import("events.zig");
+const build_options = @import("build_options");
 const Event = events.Event;
 const input = @import("../terminal/input.zig");
 const io = @import("io.zig");
+const join_url = @import("../share/join_url.zig");
 const objc = @import("objc.zig");
 const Id = objc.Id;
 const msg = objc.msg;
@@ -87,6 +93,8 @@ pub const State = struct {
     key_taken: bool = false,
     /// Main-menu key equivalents cleared so Hide/Quit cannot swallow Cmd+Shift+letter.
     menu_disarmed: bool = false,
+    /// NSApplicationDelegate that owns the menu actions.
+    app_delegate: Id = null,
     /// Last mouse event already given to selection. The poll loop and the
     /// view's mouseDown:/mouseDragged:/mouseUp: can both see one NSEvent.
     mouse_stamp: f64 = -1,
@@ -168,6 +176,154 @@ fn postWake(app: Id) void {
     msg(void, app, "postEvent:atStart:", .{ ev, objc.NO });
 }
 
+/// NSApplicationActivationPolicyRegular. The Dock shows the app.
+const activation_policy_regular: isize = 0;
+
+/// `kInternetEventClass` and `kAEGetURL` are both `'GURL'`.
+const gurl_event_class: u32 = 0x4755524C;
+const gurl_event_id: u32 = 0x4755524C;
+/// `keyDirectObject` (`'----'`), the URL string on a GURL event.
+const gurl_direct_object: u32 = 0x2D2D2D2D;
+
+const MenuEntry = struct {
+    menu: []const u8,
+    title: [:0]const u8,
+    action: [:0]const u8,
+};
+
+/// Click targets. Key equivalents stay empty: Cmd+Q and Cmd+H are handled
+/// in matchKey so a menu shortcut cannot swallow Cmd+Shift+letter.
+const main_menu = [_]MenuEntry{
+    .{ .menu = "app", .title = "About YouNeeK Death Terminal", .action = "dtAbout:" },
+    .{ .menu = "app", .title = "Hide YouNeeK Death Terminal", .action = "dtHide:" },
+    .{ .menu = "app", .title = "Hide Others", .action = "dtHideOthers:" },
+    .{ .menu = "app", .title = "Quit YouNeeK Death Terminal", .action = "dtQuit:" },
+    .{ .menu = "window", .title = "Minimize", .action = "dtMinimize:" },
+    .{ .menu = "window", .title = "Zoom", .action = "dtZoom:" },
+};
+
+fn delegateImp(name: [:0]const u8) *const anyopaque {
+    if (std.mem.eql(u8, name, "dtAbout:")) return @ptrCast(&dtAbout);
+    if (std.mem.eql(u8, name, "dtHide:")) return @ptrCast(&dtHide);
+    if (std.mem.eql(u8, name, "dtHideOthers:")) return @ptrCast(&dtHideOthers);
+    if (std.mem.eql(u8, name, "dtQuit:")) return @ptrCast(&dtQuit);
+    if (std.mem.eql(u8, name, "dtMinimize:")) return @ptrCast(&dtMinimize);
+    return @ptrCast(&dtZoom);
+}
+
+fn dtAbout(_: Id, _: objc.Sel, _: Id) callconv(.C) void {
+    const app = msg(Id, objc.class("NSApplication"), "sharedApplication", .{});
+    const opts = msg(Id, objc.class("NSDictionary"), "dictionaryWithObject:forKey:", .{
+        objc.nsString(build_options.version),
+        objc.nsString("ApplicationVersion"),
+    });
+    msg(void, app, "orderFrontStandardAboutPanelWithOptions:", .{opts});
+}
+
+fn dtHide(_: Id, _: objc.Sel, _: Id) callconv(.C) void {
+    const app = msg(Id, objc.class("NSApplication"), "sharedApplication", .{});
+    msg(void, app, "hide:", .{@as(Id, null)});
+}
+
+fn dtHideOthers(_: Id, _: objc.Sel, _: Id) callconv(.C) void {
+    const app = msg(Id, objc.class("NSApplication"), "sharedApplication", .{});
+    msg(void, app, "hideOtherApplications:", .{@as(Id, null)});
+}
+
+fn dtQuit(_: Id, _: objc.Sel, _: Id) callconv(.C) void {
+    if (cocoa_key_state) |st| st.queue.pushClose();
+}
+
+fn dtMinimize(_: Id, _: objc.Sel, _: Id) callconv(.C) void {
+    if (cocoa_key_state) |st| if (st.window) |w| msg(void, w, "miniaturize:", .{@as(Id, null)});
+}
+
+fn dtZoom(_: Id, _: objc.Sel, _: Id) callconv(.C) void {
+    if (cocoa_key_state) |st| if (st.window) |w| msg(void, w, "zoom:", .{@as(Id, null)});
+}
+
+fn dtWillFinishLaunching(_: Id, _: objc.Sel, _: Id) callconv(.C) void {
+    if (cocoa_key_state) |st| registerGetUrl(st.app_delegate);
+}
+
+fn dtGetUrl(_: Id, _: objc.Sel, event: Id, _: Id) callconv(.C) void {
+    if (event == null) return;
+    const desc = msg(Id, event, "paramDescriptorForKeyword:", .{gurl_direct_object});
+    if (desc == null) return;
+    const text = msg(Id, desc, "stringValue", .{});
+    if (text == null) return;
+    join_url.deliver(objc.utf8(text));
+    if (cocoa_key_state) |st| if (st.app != null) postWake(st.app);
+}
+
+/// `NSAppleEventManager setEventHandler:andSelector:forEventClass:andEventID:`.
+fn registerGetUrl(del: Id) void {
+    if (del == null) return;
+    const mgr = msg(Id, objc.class("NSAppleEventManager"), "sharedAppleEventManager", .{});
+    if (mgr == null) return;
+    msg(void, mgr, "setEventHandler:andSelector:forEventClass:andEventID:", .{
+        del,
+        objc.sel("handleGetURLEvent:withReplyEvent:"),
+        gurl_event_class,
+        gurl_event_id,
+    });
+}
+
+fn ensureAppDelegate(st: *State) void {
+    if (builtin.os.tag != .macos or st.app == null or st.app_delegate != null) return;
+    const super = objc.class("NSObject");
+    if (super == null) return;
+    if (objc.class("DTAppDelegate") == null) {
+        const cls = objc.allocateClassPair(super, "DTAppDelegate") orelse return;
+        for (main_menu) |item| {
+            if (!objc.addMethod(cls, item.action, delegateImp(item.action), "v@:")) return;
+        }
+        if (!objc.addMethod(cls, "applicationWillFinishLaunching:", @ptrCast(&dtWillFinishLaunching), "v@:@")) return;
+        if (!objc.addMethod(cls, "handleGetURLEvent:withReplyEvent:", @ptrCast(&dtGetUrl), "v@:@@")) return;
+        objc.registerClassPair(cls);
+    }
+    const del = msg(Id, objc.alloc("DTAppDelegate"), "init", .{});
+    if (del == null) return;
+    st.app_delegate = del;
+    msg(void, st.app, "setDelegate:", .{del});
+    // Before finishLaunching, so a cold-start GURL is queued for this process.
+    // applicationWillFinishLaunching: registers it again when AppKit calls in.
+    registerGetUrl(del);
+}
+
+fn installMainMenu(st: *State) void {
+    if (builtin.os.tag != .macos or st.app == null) return;
+    ensureAppDelegate(st);
+    const del = st.app_delegate;
+    if (del == null) return;
+    const bar = msg(Id, objc.alloc("NSMenu"), "init", .{});
+    if (bar == null) return;
+    _ = addMenu(bar, del, "YouNeeK Death Terminal", "app");
+    const window = addMenu(bar, del, "Window", "window");
+    msg(void, st.app, "setMainMenu:", .{bar});
+    if (window != null) msg(void, st.app, "setWindowsMenu:", .{window});
+}
+
+fn addMenu(bar: Id, del: Id, title: [:0]const u8, which: []const u8) Id {
+    const top = msg(Id, objc.alloc("NSMenuItem"), "init", .{});
+    const menu = msg(Id, objc.alloc("NSMenu"), "initWithTitle:", .{objc.nsString(title)});
+    if (top == null or menu == null) return null;
+    for (main_menu) |item| {
+        if (!std.mem.eql(u8, item.menu, which)) continue;
+        const row = msg(Id, objc.alloc("NSMenuItem"), "initWithTitle:action:keyEquivalent:", .{
+            objc.nsString(item.title),
+            objc.sel(item.action),
+            objc.nsString(""),
+        });
+        if (row == null) continue;
+        msg(void, row, "setTarget:", .{del});
+        msg(void, menu, "addItem:", .{row});
+    }
+    msg(void, top, "setSubmenu:", .{menu});
+    msg(void, bar, "addItem:", .{top});
+    return menu;
+}
+
 // ------------------------------------------------------------------ API
 
 pub fn open(st: *State, allocator: std.mem.Allocator, title: []const u8, width: u32, height: u32, scale: f32) !void {
@@ -179,7 +335,8 @@ pub fn open(st: *State, allocator: std.mem.Allocator, title: []const u8, width: 
 
     st.app = msg(Id, objc.class("NSApplication"), "sharedApplication", .{});
     if (st.app == null) return error.NoNSApplication;
-    _ = msg(objc.BOOL, st.app, "setActivationPolicy:", .{@as(isize, 0)}); // Regular
+    // Regular: menu bar and a Dock icon. Accessory would hide the Dock tile.
+    _ = msg(objc.BOOL, st.app, "setActivationPolicy:", .{activation_policy_regular});
     st.run_mode = objc.constant("NSDefaultRunLoopMode");
 
     const pts_scale: f64 = @max(1.0, scale);
@@ -207,8 +364,10 @@ pub fn open(st: *State, allocator: std.mem.Allocator, title: []const u8, width: 
 
     msg(void, st.window, "center", .{});
     msg(void, st.window, "makeKeyAndOrderFront:", .{@as(Id, null)});
+    ensureAppDelegate(st);
     msg(void, st.app, "finishLaunching", .{});
     msg(void, st.app, "activateIgnoringOtherApps:", .{objc.YES});
+    installMainMenu(st);
     disarmMenu(st);
     _ = msg(objc.BOOL, st.window, "makeFirstResponder:", .{st.view});
 
@@ -1158,6 +1317,28 @@ test "cocoa: view pixels flip Y and apply the backing scale" {
     const title = viewPixels(0, 120, 100, 1);
     try std.testing.expect(!title.inside);
     try std.testing.expect(title.y < 0);
+}
+
+test "cocoa: the menu bar" {
+    const need = [_]struct { menu: []const u8, title: []const u8, action: []const u8 }{
+        .{ .menu = "app", .title = "About YouNeeK Death Terminal", .action = "dtAbout:" },
+        .{ .menu = "app", .title = "Hide YouNeeK Death Terminal", .action = "dtHide:" },
+        .{ .menu = "app", .title = "Hide Others", .action = "dtHideOthers:" },
+        .{ .menu = "app", .title = "Quit YouNeeK Death Terminal", .action = "dtQuit:" },
+        .{ .menu = "window", .title = "Minimize", .action = "dtMinimize:" },
+        .{ .menu = "window", .title = "Zoom", .action = "dtZoom:" },
+    };
+    for (need) |want| {
+        var found = false;
+        for (main_menu) |item| {
+            if (std.mem.eql(u8, item.menu, want.menu) and std.mem.eql(u8, item.title, want.title) and std.mem.eql(u8, item.action, want.action)) found = true;
+        }
+        try std.testing.expect(found);
+    }
+    try std.testing.expectEqual(@as(isize, 0), activation_policy_regular);
+    try std.testing.expectEqual(@as(u32, 0x4755524C), gurl_event_class);
+    try std.testing.expectEqual(gurl_event_class, gurl_event_id);
+    try std.testing.expectEqual(@as(u32, 0x2D2D2D2D), gurl_direct_object);
 }
 
 test "cocoa: Cmd+Q quits; Cmd+Shift+Q does not" {
