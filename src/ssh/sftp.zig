@@ -18,12 +18,12 @@ pub fn list(session: *c.LIBSSH2_SESSION, path: []const u8, out: *std.ArrayList(u
     defer _ = c.libssh2_sftp_shutdown(sftp);
     var pb: [4096]u8 = undefined;
     const zp = try zpath(&pb, path);
-    const dir = c.libssh2_sftp_opendir(sftp, zp.ptr) orelse return error.SftpFailed;
-    defer _ = c.libssh2_sftp_closedir(dir);
+    const dir = c.libssh2_sftp_open_ex(sftp, zp.ptr, @intCast(zp.len), 0, 0, c.LIBSSH2_SFTP_OPENDIR) orelse return error.SftpFailed;
+    defer _ = c.libssh2_sftp_close_handle(dir);
     var name: [512]u8 = undefined;
     while (true) {
         var attrs: c.LIBSSH2_SFTP_ATTRIBUTES = undefined;
-        const n = c.libssh2_sftp_readdir(dir, &name, name.len, &attrs);
+        const n = c.libssh2_sftp_readdir_ex(dir, &name, name.len, @as([*c]u8, null), 0, &attrs);
         if (n == 0) break;
         if (n < 0) return error.SftpFailed;
         out.writer().print("{s}\n", .{name[0..@intCast(n)]}) catch return error.SftpFailed;
@@ -35,8 +35,8 @@ pub fn get(session: *c.LIBSSH2_SESSION, remote: []const u8, local: []const u8) E
     defer _ = c.libssh2_sftp_shutdown(sftp);
     var pb: [4096]u8 = undefined;
     const zp = try zpath(&pb, remote);
-    const h = c.libssh2_sftp_open(sftp, zp.ptr, c.LIBSSH2_FXF_READ, 0) orelse return error.SftpFailed;
-    defer _ = c.libssh2_sftp_close(h);
+    const h = c.libssh2_sftp_open_ex(sftp, zp.ptr, @intCast(zp.len), c.LIBSSH2_FXF_READ, 0, c.LIBSSH2_SFTP_OPENFILE) orelse return error.SftpFailed;
+    defer _ = c.libssh2_sftp_close_handle(h);
     var f = std.fs.cwd().createFile(local, .{ .truncate = true }) catch return error.SftpFailed;
     defer f.close();
     var buf: [32 * 1024]u8 = undefined;
@@ -54,8 +54,8 @@ pub fn put(session: *c.LIBSSH2_SESSION, local: []const u8, remote: []const u8) E
     var pb: [4096]u8 = undefined;
     const zp = try zpath(&pb, remote);
     const flags = c.LIBSSH2_FXF_WRITE | c.LIBSSH2_FXF_CREAT | c.LIBSSH2_FXF_TRUNC;
-    const h = c.libssh2_sftp_open(sftp, zp.ptr, flags, 0o644) orelse return error.SftpFailed;
-    defer _ = c.libssh2_sftp_close(h);
+    const h = c.libssh2_sftp_open_ex(sftp, zp.ptr, @intCast(zp.len), flags, 0o644, c.LIBSSH2_SFTP_OPENFILE) orelse return error.SftpFailed;
+    defer _ = c.libssh2_sftp_close_handle(h);
     var f = std.fs.cwd().openFile(local, .{}) catch return error.SftpFailed;
     defer f.close();
     var buf: [32 * 1024]u8 = undefined;

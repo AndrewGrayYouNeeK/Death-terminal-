@@ -384,7 +384,7 @@ pub const Client = struct {
             return;
         }
         agent_owner = self;
-        _ = c.libssh2_session_callback_set(self.sess(), c.LIBSSH2_CALLBACK_AUTHAGENT, @ptrCast(&onAuthAgent));
+        _ = c.libssh2_session_callback_set(self.sess(), c.LIBSSH2_CALLBACK_AUTHAGENT, @ptrCast(@constCast(&onAuthAgent)));
         if (c.libssh2_channel_request_auth_agent(chan) != 0) {
             self.tty.print("ssh: the server refused agent forwarding.\n", .{});
         } else {
@@ -950,11 +950,11 @@ fn connectAgent() ?posix.fd_t {
     const path = env_mod.get("SSH_AUTH_SOCK") orelse return null;
     if (path.len == 0 or path.len >= 108) return null;
     const fd = posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.NONBLOCK | posix.SOCK.CLOEXEC, 0) catch return null;
-    var addr = std.mem.zeroes(posix.sockaddr.un);
-    addr.family = posix.AF.UNIX;
-    @memcpy(addr.path[0..path.len], path);
-    const len: posix.socklen_t = @intCast(@sizeOf(posix.sa_family_t) + path.len + 1);
-    posix.connect(fd, @ptrCast(&addr), len) catch |err| switch (err) {
+    const addr = std.net.Address.initUnix(path) catch {
+        posix.close(fd);
+        return null;
+    };
+    posix.connect(fd, &addr.any, addr.getOsSockLen()) catch |err| switch (err) {
         error.WouldBlock, error.ConnectionPending => {},
         else => {
             posix.close(fd);
