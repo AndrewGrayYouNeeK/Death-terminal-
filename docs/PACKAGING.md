@@ -98,17 +98,16 @@ to the build) and writes it to both `CFBundleShortVersionString` and
 - `CFBundleURLTypes` for `deathterminal://` (invite links are `deathterminal://join/<code>`)
 - display name `YouNeeK Death Terminal`
 
-The icon is `packaging/macos/DeathTerminal.icns`, built by
-`python3 packaging/macos/render-icon.py` from `site/logo.png` only, at the
-standard iconset sizes (16 through 1024, including the `@2x` files) and the
-matching icns OSTypes (`icp4`–`icp6`, `ic07`–`ic10`, `ic11`–`ic14`). The
-logo file is 256×256, so 512 and 1024 are upscaled. `make-app.sh` runs
-`iconutil` when it exists and otherwise copies the committed `.icns`. It
-does not use `packaging/icons/`.
+The Dock icon is `packaging/macos/deathterminal.icns`
+(`CFBundleIconFile` = `deathterminal`). `python3 packaging/macos/render-icon.py`
+builds it from `packaging/macos/AppIcon-1024.png` (the green skull) at
+16 through 1024, including the `@2x` sizes (`icp4`–`icp6`, `ic07`–`ic10`,
+`ic11`–`ic14`). `make-app.sh` copies that file to
+`Contents/Resources/deathterminal.icns`. It does not call `iconutil`.
 
-`install.sh` has a separate nightly bundle (its own plist, version string
-`0.1.0`, no URL scheme, icons from the downloaded `deathterminal-*.png`
-set). This change does not touch that script.
+`install.sh` copies the same icns into the nightly app (from the checkout,
+or from the raw `nightly` blob). A bare `deathterminal --gui` also sets
+`[NSApp setApplicationIconImage:]` from the embedded PNG.
 
 ### Menu bar
 

@@ -169,6 +169,11 @@ fn addYouneekPlugin(b: *std.Build, step: *std.Build.Step.Compile) void {
 
 /// Bundled default font (JetBrains Mono, SIL OFL 1.1), embedded with
 /// `@embedFile("jbm_regular")` etc.
+/// Green-skull Dock icon. `@embedFile("dock_icon")` in the Cocoa backend.
+fn addDockIcon(b: *std.Build, step: *std.Build.Step.Compile) void {
+    step.root_module.addAnonymousImport("dock_icon", .{ .root_source_file = b.path("packaging/macos/AppIcon-1024.png") });
+}
+
 fn addFonts(b: *std.Build, step: *std.Build.Step.Compile) void {
     const files = [_][2][]const u8{
         .{ "jbm_regular", "assets/fonts/JetBrainsMono/JetBrainsMono-Regular.ttf" },
@@ -199,6 +204,7 @@ fn addApp(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin
     });
     addPlatform(b, exe, target);
     addFonts(b, exe);
+    addDockIcon(b, exe);
     addYouneekPlugin(b, exe);
     addLua(b, exe, target);
     addLibssh2(b, exe, target);
@@ -401,6 +407,7 @@ pub fn build(b: *std.Build) void {
     });
     addPlatform(b, unit_tests, target);
     addFonts(b, unit_tests);
+    addDockIcon(b, unit_tests);
     addYouneekPlugin(b, unit_tests);
     addLua(b, unit_tests, target);
     addLibssh2(b, unit_tests, target);

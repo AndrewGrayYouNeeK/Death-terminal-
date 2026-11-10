@@ -22,6 +22,7 @@ export DEATHTERMINAL_OS=macos
 export DEATHTERMINAL_ARCH=aarch64
 export DEATHTERMINAL_SKIP_SIGN=1
 export DEATHTERMINAL_ICON_DIR="$ROOT/packaging/icons/png"
+export DEATHTERMINAL_ICNS="$ROOT/packaging/macos/deathterminal.icns"
 mkdir -p "$HOME"
 
 # shellcheck disable=SC1091
@@ -45,6 +46,8 @@ grep -q 'CFBundleExecutable' "$app/Contents/Info.plist"
 grep -q 'deathterminal-gui' "$app/Contents/Info.plist"
 grep -q 'YouNeeK Death Terminal' "$app/Contents/Info.plist"
 test -f "$app/Contents/Resources/deathterminal-512.png"
+test -f "$app/Contents/Resources/deathterminal.icns"
+python3 -c 'import sys; assert open(sys.argv[1],"rb").read(4)==b"icns"' "$app/Contents/Resources/deathterminal.icns"
 test -L "$HOME/Desktop/YouNeeK Death Terminal.app"
 test -L "$HOME/.local/bin/deathterminal"
 linked=$(readlink "$HOME/.local/bin/deathterminal")

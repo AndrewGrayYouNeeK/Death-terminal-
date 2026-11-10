@@ -33,6 +33,10 @@ const Id = objc.Id;
 const msg = objc.msg;
 const posix = std.posix;
 
+/// Green skull (packaging/macos/AppIcon-1024.png). Shown in the Dock when
+/// the process is a bare binary and has no .app bundle icon.
+const dock_icon_png = @embedFile("dock_icon");
+
 const NSEventType = struct {
     const left_down = 1;
     const left_up = 2;
@@ -269,6 +273,23 @@ fn registerGetUrl(del: Id) void {
     });
 }
 
+/// `[NSApp setApplicationIconImage:]` from the embedded PNG. The bundle
+/// icon (Contents/Resources/deathterminal.icns) wins when Finder launches
+/// the .app; this covers `deathterminal --gui` with no bundle.
+fn setDockIcon(app: Id) void {
+    if (app == null or dock_icon_png.len < 8) return;
+    const data = msg(Id, objc.alloc("NSData"), "initWithBytes:length:", .{
+        @as(?*const anyopaque, dock_icon_png.ptr),
+        @as(usize, dock_icon_png.len),
+    });
+    if (data == null) return;
+    const image = msg(Id, objc.alloc("NSImage"), "initWithData:", .{data});
+    objc.release(data);
+    if (image == null) return;
+    msg(void, app, "setApplicationIconImage:", .{image});
+    objc.release(image);
+}
+
 fn ensureAppDelegate(st: *State) void {
     if (builtin.os.tag != .macos or st.app == null or st.app_delegate != null) return;
     const super = objc.class("NSObject");
@@ -337,6 +358,7 @@ pub fn open(st: *State, allocator: std.mem.Allocator, title: []const u8, width: 
     if (st.app == null) return error.NoNSApplication;
     // Regular: menu bar and a Dock icon. Accessory would hide the Dock tile.
     _ = msg(objc.BOOL, st.app, "setActivationPolicy:", .{activation_policy_regular});
+    setDockIcon(st.app);
     st.run_mode = objc.constant("NSDefaultRunLoopMode");
 
     const pts_scale: f64 = @max(1.0, scale);
@@ -1476,4 +1498,14 @@ test "cocoa: Cmd+Shift+letter reaches the matcher through performKeyEquivalent" 
     try std.testing.expectEqual(events.Action.share_grant, resolveMac(&b, 0x05, "G", cmd_shift).action.?);
     try std.testing.expectEqual(events.Action.share_join, resolveMac(&b, 0x26, "J", cmd_shift).action.?);
     try std.testing.expectEqual(events.Action.ai_ask, resolveMac(&b, 0x0C, "Q", cmd_shift).action.?);
+}
+
+test "dock icon is the embedded green-skull PNG" {
+    try std.testing.expect(dock_icon_png.len > 1000);
+    try std.testing.expectEqualStrings("\x89PNG\r\n\x1a\n", dock_icon_png[0..8]);
+    // IHDR width and height are big-endian at bytes 16..24. The Dock source is 1024.
+    const width = std.mem.readInt(u32, dock_icon_png[16..20], .big);
+    const height = std.mem.readInt(u32, dock_icon_png[20..24], .big);
+    try std.testing.expectEqual(@as(u32, 1024), width);
+    try std.testing.expectEqual(@as(u32, 1024), height);
 }
