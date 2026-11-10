@@ -448,6 +448,7 @@ test {
     _ = @import("terminal/unicode.zig");
     _ = @import("terminal/color.zig");
     _ = @import("terminal/pty.zig");
+    _ = @import("terminal/pty_itest.zig");
     _ = @import("terminal/input.zig");
     _ = @import("renderer/vulkan_renderer.zig");
     _ = @import("renderer/loader.zig");
@@ -467,6 +468,7 @@ test {
     _ = @import("font/retro.zig");
     _ = @import("font/fonts.zig");
     _ = @import("renderer/frame.zig");
+    _ = @import("renderer/ansi_render_test.zig");
     _ = @import("terminal/selection.zig");
     _ = @import("terminal/search.zig");
     _ = @import("terminal/urls.zig");
@@ -531,6 +533,8 @@ test {
     _ = @import("scripting/lua_engine.zig");
     _ = @import("share.zig");
     _ = @import("app/share_ctrl.zig");
+    _ = @import("leak_check.zig");
+    _ = @import("bench_sample.zig");
 }
 
 test "basic functionality" {
