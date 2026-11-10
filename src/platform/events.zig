@@ -77,6 +77,8 @@ pub const Action = enum {
     ai_explain,
     /// Ask a question about the last command's output, the selection, or the screen.
     ai_ask,
+    /// Mute or unmute speaking AI answers. Does not affect ghost text.
+    ai_voice_mute,
     /// SSH palette: profiles (open in a new window), and this session's
     /// forwards (toggle) and reconnect.
     ssh_palette,
@@ -162,6 +164,7 @@ pub const Action = enum {
             .reload_config => "Reload config",
             .ai_explain => "AI: explain the last failed command",
             .ai_ask => "AI: ask about the output",
+            .ai_voice_mute => "AI: mute or unmute voice",
             .ssh_palette => "SSH: profiles and forwards",
             .toggle_status_bar => "Toggle status bar",
             .new_tab => "Tabs: new tab",
@@ -372,6 +375,7 @@ pub const Bindings = struct {
         "alt+bracketleft=ai_prev",
         "ctrl+shift+a=ai_explain",
         "ctrl+shift+q=ai_ask",
+        "ctrl+shift+alt+v=ai_voice_mute",
         "ctrl+shift+s=ssh_palette",
         "ctrl+shift+p=command_palette",
         "ctrl+shift+b=toggle_status_bar",
@@ -698,6 +702,8 @@ test "default bindings and overrides" {
     try std.testing.expectEqual(Action.new_tab, b.match('t', .{ .ctrl = true, .shift = true }).?);
     try std.testing.expectEqual(Action.time_travel, b.match('t', .{ .ctrl = true, .alt = true }).?);
     try std.testing.expectEqual(Action.ai_ask, b.match('q', .{ .ctrl = true, .shift = true }).?);
+    try std.testing.expectEqual(Action.ai_voice_mute, b.match('v', .{ .ctrl = true, .shift = true, .alt = true }).?);
+    try std.testing.expectEqualStrings("AI: mute or unmute voice", Action.ai_voice_mute.title().?);
     try std.testing.expectEqual(Action.share_pane, b.match('h', .{ .ctrl = true, .shift = true }).?);
     try std.testing.expectEqual(Action.share_grant, b.match('g', .{ .ctrl = true, .shift = true }).?);
     try std.testing.expectEqual(Action.share_join, b.match('j', .{ .ctrl = true, .shift = true }).?);

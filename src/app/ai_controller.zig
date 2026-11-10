@@ -100,8 +100,18 @@ pub const Controller = struct {
     summary_ctx: ?*anyopaque = null,
     summary_for: u64 = 0,
     summary_gen: u64 = 0,
+    /// `text == null` stops speech. A slice is a finished answer (not ghost text).
+    on_answer: ?AnswerFn = null,
+    answer_ctx: ?*anyopaque = null,
 
     pub const SummaryFn = *const fn (ctx: *anyopaque, id: u64, text: []const u8, done: bool, failed: bool) void;
+    pub const AnswerFn = *const fn (ctx: *anyopaque, text: ?[]const u8) void;
+
+    fn noteAnswer(self: *Controller, text: ?[]const u8) void {
+        const cb = self.on_answer orelse return;
+        const ctx = self.answer_ctx orelse return;
+        cb(ctx, text);
+    }
 
     pub fn suggesting(self: *const Controller) bool {
         return self.suggest_anchor != null;
@@ -109,6 +119,7 @@ pub const Controller = struct {
 
     pub fn submitSummary(self: *Controller, messages: []const openai.Message) !u64 {
         const e = self.engine orelse return error.NoEngine;
+        self.noteAnswer(null);
         const gen = try e.submit(.summarize, messages, 48, 1);
         self.summary_gen = gen;
         return gen;
@@ -300,6 +311,7 @@ pub const Controller = struct {
     /// (or, without shell integration, the visible output).
     pub fn explain(self: *Controller, ui: *Ui, term: *const Terminal, now_ms: i64) !void {
         if (ui.askIsOpen()) self.cancelAsk(ui);
+        self.noteAnswer(null);
         const e = self.engine orelse {
             try ui.setNotice(.info, "AI is disabled (config.ai.enabled = false or --no-ai)", &.{}, 4000, now_ms);
             return;
@@ -349,6 +361,7 @@ pub const Controller = struct {
     /// The command has not run. `impact` is the local read-only estimate.
     pub fn requestGhostExplain(self: *Controller, command: []const u8, impact: []const u8, cwd: []const u8) !void {
         const e = self.engine orelse return;
+        self.noteAnswer(null);
         self.due_ms = null;
         self.suggest_anchor = null;
         var arena_state = std.heap.ArenaAllocator.init(self.allocator);
@@ -361,6 +374,7 @@ pub const Controller = struct {
     }
 
     pub fn cancelGhostExplain(self: *Controller) void {
+        self.noteAnswer(null);
         if (self.ghost_gen == 0) return;
         self.ghost_gen = 0;
         self.ghost_done = false;
@@ -401,6 +415,7 @@ pub const Controller = struct {
                         const line = std.fmt.bufPrint(&line_buf, "The AI endpoint is not available ({s}). Check config.ai.endpoint / that Ollama is running.", .{if (why.len > 0) why else "error"}) catch "The AI endpoint is not available.";
                         try ui.setAiNotice(self.explain_title.items, line, now_ms);
                     } else {
+                        if (u.done and u.text.len > 0) self.noteAnswer(u.text);
                         const body = if (u.done) u.text else try std.fmt.allocPrint(self.allocator, "{s}\u{2026}", .{u.text});
                         defer if (!u.done) self.allocator.free(body);
                         try ui.setAiNotice(self.explain_title.items, if (body.len > 0) body else "(no answer)", now_ms);
@@ -415,12 +430,14 @@ pub const Controller = struct {
                     self.ghost_text.appendSlice(u.text) catch {};
                     self.ghost_done = u.done;
                     self.ghost_failed = u.failed != null;
+                    if (u.done and u.failed == null and u.text.len > 0) self.noteAnswer(u.text);
                     changed = true;
                 },
                 .summarize => if (u.gen == self.summary_gen) {
                     if (self.on_summary) |cb| if (self.summary_ctx) |ctx| {
                         cb(ctx, self.summary_for, u.text, u.done, u.failed != null);
                     };
+                    if (u.done and u.failed == null and u.text.len > 0) self.noteAnswer(u.text);
                 },
             }
         }
@@ -521,6 +538,7 @@ pub const Controller = struct {
 
     pub fn submitAsk(self: *Controller, ui: *Ui, term: *const Terminal, now_ms: i64) !void {
         const e = self.engine orelse return;
+        self.noteAnswer(null);
         const question = ui.askQuery();
         if (std.mem.trim(u8, question, " \t").len == 0) return;
         self.freeAskRegion();
@@ -545,6 +563,7 @@ pub const Controller = struct {
     }
 
     pub fn cancelAsk(self: *Controller, ui: *Ui) void {
+        self.noteAnswer(null);
         self.ask_hold = false;
         self.ask_active = false;
         self.freeAskRegion();
@@ -615,6 +634,7 @@ pub const Controller = struct {
             ui.setAskMatches(term, matches);
         } else ui.askMarkOffline();
         try ui.setAiNotice(self.ask_title.items, body.items, now_ms);
+        if (parsed.answer.len > 0) self.noteAnswer(parsed.answer);
         self.ask_active = false;
         self.freeAskRegion();
         return true;

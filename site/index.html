@@ -121,6 +121,11 @@
         <p class="how"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Q</kbd> · macOS <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>Q</kbd> · <kbd>Down</kbd> and <kbd>Enter</kbd> jump between cited lines · <kbd>Esc</kbd> closes</p>
       </article>
       <article class="item">
+        <h3>Speaks in your voice</h3>
+        <p>Explain, Ask the Output, the Ghost Run note, and the Time Travel summary are read aloud. Ghost-text completions are not. The default voice is the ElevenLabs clone <code>QMnwdN2oOwNXPcl9oXIl</code> (“GQ”), model <code>eleven_flash_v2_5</code>. The key is only the environment variable <code>ELEVENLABS_API_KEY</code>. It is never a config field. If the key is missing or the service is down, speech is skipped and one short hint is shown. A new answer or Esc stops the clip. macOS plays it with <code>afplay</code>. Linux tries <code>paplay</code>, then <code>ffplay</code>, then <code>mpg123</code>. Windows uses PowerShell MediaPlayer, or skips if that fails.</p>
+        <p class="how"><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Alt</kbd>+<kbd>V</kbd> mute or unmute · macOS <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>Option</kbd>+<kbd>V</kbd> · command palette “AI: mute or unmute voice” · <code>--no-voice</code> · <code>config.ai.voice.enabled = false</code></p>
+      </article>
+      <article class="item">
         <h3>Redaction and the offline badge</h3>
         <p>Tokens, keys, passwords, and env assignments are stripped before a request is sent. If the endpoint is down, a small “AI offline” badge shows and requests back off. <code>--no-ai</code> turns suggestions off.</p>
       </article>

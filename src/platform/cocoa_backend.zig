@@ -1231,6 +1231,8 @@ test "cocoa: mac chords for share, ask, and time travel" {
     try std.testing.expectEqual(events.Action.share_join, resolveMac(&b, 0x26, "\x0a", .{ .control = true, .shift = true }).action.?);
 
     try std.testing.expectEqual(events.Action.share_stop, resolveMac(&b, 0x04, "H", cmd_shift_opt).action.?);
+    // Cmd+Shift+Option+V mutes voice. V is key code 0x09.
+    try std.testing.expectEqual(events.Action.ai_voice_mute, resolveMac(&b, 0x09, "V", cmd_shift_opt).action.?);
     const ctrl_shift_opt: MacFlags = .{ .control = true, .shift = true, .option = true };
     try std.testing.expectEqual(events.Action.share_stop, resolveMac(&b, 0x04, "\x08", ctrl_shift_opt).action.?);
 

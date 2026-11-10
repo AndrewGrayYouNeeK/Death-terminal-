@@ -209,10 +209,10 @@ test "lua config: config.example.lua is valid and matches the defaults" {
     try t.expectEqual(@as(usize, 0), d.items.items.len);
     var def = config.Config.init(t.allocator);
     defer def.deinit();
-    inline for (.{ "rows", "cols", "scale", "backend", "headless", "font_size", "line_height", "font_retro", "font_ligatures", "cursor_shape", "max_fps", "read_budget_kb", "scrollback_lines", "scrollbar", "scroll_lines", "copy_on_select", "paste_confirm", "default_keybindings", "ai_enabled", "ai_timeout_ms", "ai_debounce_ms", "ai_max_tokens", "ai_explain_max_tokens", "ai_history", "ai_output_lines", "ai_ask_enabled", "ai_ask_max_lines", "shell_integration", "muscle_enabled", "muscle_min_repeats", "muscle_max_len", "ssh_enabled", "ssh_keepalive_s", "confirm_close", "dim_inactive", "inherit_cwd", "allow_column_switch", "status_bar", "ghost_run_enabled", "ghost_run_ai", "share_enabled", "share_port", "tt_enabled", "tt_max_dir_mb", "tt_retention", "tt_ai_summary" }) |name| {
+    inline for (.{ "rows", "cols", "scale", "backend", "headless", "font_size", "line_height", "font_retro", "font_ligatures", "cursor_shape", "max_fps", "read_budget_kb", "scrollback_lines", "scrollbar", "scroll_lines", "copy_on_select", "paste_confirm", "default_keybindings", "ai_enabled", "ai_timeout_ms", "ai_debounce_ms", "ai_max_tokens", "ai_explain_max_tokens", "ai_history", "ai_output_lines", "ai_ask_enabled", "ai_ask_max_lines", "ai_voice_enabled", "shell_integration", "muscle_enabled", "muscle_min_repeats", "muscle_max_len", "ssh_enabled", "ssh_keepalive_s", "confirm_close", "dim_inactive", "inherit_cwd", "allow_column_switch", "status_bar", "ghost_run_enabled", "ghost_run_ai", "share_enabled", "share_port", "tt_enabled", "tt_max_dir_mb", "tt_retention", "tt_ai_summary" }) |name| {
         try t.expectEqual(@field(def, name), @field(cfg, name));
     }
-    inline for (.{ "font_family", "theme", "present_mode", "osc52", "word_chars", "url_open_command", "shell_program", "shell_cwd", "ai_endpoint", "ai_model", "ai_reasoning", "ai_api_key_env", "ai_accept_key", "ssh_config_file", "ssh_known_hosts", "tab_bar", "share_bind", "share_advertise", "share_relay" }) |name| {
+    inline for (.{ "font_family", "theme", "present_mode", "osc52", "word_chars", "url_open_command", "shell_program", "shell_cwd", "ai_endpoint", "ai_model", "ai_reasoning", "ai_api_key_env", "ai_accept_key", "ai_voice_id", "ai_voice_model", "ssh_config_file", "ssh_known_hosts", "tab_bar", "share_bind", "share_advertise", "share_relay" }) |name| {
         try t.expectEqualStrings(@field(def, name), @field(cfg, name));
     }
     try t.expectEqual(def.palette().hash(), cfg.palette().hash());
@@ -244,6 +244,28 @@ test "lua config: time_travel section" {
     try t.expectEqual(@as(usize, 2), cfg.tt_excludes.items.len);
     try t.expectEqualStrings("foo", cfg.tt_excludes.items[0]);
     try t.expectEqualStrings("bar/baz", cfg.tt_excludes.items[1]);
+}
+
+test "lua config: ai.voice" {
+    var d = config.Diagnostics.init(t.allocator);
+    defer d.deinit();
+    var cfg = loadStr(
+        \\config.ai.voice = { enabled = false, voice_id = "Abcdefghij", model = "eleven_flash_v2_5" }
+        \\assert(config.ai.voice.voice_id == "Abcdefghij")
+        \\assert(config.ai.voice.enabled == false)
+    , &d);
+    defer cfg.deinit();
+    d.print();
+    try t.expectEqual(@as(usize, 0), d.items.items.len);
+    try t.expect(!cfg.ai_voice_enabled);
+    try t.expectEqualStrings("Abcdefghij", cfg.ai_voice_id);
+    try t.expectEqualStrings("eleven_flash_v2_5", cfg.ai_voice_model);
+
+    d.clear();
+    var bad = loadStr("config.ai.voice.voice_id = \"sk-secret\"\n", &d);
+    defer bad.deinit();
+    try t.expect(d.items.items.len > 0);
+    try t.expectEqualStrings("QMnwdN2oOwNXPcl9oXIl", bad.ai_voice_id);
 }
 
 test "lua config: ghost_run patterns replace the defaults" {

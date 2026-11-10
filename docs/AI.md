@@ -24,6 +24,33 @@ nothing leaves your machine unless you point it somewhere else.
 | `Alt+]` / `Alt+[` | Next / previous alternative (the `(1/3)` counter shows when there are several) |
 | `Ctrl+Shift+A` | **Explain / fix the last error**: an overlay at the top with the cause and a corrected command (`Esc` closes it) |
 | `Ctrl+Shift+Q` | **Ask the Output**: a prompt bar. The question goes to the model with the selection, else the last command's output, else the visible screen. The answer is an overlay; cited lines are highlighted and `Down` / `Enter` jump between them (`Esc` closes). On macOS this is `Cmd+Shift+Q`. `Cmd+Q` still quits; Shift is required so the two chords do not collide |
+| `Ctrl+Shift+Alt+V` | Mute or unmute **read-aloud**. macOS: `Cmd+Shift+Option+V`. The command palette entry is “AI: mute or unmute voice”. `--no-voice` or `config.ai.voice.enabled = false` turns it off |
+
+## Speaks in your voice
+
+Finished answers are spoken. That is explain-last-error, Ask the Output, the Ghost Run note, and the one-line Time Travel summary. Ghost-text completions are not spoken. A new answer, or `Esc`, stops the clip that is playing. The terminal does not wait on the network or the player.
+
+```lua
+config.ai.voice = {
+  enabled = true,
+  voice_id = "QMnwdN2oOwNXPcl9oXIl",  -- ElevenLabs voice. Default is Andrew's "GQ" clone.
+  model = "eleven_flash_v2_5",
+}
+```
+
+The API key is the environment variable `ELEVENLABS_API_KEY` only. It is not a config field, and it is not written into logs or the request URL. The request is `POST https://api.elevenlabs.io/v1/text-to-speech/<voice_id>?output_format=mp3_44100_128` with header `xi-api-key` and JSON `{"text","model_id"}`. Text is redacted with the same pass as other AI calls, code fences and ANSI are removed, and the clip is capped at 1200 characters.
+
+If the key is missing or ElevenLabs does not answer, speech is skipped and one short hint is shown for that window.
+
+Playback is local: `afplay` on macOS; on Linux `paplay`, then `ffplay -nodisp -autoexit`, then `mpg123 -q` (a player that exits immediately is skipped); on Windows, PowerShell `System.Windows.Media.MediaPlayer`. If none of those starts, speech is skipped.
+
+On a Mac, a terminal you launched yourself sees variables from `~/.zshrc`:
+
+```sh
+export ELEVENLABS_API_KEY='your-key'
+```
+
+The `.app` opened from Finder does not load that file. Set it for GUI launches with `launchctl setenv ELEVENLABS_API_KEY your-key`, then quit and reopen the app. That lasts until you log out.
 
 - Nothing is ever inserted without your accept. Ghost text is drawn by the
   renderer only; the shell never sees it.

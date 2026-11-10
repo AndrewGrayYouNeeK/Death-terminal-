@@ -150,6 +150,12 @@ pub const Config = struct {
     ai_ask_enabled: bool = true,
     /// Lines of the output region sent to the model (the tail).
     ai_ask_max_lines: u16 = 200,
+    /// Speak answers (not ghost text) with an ElevenLabs voice.
+    /// The API key is ELEVENLABS_API_KEY, never this struct.
+    ai_voice_enabled: bool = true,
+    /// ElevenLabs voice id. Default is Andrew's "GQ" clone.
+    ai_voice_id: []const u8 = "QMnwdN2oOwNXPcl9oXIl",
+    ai_voice_model: []const u8 = "eleven_flash_v2_5",
     /// Load the OSC 133 shell integration into bash/zsh/fish.
     shell_integration: bool = true,
     /// Built-in SSH client (docs/SSH.md).
@@ -447,6 +453,8 @@ pub const Config = struct {
             const arg = args[i];
             if (std.mem.eql(u8, arg, "--no-ai")) {
                 self.ai_enabled = false;
+            } else if (std.mem.eql(u8, arg, "--no-voice")) {
+                self.ai_voice_enabled = false;
             } else if (std.mem.eql(u8, arg, "--no-plugins")) {
                 self.plugins_enabled = false;
             } else if (std.mem.eql(u8, arg, "--headless")) {
@@ -686,9 +694,10 @@ test "Config arg parsing" {
     var config = Config.init(testing.allocator);
     defer config.deinit();
 
-    const args = [_][]const u8{ "deathterminal", "--no-ai", "--gui" };
+    const args = [_][]const u8{ "deathterminal", "--no-ai", "--no-voice", "--gui" };
     try config.loadFromArgs(&args);
     try testing.expect(!config.ai_enabled);
+    try testing.expect(!config.ai_voice_enabled);
     try testing.expect(!config.headless);
 }
 

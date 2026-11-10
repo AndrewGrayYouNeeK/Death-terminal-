@@ -139,6 +139,13 @@ config.ai.output_lines = 20          -- lines of recent output sent as context
 config.ai.accept_key = "tab"         -- accepts the ghost text (Esc dismisses)
 config.ai.ask.enabled = true         -- Ctrl+Shift+Q / Cmd+Shift+Q: ask about the output
 config.ai.ask.max_lines = 200        -- tail of the region sent to the model (1–4000)
+-- Speak answers (not ghost text). The key is the env var ELEVENLABS_API_KEY, never this file.
+-- Ctrl+Shift+Alt+V (macOS: Cmd+Shift+Option+V) mutes for this window. --no-voice turns it off.
+config.ai.voice = {
+  enabled = true,
+  voice_id = "QMnwdN2oOwNXPcl9oXIl",  -- ElevenLabs voice. Default is Andrew's "GQ" clone.
+  model = "eleven_flash_v2_5",
+}
 
 -- Muscle memory (local only; see docs/MUSCLE_MEMORY.md) -------------------
 -- Repeated command sequences in one project can be saved as a shortcut.
