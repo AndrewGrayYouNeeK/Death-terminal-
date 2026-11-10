@@ -1,10 +1,13 @@
 :root {
   color-scheme: dark;
   --bg: #000000;
-  --fg: #e0e0e0;
-  --dim: #9a9a9a;
-  --red: #ff0033;
-  --line: #4a4a4a;
+  --fg: #f4f7f4;
+  --dim: #d5e6db;
+  --accent: #1ed67f;
+  --accent-ink: #03140c;
+  --line: rgba(30, 214, 127, 0.45);
+  --glass: rgba(0, 0, 0, 0.42);
+  --glass-edge: rgba(30, 214, 127, 0.42);
 }
 
 *,
@@ -21,21 +24,56 @@ html {
 
 body {
   margin: 0;
-  background: var(--bg);
+  background: transparent;
   color: var(--fg);
-  border-top: 8px solid var(--red);
+  border-top: 8px solid var(--accent);
   font-family: "JetBrains Mono", "Cascadia Mono", "Cascadia Code", Consolas, "Liberation Mono", ui-monospace, monospace;
   font-size: 16px;
   line-height: 1.45;
 }
 
+/* Fixed layer, not background-attachment: iOS Safari scrolls that away. */
+.backdrop {
+  position: fixed;
+  z-index: 0;
+  left: 0;
+  right: 0;
+  top: 8px;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.backdrop img {
+  width: min(88vw, 820px);
+  height: auto;
+  max-height: 96%;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* On a tall phone the mark has to fill the viewport, or the lower cards sit on empty black. */
+@media (max-width: 42rem) {
+  .backdrop img {
+    width: auto;
+    height: calc(100vh - 8px);
+    height: calc(100dvh - 8px);
+    max-height: none;
+    max-width: none;
+  }
+}
+
 ::selection {
-  background: var(--red);
-  color: #000;
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 
 a {
-  color: var(--red);
+  color: #d8ffe9;
 }
 
 a:focus {
@@ -48,9 +86,23 @@ a:focus-visible {
 }
 
 .wrap {
+  position: relative;
+  z-index: 1;
   max-width: 52rem;
   margin: 0 auto;
-  padding: 1.5rem 1.25rem 4rem;
+  padding: max(1.5rem, env(safe-area-inset-top)) max(1.25rem, env(safe-area-inset-right)) max(4rem, env(safe-area-inset-bottom)) max(1.25rem, env(safe-area-inset-left));
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+}
+
+.top,
+.hero,
+.features,
+.install,
+.closing {
+  background: var(--glass);
+  border: 1px solid var(--glass-edge);
+  -webkit-backdrop-filter: blur(8px) saturate(1.2);
+  backdrop-filter: blur(8px) saturate(1.2);
 }
 
 .top {
@@ -59,12 +111,13 @@ a:focus-visible {
   align-items: flex-start;
   gap: 1rem;
   flex-wrap: wrap;
+  padding: 0.9rem 1rem 1rem;
 }
 
 h1 {
   margin: 0;
   padding-left: 0.7rem;
-  border-left: 0.7rem solid var(--red);
+  border-left: 0.7rem solid var(--accent);
   font-size: clamp(2rem, 10vw, 4.8rem);
   line-height: 0.92;
   font-weight: 700;
@@ -74,7 +127,7 @@ h1 {
 .github {
   color: var(--fg);
   text-decoration: none;
-  border-bottom: 2px solid var(--red);
+  border-bottom: 2px solid var(--accent);
   font-weight: 700;
 }
 
@@ -94,14 +147,13 @@ h1 {
 .features,
 .install,
 .closing {
-  border-top: 1px solid var(--red);
-  margin-top: 1.75rem;
-  padding-top: 1.25rem;
+  margin-top: 1.25rem;
+  padding: 1.15rem 1.15rem 1.3rem;
 }
 
 h2 {
   margin: 0 0 0.9rem;
-  color: var(--red);
+  color: var(--accent);
   font-size: 0.78rem;
   font-weight: 700;
   letter-spacing: 0.16em;
@@ -118,32 +170,37 @@ h3 {
   width: 100%;
   margin-top: 1.25rem;
   padding: 1.05rem 1.15rem;
-  background: var(--red);
-  color: #000;
+  background: rgba(30, 214, 127, 0.18);
+  border: 1px solid var(--accent);
+  color: #f3fff8;
   text-decoration: none;
   text-align: left;
+  text-shadow: none;
   font-weight: 700;
   font-size: 1.35rem;
   line-height: 1.2;
+  -webkit-backdrop-filter: blur(8px) saturate(1.2);
+  backdrop-filter: blur(8px) saturate(1.2);
 }
 
 .download-primary:hover,
 .download-primary:focus-visible {
-  background: #000;
-  color: var(--red);
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 
 .download-primary .file {
   display: block;
   margin-top: 0.35rem;
-  color: #000;
+  color: #e7fff3;
   font-size: 0.8rem;
   font-weight: 400;
+  text-shadow: none;
 }
 
 .download-primary:hover .file,
 .download-primary:focus-visible .file {
-  color: var(--red);
+  color: var(--accent-ink);
 }
 
 .download-primary .file:empty {
@@ -163,16 +220,18 @@ h3 {
   display: grid;
   grid-template-columns: 1fr;
   margin-top: 1.25rem;
-  border: 1px solid var(--red);
+  border: 1px solid var(--line);
+  background: transparent;
 }
 
 .builds a {
   display: block;
   padding: 0.85rem 1rem;
-  border-top: 1px solid var(--red);
-  background: #000;
+  border-top: 1px solid var(--line);
+  background: transparent;
   color: var(--fg);
   text-decoration: none;
+  text-shadow: none;
   font-weight: 700;
 }
 
@@ -181,16 +240,22 @@ h3 {
 }
 
 .builds a:hover,
-.builds a:focus-visible,
+.builds a:focus-visible {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
 .builds a.is-match {
-  background: var(--red);
-  color: #000;
+  background: rgba(30, 214, 127, 0.2);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: #f3fff8;
 }
 
 .builds a.is-match:hover,
 .builds a.is-match:focus-visible {
-  background: #000;
-  color: var(--red);
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: none;
 }
 
 .builds .file {
@@ -200,17 +265,18 @@ h3 {
   font-size: 0.78rem;
   font-weight: 400;
   overflow-wrap: anywhere;
+  text-shadow: none;
 }
 
 .builds a:hover .file,
 .builds a:focus-visible .file,
-.builds a.is-match .file {
-  color: #000;
-}
-
 .builds a.is-match:hover .file,
 .builds a.is-match:focus-visible .file {
-  color: var(--dim);
+  color: var(--accent-ink);
+}
+
+.builds a.is-match .file {
+  color: #e7fff3;
 }
 
 .features ul,
@@ -235,8 +301,10 @@ pre {
   padding: 0.75rem 0.9rem;
   border: 1px solid var(--line);
   overflow-x: auto;
-  background: #000;
+  background: rgba(0, 0, 0, 0.18);
   color: var(--fg);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
 }
 
 code {
@@ -261,7 +329,7 @@ code {
 
   .builds a {
     border-top: 0;
-    border-left: 1px solid var(--red);
+    border-left: 1px solid var(--line);
   }
 
   .builds a:nth-child(odd) {
@@ -269,7 +337,7 @@ code {
   }
 
   .builds a:nth-child(n + 3) {
-    border-top: 1px solid var(--red);
+    border-top: 1px solid var(--line);
   }
 }
 
@@ -278,4 +346,18 @@ code {
   width: 128px;
   height: 128px;
   margin-bottom: 1rem;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .top,
+  .hero,
+  .features,
+  .install,
+  .closing,
+  .download-primary,
+  pre {
+    background: rgba(0, 0, 0, 0.84);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
 }
