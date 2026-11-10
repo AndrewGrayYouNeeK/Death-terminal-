@@ -105,6 +105,9 @@ fn writeCodepoint(writer: anytype, cp: u21) !void {
 
 pub const UnderlineStyle = enum(u3) { single, double, curly, dotted, dashed };
 
+/// DEC double-size line (`ESC # 3/4/5/6`). Indexed by logical row.
+pub const LineSize = enum(u2) { normal, double_width, double_height_top, double_height_bottom };
+
 /// Current graphic rendition ("pen") applied to newly written cells.
 pub const Pen = struct {
     fg: u32 = color.default_fg,
@@ -164,6 +167,8 @@ pub const Modes = struct {
     col132: bool = false,
     /// ?40: DECCOLM allowed (reset to `Terminal.allow_column_switch`).
     allow_deccolm: bool = true,
+    /// DECLRMM (?69): DECSLRM left/right margins are active.
+    lr_margin: bool = false,
 };
 
 pub const ClipboardTargets = packed struct {
@@ -242,6 +247,11 @@ pub const Terminal = struct {
     saved: [2]SavedCursor = .{ .{}, .{} },
     scroll_top: u16 = 0,
     scroll_bottom: u16,
+    /// Inclusive left/right margins. Full width unless DECLRMM is on.
+    margin_left: u16 = 0,
+    margin_right: u16 = 0,
+    /// One entry per logical row. Parallel to `map`, not to the cell buffer.
+    line_size: []LineSize,
     tabs: []bool,
     modes: Modes = .{},
     charsets: [2]Charset = .{ .ascii, .ascii },
@@ -308,6 +318,9 @@ pub const Terminal = struct {
         const tabs = try allocator.alloc(bool, cols);
         errdefer allocator.free(tabs);
         resetTabs(tabs);
+        const line_size = try allocator.alloc(LineSize, rows);
+        errdefer allocator.free(line_size);
+        @memset(line_size, .normal);
         const pmap = try identityMap(allocator, rows);
         errdefer allocator.free(pmap);
         const amap = try identityMap(allocator, rows);
@@ -328,6 +341,8 @@ pub const Terminal = struct {
             .primary_map = pmap,
             .alt_map = amap,
             .scroll_bottom = rows - 1,
+            .margin_right = cols - 1,
+            .line_size = line_size,
             .tabs = tabs,
             .parser = ansi_parser.Parser.init(allocator),
             .scrollback = scrollback_mod.Scrollback.init(allocator, scrollback_lines),
@@ -370,6 +385,7 @@ pub const Terminal = struct {
         self.allocator.free(self.primary_map);
         self.allocator.free(self.alt_map);
         self.allocator.free(self.tabs);
+        self.allocator.free(self.line_size);
         self.allocator.free(self.title);
         self.allocator.free(self.cwd_uri);
         self.ssh_events.deinit(self.allocator);
@@ -573,13 +589,16 @@ pub const Terminal = struct {
         var i: usize = 0;
         while (i < run.len) {
             if (self.wrap_pending and self.modes.autowrap) {
-                self.buffer[self.cellIndex(self.cursor_row, self.cols - 1)].soft_wrap = true;
-                self.cursor_col = 0;
+                self.markWrap();
+                self.cursor_col = self.leftLimit();
                 try self.index();
             }
             self.wrap_pending = false;
+            const right = self.rightLimit();
+            if (self.cursor_col > right) self.cursor_col = right;
             const col = self.cursor_col;
-            const n: u16 = @intCast(@min(@as(usize, self.cols - col), run.len - i));
+            const room: usize = @as(usize, right) + 1 - col;
+            const n: u16 = @intCast(@min(room, run.len - i));
             // Only the ends of the segment can cut a wide pair in half.
             self.breakWideAt(self.cursor_row, col);
             self.breakWideAt(self.cursor_row, col + n - 1);
@@ -589,8 +608,8 @@ pub const Terminal = struct {
                 c.char = b;
             }
             i += n;
-            if (col + n >= self.cols) {
-                self.cursor_col = self.cols - 1;
+            if (col + n > right) {
+                self.cursor_col = right;
                 self.wrap_pending = self.modes.autowrap;
             } else {
                 self.cursor_col = col + n;
@@ -609,23 +628,25 @@ pub const Terminal = struct {
         }
 
         if (self.wrap_pending and self.modes.autowrap) {
-            self.buffer[self.cellIndex(self.cursor_row, self.cols - 1)].soft_wrap = true;
-            self.cursor_col = 0;
+            self.markWrap();
+            self.cursor_col = self.leftLimit();
             try self.index();
         }
         self.wrap_pending = false;
 
-        if (self.cursor_col + w > self.cols) {
+        const right = self.rightLimit();
+        const width_limit: u16 = right + 1;
+        if (self.cursor_col + w > width_limit) {
             if (self.modes.autowrap) {
                 // A wide char that doesn't fit in the last column: blank that
                 // column and wrap, like xterm.
                 self.breakWideAt(self.cursor_row, self.cursor_col);
-                self.buffer[self.cellIndex(self.cursor_row, self.cursor_col)] = self.eraseCell();
-                self.buffer[self.cellIndex(self.cursor_row, self.cols - 1)].soft_wrap = true;
-                self.cursor_col = 0;
+                self.buffer[self.cellIndex(self.cursor_row, @min(self.cursor_col, self.cols - 1))] = self.eraseCell();
+                self.markWrap();
+                self.cursor_col = self.leftLimit();
                 try self.index();
             } else {
-                self.cursor_col = self.cols - w;
+                self.cursor_col = width_limit - w;
             }
         }
 
@@ -646,8 +667,8 @@ pub const Terminal = struct {
         }
         self.last_char = cp;
 
-        if (col + w >= self.cols) {
-            self.cursor_col = self.cols - 1;
+        if (col + w > right) {
+            self.cursor_col = right;
             self.wrap_pending = self.modes.autowrap;
         } else {
             self.cursor_col = col + w;
@@ -714,18 +735,35 @@ pub const Terminal = struct {
 
     pub fn backspace(self: *Terminal) void {
         self.wrap_pending = false;
-        if (self.cursor_col > 0) self.cursor_col -= 1;
+        const limit = self.leftLimit();
+        if (self.cursor_col > limit) self.cursor_col -= 1;
     }
 
     pub fn carriageReturn(self: *Terminal) void {
-        self.cursor_col = 0;
+        self.cursor_col = self.leftLimit();
         self.wrap_pending = false;
+    }
+
+    fn leftLimit(self: *const Terminal) u16 {
+        if (!self.modes.lr_margin or self.cols == 0) return 0;
+        return @min(self.margin_left, self.cols - 1);
+    }
+
+    fn rightLimit(self: *const Terminal) u16 {
+        if (!self.modes.lr_margin or self.cols == 0) return self.cols -| 1;
+        const right = @min(self.margin_right, self.cols - 1);
+        return @max(right, self.leftLimit());
+    }
+
+    fn markWrap(self: *Terminal) void {
+        const col = @min(self.rightLimit(), self.cols -| 1);
+        self.buffer[self.cellIndex(self.cursor_row, col)].soft_wrap = true;
     }
 
     /// LF / VT / FF.
     pub fn newline(self: *Terminal) !void {
         try self.index();
-        if (self.modes.newline) self.cursor_col = 0;
+        if (self.modes.newline) self.cursor_col = self.leftLimit();
     }
 
     /// Backwards-compatible alias for `newline`.
@@ -768,14 +806,18 @@ pub const Terminal = struct {
     }
 
     pub fn cursorForward(self: *Terminal, n: u32) void {
+        const inside = self.cursor_col >= self.leftLimit() and self.cursor_col <= self.rightLimit();
+        const limit: u16 = if (inside) self.rightLimit() else self.cols -| 1;
         const d: u16 = @intCast(@min(n, self.cols));
-        self.cursor_col = @min(self.cursor_col + d, self.cols - 1);
+        self.cursor_col = @min(self.cursor_col +| d, limit);
         self.wrap_pending = false;
     }
 
     pub fn cursorBack(self: *Terminal, n: u32) void {
+        const inside = self.cursor_col >= self.leftLimit() and self.cursor_col <= self.rightLimit();
+        const limit: u16 = if (inside) self.leftLimit() else 0;
         const d: u16 = @intCast(@min(n, self.cols));
-        self.cursor_col = if (self.cursor_col >= d) self.cursor_col - d else 0;
+        self.cursor_col = if (self.cursor_col >= limit + d) self.cursor_col - d else limit;
         self.wrap_pending = false;
     }
 
@@ -783,12 +825,18 @@ pub const Terminal = struct {
     pub fn setCursorPos(self: *Terminal, row1: u32, col1: u32) void {
         var top: u32 = 0;
         var bottom: u32 = self.rows - 1;
+        var left: u32 = 0;
+        var right: u32 = if (self.cols == 0) 0 else self.cols - 1;
         if (self.modes.origin) {
             top = self.scroll_top;
             bottom = self.scroll_bottom;
+            if (self.modes.lr_margin) {
+                left = self.leftLimit();
+                right = self.rightLimit();
+            }
         }
         const r = @min(top + (@max(row1, 1) - 1), bottom);
-        const c = @min(@max(col1, 1) - 1, self.cols - 1);
+        const c = @min(left + (@max(col1, 1) - 1), right);
         self.cursor_row = @intCast(r);
         self.cursor_col = @intCast(c);
         self.wrap_pending = false;
@@ -960,9 +1008,13 @@ pub const Terminal = struct {
         }
         // Rotate row indices: O(rows), independent of the width.
         std.mem.rotate(u16, self.map[top .. @as(usize, bottom) + 1], n);
+        self.rotateLineSize(top, bottom, n);
         const blank = self.eraseCell();
         var r: u16 = bottom + 1 - n;
-        while (r <= bottom) : (r += 1) @memset(self.rowSlice(r), blank);
+        while (r <= bottom) : (r += 1) {
+            @memset(self.rowSlice(r), blank);
+            self.line_size[r] = .normal;
+        }
     }
 
     /// Shift rows [top, bottom] down by n, blanking the top n rows.
@@ -972,9 +1024,20 @@ pub const Terminal = struct {
         const n: u16 = @intCast(@min(n_in, height));
         if (n == 0) return;
         std.mem.rotate(u16, self.map[top .. @as(usize, bottom) + 1], height - n);
+        self.rotateLineSize(top, bottom, height - n);
         const blank = self.eraseCell();
         var r: u16 = top;
-        while (r < top + n) : (r += 1) @memset(self.rowSlice(r), blank);
+        while (r < top + n) : (r += 1) {
+            @memset(self.rowSlice(r), blank);
+            self.line_size[r] = .normal;
+        }
+    }
+
+    fn rotateLineSize(self: *Terminal, top: u16, bottom: u16, amount: usize) void {
+        if (self.line_size.len != self.rows or top > bottom) return;
+        const slice = self.line_size[top .. @as(usize, bottom) + 1];
+        if (amount == 0 or slice.len == 0) return;
+        std.mem.rotate(LineSize, slice, amount % slice.len);
     }
 
     /// SU / scroll the region up. Lines leaving a full-height primary-screen
@@ -1123,6 +1186,10 @@ pub const Terminal = struct {
         self.modes.app_keypad = false;
         self.scroll_top = 0;
         self.scroll_bottom = self.rows - 1;
+        self.modes.lr_margin = false;
+        self.margin_left = 0;
+        self.margin_right = self.cols -| 1;
+        self.resetLineSizes();
         self.pen = .{};
         self.charsets = .{ .ascii, .ascii };
         self.gl = 0;
@@ -1159,6 +1226,9 @@ pub const Terminal = struct {
         const new_tabs = try self.allocator.alloc(bool, new_cols);
         errdefer self.allocator.free(new_tabs);
         resetTabs(new_tabs);
+        const new_ls = try self.allocator.alloc(LineSize, new_rows);
+        errdefer self.allocator.free(new_ls);
+        @memset(new_ls, .normal);
 
         // Primary screen + scrollback: re-wrap logical lines at the new width.
         const pcur: SavedCursor = if (self.alt_active) self.saved[0] else .{ .row = self.cursor_row, .col = self.cursor_col };
@@ -1202,6 +1272,10 @@ pub const Terminal = struct {
         self.wrap_pending = false;
         self.scroll_top = 0;
         self.scroll_bottom = new_rows - 1;
+        self.margin_left = 0;
+        self.margin_right = new_cols - 1;
+        self.allocator.free(self.line_size);
+        self.line_size = new_ls;
         self.layout_gen +%= 1;
         // Wide pairs cut by the alt-screen crop.
         const keep_buf = self.buffer;
@@ -1366,7 +1440,14 @@ pub const Terminal = struct {
                 const slot: usize = if (intermediate == '(') 0 else 1;
                 self.charsets[slot] = if (final == '0') .dec_special else .ascii;
             },
-            '#' => if (final == '8') self.decaln(),
+            '#' => switch (final) {
+                '3' => self.setLineSize(.double_height_top),
+                '4' => self.setLineSize(.double_height_bottom),
+                '5' => self.setLineSize(.normal),
+                '6' => self.setLineSize(.double_width),
+                '8' => self.decaln(),
+                else => {},
+            },
             else => {},
         }
     }
@@ -1376,8 +1457,11 @@ pub const Terminal = struct {
         var cell = Cell.init();
         cell.char = 'E';
         @memset(self.buffer, cell);
+        self.resetLineSizes();
         self.scroll_top = 0;
         self.scroll_bottom = self.rows - 1;
+        self.margin_left = 0;
+        self.margin_right = self.cols -| 1;
         self.cursor_row = 0;
         self.cursor_col = 0;
         self.wrap_pending = false;
@@ -1451,7 +1535,11 @@ pub const Terminal = struct {
                 else => {},
             },
             'r' => self.setScrollRegion(p.getNonZero(0, 1), p.getNonZero(1, self.rows)),
-            's' => self.saveCursor(),
+            // DECSLRM when DECLRMM is on; otherwise ANSI save-cursor.
+            's' => if (self.modes.lr_margin)
+                self.setLeftRightMargins(p.getNonZero(0, 1), p.getParam(1, self.cols))
+            else
+                self.saveCursor(),
             'u' => self.restoreCursor(),
             't' => switch (p.getParam(0, 0)) {
                 18 => self.reply("\x1b[8;{d};{d}t", .{ self.rows, self.cols }),
@@ -1559,6 +1647,13 @@ pub const Terminal = struct {
             12 => self.modes.cursor_blink = on,
             25 => self.cursor_visible = on,
             40 => self.modes.allow_deccolm = on and self.allow_column_switch,
+            69 => {
+                self.modes.lr_margin = on;
+                if (!on) {
+                    self.margin_left = 0;
+                    self.margin_right = self.cols -| 1;
+                }
+            },
             47 => if (on) self.enterAlt(false) else self.leaveAlt(false),
             1047 => if (on) self.enterAlt(false) else self.leaveAlt(true),
             1048 => if (on) self.saveCursor() else self.restoreCursor(),
@@ -1590,8 +1685,36 @@ pub const Terminal = struct {
         if (self.deccolm_resizes and self.cols != want) self.resize(self.rows, want) catch {};
         self.scroll_top = 0;
         self.scroll_bottom = self.rows - 1;
+        self.margin_left = 0;
+        self.margin_right = self.cols -| 1;
+        self.resetLineSizes();
         @memset(self.buffer, self.eraseCell());
         self.setCursorPos(1, 1);
+    }
+
+    fn setLineSize(self: *Terminal, size: LineSize) void {
+        if (self.cursor_row < self.line_size.len) self.line_size[self.cursor_row] = size;
+    }
+
+    fn resetLineSizes(self: *Terminal) void {
+        @memset(self.line_size, .normal);
+    }
+
+    fn setLeftRightMargins(self: *Terminal, left1: u32, right1: u32) void {
+        if (!self.modes.lr_margin or self.cols < 2) return;
+        const left = @max(left1, 1);
+        const right = @min(@max(right1, 1), self.cols);
+        if (left >= right) return;
+        self.margin_left = @intCast(left - 1);
+        self.margin_right = @intCast(right - 1);
+        self.setCursorPos(1, 1);
+    }
+
+    /// True when a blink phase should run: SGR blink cells or a blinking cursor.
+    pub fn wantsBlink(self: *const Terminal) bool {
+        if (self.modes.cursor_blink) return true;
+        for (self.buffer) |c| if (c.blink and c.width != 0 and c.char != ' ') return true;
+        return false;
     }
 
     fn privateModeState(self: *const Terminal, mode: u32) u8 {
@@ -1600,6 +1723,7 @@ pub const Terminal = struct {
             1 => m.app_cursor,
             3 => m.col132,
             40 => m.allow_deccolm,
+            69 => m.lr_margin,
             5 => m.reverse_video,
             6 => m.origin,
             7 => m.autowrap,

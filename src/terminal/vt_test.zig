@@ -720,6 +720,54 @@ test "DECCOLM honours ?40 and the allow setting" {
     try t.expectEqual(@as(u21, ' '), gui.screenRow(0)[0].char);
 }
 
+test "DECSLRM wraps inside the left and right margins" {
+    var term = try mk(4, 10);
+    defer term.deinit();
+    try term.processOutput("\x1b[?69h\x1b[3;8s");
+    try t.expect(term.modes.lr_margin);
+    try t.expectEqual(@as(u16, 2), term.margin_left);
+    try t.expectEqual(@as(u16, 7), term.margin_right);
+    try t.expectEqual(@as(u16, 0), term.cursor_col);
+    try term.processOutput("\x1b[1;3Habcdef");
+    try t.expectEqual(@as(u21, 'a'), term.screenRow(0)[2].char);
+    try t.expectEqual(@as(u21, 'f'), term.screenRow(0)[7].char);
+    try t.expect(term.wrap_pending);
+    try term.processOutput("Z");
+    try t.expectEqual(@as(u21, 'Z'), term.screenRow(1)[2].char);
+    try term.processOutput("\rQ");
+    try t.expectEqual(@as(u21, 'Q'), term.screenRow(1)[2].char);
+    try term.processOutput("\x1b[?69l");
+    try t.expect(!term.modes.lr_margin);
+    try t.expectEqual(@as(u16, 0), term.margin_left);
+}
+
+test "double-size lines scroll with the region" {
+    var term = try mk(4, 8);
+    defer term.deinit();
+    try term.processOutput("\x1b#6\x1b[2H\x1b#3\x1b[3H\x1b#4");
+    try t.expectEqual(terminal.LineSize.double_width, term.line_size[0]);
+    try t.expectEqual(terminal.LineSize.double_height_top, term.line_size[1]);
+    try t.expectEqual(terminal.LineSize.double_height_bottom, term.line_size[2]);
+    try term.processOutput("\x1b[4;1H\n");
+    try t.expectEqual(terminal.LineSize.double_height_top, term.line_size[0]);
+    try t.expectEqual(terminal.LineSize.double_height_bottom, term.line_size[1]);
+    try t.expectEqual(terminal.LineSize.normal, term.line_size[3]);
+    try term.processOutput("\x1b#5");
+    try t.expectEqual(terminal.LineSize.normal, term.line_size[term.cursor_row]);
+}
+
+test "SGR blink is stored and wants a phase" {
+    var term = try mk(2, 6);
+    defer term.deinit();
+    try t.expect(!term.wantsBlink());
+    try term.processOutput("\x1b[5mA\x1b[25mB");
+    try t.expect(term.screenRow(0)[0].blink);
+    try t.expect(!term.screenRow(0)[1].blink);
+    try t.expect(term.wantsBlink());
+    try term.processOutput("\x1b[?12h");
+    try t.expect(term.modes.cursor_blink);
+}
+
 test "SGR 58 sets underline colour and 4:3 selects curly" {
     var term = try mk(2, 10);
     defer term.deinit();

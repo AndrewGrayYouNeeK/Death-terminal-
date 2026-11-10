@@ -58,9 +58,9 @@
 - [x] Device status / attribute replies (DSR/CPR, DA1/DA2, DECRQM, XTVERSION, OSC 10/11 queries)
 - [x] OSC 0/2 window title, OSC 7 cwd, OSC 8 hyperlinks (parsed, bounded), DECSCUSR cursor shapes
 - [x] `TERM=xterm-256color`, `COLORTERM=truecolor` in the shell environment
-- [ ] DECCOLM 80/132 switching (side effects only), left/right margins (DECSLRM), double-size lines
+- [x] DECCOLM 80/132 switching (side effects only), left/right margins (DECSLRM), double-size lines
 - [x] Reflow on resize (screen + scrollback), underline colour/styles
-- [ ] Blinking text
+- [x] Blinking text
 - [x] Shell integration
 
 ### Phase 2 - Vulkan Rendering (High Priority)

@@ -33,6 +33,12 @@ pub const View = struct {
     reverse_video: bool = false,
     /// Window focus; an unfocused block cursor draws hollow.
     focused: bool = true,
+    /// DECSCUSR / mode 12. The cursor is hidden while `blink_on` is false.
+    cursor_blink: bool = false,
+    /// SGR 5/6 glyphs are hidden while this is false. Background stays.
+    blink_on: bool = true,
+    /// Parallel to the composed rows. Null means every row is single-width.
+    line_sizes: ?[]const terminal.LineSize = null,
     /// Optional per-cell highlight (rows*cols, see `Mark`).
     marks: ?[]const Mark = null,
     selection_bg: u32 = 0x3B5BA5,
@@ -47,6 +53,7 @@ pub const View = struct {
         return .{
             .cursor_visible = term.cursor_visible,
             .cursor_shape = term.cursor_shape,
+            .cursor_blink = term.modes.cursor_blink,
             .reverse_video = term.modes.reverse_video,
         };
     }
@@ -73,6 +80,12 @@ pub fn markedColors(cell: Cell, view: View, block_cursor: bool, mark: Mark) stru
         .guest => .{ .fg = c.fg, .bg = guest_bg },
         .guest_cursor => .{ .fg = 0x000000, .bg = guest_cursor_bg },
     };
+}
+
+fn rowLineSize(view: View, row: u16) terminal.LineSize {
+    const sizes = view.line_sizes orelse return .normal;
+    if (row >= sizes.len) return .normal;
+    return sizes[row];
 }
 
 fn markAt(view: View, cols: u16, row: u16, col: u16) Mark {
@@ -118,6 +131,7 @@ const FrameKey = struct {
     selection_bg: u32 = 0,
     selection_fg: u32 = 0,
     palette: u64 = 0,
+    blink_on: bool = true,
 };
 
 /// Cursor state that recolours cells (block cursor) or adds quads.
@@ -219,7 +233,7 @@ pub const Frame = struct {
     fn buildOnce(self: *Frame, fonts: *Fonts, cells: []const Cell, rows: u16, cols: u16, cursor_row: u16, cursor_col: u16, view: View) !void {
         const a = self.allocator;
         const m = fonts.metrics;
-        const cursor_on = view.cursor_visible and cursor_row < rows and cursor_col < cols;
+        const cursor_on = view.cursor_visible and (view.blink_on or !view.cursor_blink) and cursor_row < rows and cursor_col < cols;
         const cur = CursorKey{
             .on = cursor_on,
             .block = cursor_on and view.cursor_shape == .block and view.focused,
@@ -238,6 +252,7 @@ pub const Frame = struct {
             .selection_bg = view.selection_bg,
             .selection_fg = view.selection_fg,
             .palette = view.palette.hash(),
+            .blink_on = view.blink_on,
         };
         const n = @as(usize, rows) * cols;
         const full = !self.valid or !std.meta.eql(key, self.key) or self.prev_cells.items.len != n;
@@ -374,6 +389,11 @@ pub const Frame = struct {
         const cw: f32 = @floatFromInt(m.cell_w);
         const ch: f32 = @floatFromInt(m.cell_h);
         const y = @as(f32, @floatFromInt(row)) * ch;
+        const ls = rowLineSize(view, row);
+        const wide = ls == .double_width or ls == .double_height_top or ls == .double_height_bottom;
+        const x_mul: f32 = if (wide) 2 else 1;
+        const y_mul: f32 = if (ls == .double_height_top) 2 else 1;
+        const draw_cols: u16 = if (wide) @max(cols / 2, 1) else cols;
         const block_here = cur.block and cur.row == row;
         const clear = clearColor(view);
 
@@ -402,16 +422,18 @@ pub const Frame = struct {
         self.glyphs.clearRetainingCapacity();
         try fonts.layoutRow(line, &self.glyphs);
         for (self.glyphs.items) |p| {
+            if (ls == .double_height_bottom or p.col >= draw_cols) continue;
             const cell = line[p.col];
+            if (cell.blink and !view.blink_on) continue;
             const at = block_here and cursorCovers(line, cur.col, p.col);
             const fg = markedColors(cell, view, at, markAt(view, cols, row, p.col)).fg;
             const g = p.glyph;
             if (g.rect.w == 0 or g.rect.h == 0) continue;
             try rc.fg.append(a, .{
-                .x = @as(f32, @floatFromInt(p.col)) * cw + @as(f32, @floatFromInt(g.left + p.dx)),
+                .x = @as(f32, @floatFromInt(p.col)) * cw * x_mul + @as(f32, @floatFromInt(g.left + p.dx)),
                 .y = y + @as(f32, @floatFromInt(g.top - p.dy)),
-                .w = @floatFromInt(g.rect.w),
-                .h = @floatFromInt(g.rect.h),
+                .w = @as(f32, @floatFromInt(g.rect.w)) * x_mul,
+                .h = @as(f32, @floatFromInt(g.rect.h)) * y_mul,
                 .u = @floatFromInt(g.rect.x),
                 .v = @floatFromInt(g.rect.y),
                 .uw = @floatFromInt(g.rect.w),
@@ -427,7 +449,7 @@ pub const Frame = struct {
         col = 0;
         while (col < cols) : (col += 1) {
             const cell = line[col];
-            if (cell.isSpacer() or cell.hidden) continue;
+            if (cell.isSpacer() or cell.hidden or (cell.blink and !view.blink_on)) continue;
             if (!cell.underline and !cell.strikethrough) continue;
             const at = block_here and cursorCovers(line, cur.col, col);
             const fg = markedColors(cell, view, at, markAt(view, cols, row, col)).fg;
@@ -565,6 +587,36 @@ fn testCells(text: []const u8, cells: []Cell) void {
         c.* = Cell.init();
         if (i < text.len) c.char = text[i];
     }
+}
+
+test "frame: blink hides the glyph and double-width scales it" {
+    var f = try Fonts.init(std.testing.allocator, .{ .retro = true });
+    defer f.deinit();
+    var cells: [4]Cell = undefined;
+    testCells("ab  ", &cells);
+    cells[0].blink = true;
+    var fr = Frame.init(std.testing.allocator);
+    defer fr.deinit();
+    var view = View{};
+    view.blink_on = false;
+    view.cursor_visible = false;
+    try fr.build(&f, &cells, 1, 4, 0, 0, view);
+    var glyphs: usize = 0;
+    for (fr.quads.items) |q| {
+        if (q.kind != .solid) glyphs += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), glyphs);
+
+    view.blink_on = true;
+    const sizes = [_]terminal.LineSize{.double_width} ** 1;
+    view.line_sizes = &sizes;
+    fr.invalidate();
+    try fr.build(&f, &cells, 1, 4, 0, 0, view);
+    var wide: f32 = 0;
+    for (fr.quads.items) |q| {
+        if (q.kind != .solid) wide = @max(wide, q.w);
+    }
+    try std.testing.expect(wide > 1);
 }
 
 test "frame: glyphs per non-blank cell, cursor block inverts" {

@@ -150,6 +150,7 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
         .last_tab = ws.currentTab().id,
         .travel = travel_hub.Hub.open(a, cfg),
     };
+    defer if (gui.line_buf.len > 0) a.free(gui.line_buf);
     gui.travel.activate();
     defer gui.travel.deinit();
     defer gui.ghost.deinit();
@@ -235,6 +236,7 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
             if (p.ai.timeout(now_ms)) |t| timeout = el.minTimeout(timeout, t);
         }
         if (gui.share.host != null or gui.share.guest != null) timeout = el.minTimeout(timeout, 50);
+        if (gui.syncBlink(std.time.milliTimestamp())) |ms| timeout = el.minTimeout(timeout, ms);
         _ = window.wait(fds.items, timeout);
         pace.wakeups += 1;
 
@@ -398,6 +400,10 @@ const Gui = struct {
     reload_at: ?i64 = null,
     /// The last pane closed (or the window close was confirmed).
     closing: bool = false,
+    /// SGR blink / blinking cursor phase. Idle when nothing wants it.
+    blink_on: bool = true,
+    blink_anchor_ms: i64 = 0,
+    line_buf: []terminal.LineSize = &.{},
     last_focus: PaneId,
     last_tab: u32,
 
@@ -425,6 +431,52 @@ const Gui = struct {
     fn touch(self: *Gui, p: *Pane) void {
         p.dirty = true;
         self.need_present = true;
+    }
+
+    /// 500 ms phase while any pane has SGR blink or a blinking cursor.
+    fn syncBlink(self: *Gui, now: i64) ?i32 {
+        var any = false;
+        for (self.ws.panes.items) |p| if (p.term.wantsBlink()) {
+            any = true;
+            break;
+        };
+        if (!any) {
+            if (!self.blink_on) {
+                self.blink_on = true;
+                self.touchAll();
+            }
+            return null;
+        }
+        const period: i64 = 500;
+        if (self.blink_anchor_ms == 0) self.blink_anchor_ms = now;
+        var elapsed = now - self.blink_anchor_ms;
+        if (elapsed < 0) elapsed = 0;
+        const show = @mod(@divFloor(elapsed, period), 2) == 0;
+        if (show != self.blink_on) {
+            self.blink_on = show;
+            self.touchAll();
+        }
+        const left = period - @mod(elapsed, period);
+        return @intCast(@max(left, 1));
+    }
+
+    fn lineSizesFor(self: *Gui, rows: u16) ?[]const terminal.LineSize {
+        if (rows == 0) return null;
+        if (self.line_buf.len < rows) {
+            const next = self.a.alloc(terminal.LineSize, rows) catch return null;
+            if (self.line_buf.len > 0) self.a.free(self.line_buf);
+            self.line_buf = next;
+        }
+        @memset(self.line_buf[0..rows], .normal);
+        const fp = self.focusedPane();
+        const src = fp.term.line_size;
+        var r: usize = 0;
+        while (r < src.len and r < fp.rect.h) : (r += 1) {
+            const dest = @as(usize, fp.rect.y) + r;
+            if (dest >= rows) break;
+            self.line_buf[dest] = src[r];
+        }
+        return self.line_buf[0..rows];
     }
 
     fn touchAll(self: *Gui) void {
@@ -468,6 +520,8 @@ const Gui = struct {
         // Reverse video (DECSCNM) is whole-window: only with one pane shown.
         if (self.ws.visibleCount() > 1) v.reverse_video = false;
         v.focused = self.window_focused;
+        v.blink_on = self.blink_on;
+        v.line_sizes = self.lineSizesFor(comp.rows);
         v.cursor_visible = comp.cursor_visible and !self.travel.isOpen() and !self.ghost.open;
         v.marks = self.ws.marks.items;
         v.palette = self.palette;
