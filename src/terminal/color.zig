@@ -85,9 +85,35 @@ pub fn rgb(r: u32, g: u32, b: u32) u32 {
     return (rr << 16) | (gg << 8) | bb;
 }
 
-/// Halve each channel (SGR 2 "faint").
+/// SGR 2 "faint": five eighths of each channel. Halving dropped the death
+/// theme's foreground (0xE0E0E0) to 0x707070, which is 4.24:1 on black.
 pub fn dim(c: u32) u32 {
-    return (c >> 1) & 0x7F7F7F;
+    const r = ((c >> 16) & 0xFF) * 5 / 8;
+    const g = ((c >> 8) & 0xFF) * 5 / 8;
+    const b = (c & 0xFF) * 5 / 8;
+    return (r << 16) | (g << 8) | b;
+}
+
+/// WCAG 2 relative luminance for an sRGB `0xRRGGBB` value.
+pub fn relativeLuminance(c: u32) f64 {
+    const lin = struct {
+        fn f(v: f64) f64 {
+            return if (v <= 0.04045) v / 12.92 else std.math.pow(f64, (v + 0.055) / 1.055, 2.4);
+        }
+    };
+    const r = lin.f(@as(f64, @floatFromInt((c >> 16) & 0xFF)) / 255.0);
+    const g = lin.f(@as(f64, @floatFromInt((c >> 8) & 0xFF)) / 255.0);
+    const b = lin.f(@as(f64, @floatFromInt(c & 0xFF)) / 255.0);
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/// WCAG 2 contrast ratio between two `0xRRGGBB` colours.
+pub fn contrastRatio(a: u32, b: u32) f64 {
+    const la = relativeLuminance(a);
+    const lb = relativeLuminance(b);
+    const hi = @max(la, lb);
+    const lo = @min(la, lb);
+    return (hi + 0.05) / (lo + 0.05);
 }
 
 test "palette256" {

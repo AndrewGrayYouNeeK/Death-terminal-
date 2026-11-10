@@ -159,8 +159,12 @@ pub const Ui = struct {
     sel_hash_from: i64 = 0,
     notice: ?Notice = null,
     ghost: ?Ghost = null,
-    /// Short AI status tag for the top-right corner ("AI offline"), owned.
+    /// Short AI status tag for a free corner ("AI thinking", "AI ready",
+    /// "AI offline", "AI off"), owned.
     ai_status: ?[]u8 = null,
+    /// Same label, drawn on the left of the status bar. Not allocated.
+    status_ai: [24]u8 = undefined,
+    status_ai_len: u8 = 0,
     /// The SSH or command palette, while open (filled by the event loop).
     palette: ?palette_mod.Palette = null,
     /// Small messages stacked in the top-right corner (plugins).
@@ -773,6 +777,21 @@ pub const Ui = struct {
         self.ai_status = if (text) |t| self.allocator.dupe(u8, t) catch null else null;
     }
 
+    /// Foreground for an AI status label. Each one is at least 4.5:1 on the
+    /// status bar (0x202020) and on the corner badge (0x3A3A3A).
+    pub fn aiStatusColor(label: []const u8) u32 {
+        if (std.mem.eql(u8, label, "AI thinking")) return 0x7CFF6B;
+        if (std.mem.eql(u8, label, "AI offline")) return 0xFFB4B4;
+        if (std.mem.eql(u8, label, "AI off")) return 0xC8C8C8;
+        return 0xD0D0D0;
+    }
+
+    pub fn setStatusAi(self: *Ui, text: []const u8) void {
+        const n = @min(text.len, self.status_ai.len);
+        @memcpy(self.status_ai[0..n], text[0..n]);
+        self.status_ai_len = @intCast(n);
+    }
+
     fn drawGhost(self: *const Ui, term: *const Terminal, row_cells: []Cell, col: u16) void {
         const text = self.ghostText() orelse return;
         const g = self.ghost.?;
@@ -1122,6 +1141,18 @@ pub const Ui = struct {
         for (self.status_right.items) |p| right_w += textCols(p.text) + 3;
         var right_start: usize = if (right_w < row.len) row.len - right_w else row.len;
         var col: usize = 0;
+        if (self.status_ai_len > 0 and row.len > 4) {
+            const label = self.status_ai[0..self.status_ai_len];
+            const w = textCols(label);
+            if (w + 3 < right_start) {
+                drawPlain(row[1..], label, Ui.aiStatusColor(label));
+                col = 1 + w + 2;
+                if (col - 1 < row.len) {
+                    row[col - 1].char = '│';
+                    row[col - 1].fg_color = 0x505050;
+                }
+            }
+        }
         for (self.status_left.items, 0..) |p, i| {
             if (col >= right_start) break;
             if (i > 0 and col + 1 < right_start) {
@@ -1343,7 +1374,7 @@ pub const Ui = struct {
                 const row_cells = if (bottom_free) bottom else cells.items[0..cols];
                 var c: usize = start;
                 var badge = Cell.init();
-                badge.fg_color = 0xC0C0C0;
+                badge.fg_color = Ui.aiStatusColor(st);
                 badge.bg_color = 0x3A3A3A;
                 for (row_cells[start..]) |*cell| cell.* = badge;
                 c += 1;
@@ -1948,4 +1979,18 @@ test "notice bar: top rows, overflow line, Esc dismisses, expiry" {
     try testing.expect(!ui.tickNotice(999));
     try testing.expect(ui.tickNotice(1000));
     try testing.expect(ui.notice == null);
+}
+
+test "status bar paints the AI label in its own colour" {
+    var ui = Ui.init(testing.allocator, .{});
+    defer ui.deinit();
+    ui.setStatusAi("AI thinking");
+    var row = [_]Cell{Cell.init()} ** 40;
+    ui.drawStatus(&row);
+    try testing.expectEqual(@as(u21, 'A'), row[1].char);
+    try testing.expectEqual(@as(u32, 0x7CFF6B), row[1].fg_color);
+    try testing.expectEqual(@as(u32, 0x202020), row[1].bg_color);
+    ui.setStatusAi("AI off");
+    ui.drawStatus(&row);
+    try testing.expectEqual(@as(u32, 0xC8C8C8), row[1].fg_color);
 }

@@ -47,7 +47,7 @@ pub const all = [_]Theme{
         .selection_fg = 0x000000,
         .ansi = .{
             0x000000, 0xFF0033, 0x7A9A7A, 0xC8A050, 0x5A6E8C, 0x9A5A8C, 0x5A8C8C, 0xC0C0C0,
-            0x4A4A4A, 0xFF3355, 0x9ABA9A, 0xE8C070, 0x7A8EAC, 0xBA7AAC, 0x7AACAC, 0xFFFFFF,
+            0x6E6E6E, 0xFF3355, 0x9ABA9A, 0xE8C070, 0x7A8EAC, 0xBA7AAC, 0x7AACAC, 0xFFFFFF,
         },
     },
     .{
@@ -153,4 +153,50 @@ test "themes: lookup and palette" {
     const classic = find("default").?;
     try std.testing.expectEqualStrings("default", classic.name);
     try std.testing.expectEqual(color.default_palette.hash(), classic.palette().hash());
+}
+
+fn blend(a: u32, b: u32, t: f32) u32 {
+    var out: u32 = 0;
+    inline for (.{ 16, 8, 0 }) |sh| {
+        const x: f32 = @floatFromInt((a >> sh) & 0xFF);
+        const y: f32 = @floatFromInt((b >> sh) & 0xFF);
+        const v: u32 = @intFromFloat(std.math.clamp(x + (y - x) * t, 0, 255));
+        out |= v << sh;
+    }
+    return out;
+}
+
+// Body text, faint text, selection, the status bar and the tab bar must
+// be at least 4.5:1. Ghost text (ANSI bright black, palette index 8) may
+// sit under 4.5:1 and must stay at least 3:1, and dimmer than faint text.
+test "death theme contrast" {
+    const death = defaultTheme();
+    const fg = death.fg;
+    const bg = death.bg;
+    const faint = color.dim(fg);
+    const ghost = death.ansi[8];
+    const t = std.testing;
+    try t.expect(color.contrastRatio(fg, bg) >= 4.5);
+    try t.expect(color.contrastRatio(faint, bg) >= 4.5);
+    try t.expect(color.contrastRatio(ghost, bg) >= 3.0);
+    try t.expect(color.contrastRatio(ghost, bg) < color.contrastRatio(faint, bg));
+    try t.expect(color.contrastRatio(death.selection_fg, death.selection_bg) >= 4.5);
+    // Status bar (ui.zig drawStatus): text 0xD0D0D0 and base 0xB0B0B0 on 0x202020.
+    try t.expect(color.contrastRatio(0xD0D0D0, 0x202020) >= 4.5);
+    try t.expect(color.contrastRatio(0xB0B0B0, 0x202020) >= 4.5);
+    // Tab bar (session.zig drawBar): inactive label is blend(bg, fg, 0.60)
+    // on blend(bg, fg, 0.10). The active tab is fg on bg.
+    const bar_bg = blend(bg, fg, 0.10);
+    const dim_fg = blend(bg, fg, 0.60);
+    try t.expect(color.contrastRatio(fg, bg) >= 4.5);
+    try t.expect(color.contrastRatio(dim_fg, bar_bg) >= 4.5);
+    // Corner badge background, and the four AI label colours on both that
+    // badge and the status bar.
+    const badge_bg: u32 = 0x3A3A3A;
+    const status_bg: u32 = 0x202020;
+    const labels = [_]u32{ 0x7CFF6B, 0xD0D0D0, 0xFFB4B4, 0xC8C8C8 };
+    for (labels) |c| {
+        try t.expect(color.contrastRatio(c, badge_bg) >= 4.5);
+        try t.expect(color.contrastRatio(c, status_bg) >= 4.5);
+    }
 }
