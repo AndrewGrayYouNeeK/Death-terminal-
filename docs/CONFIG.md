@@ -115,6 +115,9 @@ config is reloaded.
 | `ai.accept_key` | `"tab"` | Chord that accepts the ghost text |
 | `ai.ask.enabled` | `true` | Ask the Output on/off (`Ctrl+Shift+Q`, `Cmd+Shift+Q` on macOS). See [AI.md](AI.md) |
 | `ai.ask.max_lines` | `200` | Lines of that region sent to the model (the tail), 1–4000 |
+| `ai.voice.enabled` | `true` | Speak finished answers (not ghost text). `--no-voice` overrides. `Ctrl+Shift+Alt+V` mutes for this window (`Cmd+Shift+Option+V` on macOS) |
+| `ai.voice.voice_id` | `QMnwdN2oOwNXPcl9oXIl` | ElevenLabs voice id. The API key is `ELEVENLABS_API_KEY`, never this file |
+| `ai.voice.model` | `eleven_flash_v2_5` | ElevenLabs model id |
 | `muscle_memory.enabled` | `true` | Notice repeated command sequences and offer to save them as shortcuts. See [MUSCLE_MEMORY.md](MUSCLE_MEMORY.md) |
 | `muscle_memory.min_repeats` | `3` | How many times the same sequence must run in one project before it is offered, 2–50 |
 | `muscle_memory.max_len` | `5` | Longest sequence to notice, in commands, 2–8 |
@@ -147,7 +150,7 @@ Actions: `copy`, `paste`, `paste_selection`, `search`, `scroll_page_up`,
 `scroll_bottom`, `zoom_in`, `zoom_out`, `zoom_reset`, `select_all`,
 `clear_selection`, `reload_config` (default Ctrl+Shift+R), `ai_accept` (Tab, only
 while a suggestion shows), `ai_dismiss` (Esc, likewise), `ai_next` / `ai_prev`
-(Alt+] / Alt+[), `ai_explain` (Ctrl+Shift+A), `ai_ask` (Ctrl+Shift+Q; Cmd+Shift+Q on macOS, Cmd+Q still quits), `ssh_palette` (Ctrl+Shift+S),
+(Alt+] / Alt+[), `ai_explain` (Ctrl+Shift+A), `ai_ask` (Ctrl+Shift+Q; Cmd+Shift+Q on macOS, Cmd+Q still quits), `ai_voice_mute` (Ctrl+Shift+Alt+V; macOS Cmd+Shift+Option+V), `ssh_palette` (Ctrl+Shift+S),
 `command_palette` (Ctrl+Shift+P; macOS Cmd+Shift+P), `toggle_status_bar` (Ctrl+Shift+B). `select_all` is Ctrl+Shift+Alt+A.
 Sharing ([SHARING.md](SHARING.md)): `share_pane` (Ctrl+Shift+H; macOS Cmd+Shift+H), `share_grant`
 (Ctrl+Shift+G; macOS Cmd+Shift+G), `share_kick` (F12), `share_stop` (Ctrl+Shift+Alt+H; macOS Cmd+Shift+Option+H), `share_join`

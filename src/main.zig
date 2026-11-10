@@ -306,6 +306,7 @@ fn printHelp() !void {
         \\                     one on/off; see docs/PLUGINS.md
         \\    --no-plugins     Start without loading any plugin
         \\    --no-ai          Disable AI command suggestions
+        \\    --no-voice       Do not speak AI answers. The key stays in ELEVENLABS_API_KEY, never in config
         \\    --headless       Run without a GUI window (default)
         \\    --gui            Open a native window (Wayland/X11/Win32/Cocoa; falls back to headless)
         \\    --scale <n>      UI scale 1–4 (default: auto from DPI / compositor / env)
@@ -403,6 +404,7 @@ test {
     _ = @import("ai/openai.zig");
     _ = @import("ai/context.zig");
     _ = @import("ai/engine.zig");
+    _ = @import("ai/voice.zig");
     _ = @import("app/ai_controller.zig");
     _ = @import("app/shell_inject.zig");
     _ = @import("ghost/match.zig");

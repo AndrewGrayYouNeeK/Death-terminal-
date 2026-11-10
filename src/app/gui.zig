@@ -37,6 +37,7 @@ const share_ctrl = @import("share_ctrl.zig");
 const ghost_hold = @import("../ghost/hold.zig");
 const time_travel = @import("../ghost/time_travel.zig");
 const muscle_mod = @import("../muscle/session.zig");
+const voice_mod = @import("../ai/voice.zig");
 
 const Pane = session.Pane;
 const PaneId = session.PaneId;
@@ -121,6 +122,9 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
     });
     if (muscle.shortcutCount() > 0) std.debug.print("  → Muscle memory: {d} shortcut(s)\n", .{muscle.shortcutCount()});
 
+    const speaker = try voice_mod.Speaker.create(a, cfg.ai_voice_enabled, cfg.ai_voice_id, cfg.ai_voice_model);
+    defer speaker.destroy();
+
     var gui = Gui{
         .loop = loop,
         .a = a,
@@ -139,6 +143,7 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
         .read_buf = read_buf,
         .share = &share,
         .ghost = ghost_hold.Hold.init(a),
+        .voice = speaker,
         .last_focus = first.id,
         .last_tab = ws.currentTab().id,
         .travel = travel_hub.Hub.open(a, cfg),
@@ -238,6 +243,10 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
             }
             p.ai.tick(p.term, std.time.milliTimestamp());
             if (p.ui.tickNotice(std.time.milliTimestamp())) gui.touch(p);
+            if (gui.voice.takeHint()) |hint| {
+                p.ui.setNotice(.info, hint, &.{}, 4000, std.time.milliTimestamp()) catch {};
+                gui.touch(p);
+            }
         }
         plugins.tick(std.time.milliTimestamp());
         try gui.pluginEffects();
@@ -370,6 +379,7 @@ const Gui = struct {
     share: *share_ctrl.Controller,
     /// Risky-command preview. Enter is held until Run, Cancel, or a snapshot.
     ghost: ghost_hold.Hold,
+    voice: *voice_mod.Speaker,
     window_focused: bool = true,
     need_present: bool = false,
     /// Expose/resize: redraw even if the frame is unchanged.
@@ -477,12 +487,19 @@ const Gui = struct {
 
     // ------------------------------------------------------------- panes
 
+    fn voiceAnswer(ctx: *anyopaque, text: ?[]const u8) void {
+        const speaker: *voice_mod.Speaker = @ptrCast(@alignCast(ctx));
+        if (text) |t| speaker.speak(t) else speaker.stop();
+    }
+
     /// Settings every pane gets (theme, cursor, plugin filter).
     fn setupPane(self: *Gui, p: *Pane) void {
         p.term.palette = self.palette.*;
         el.applyCursorShape(p.term, self.cfg.cursor_shape);
         el.applyColumnSwitch(p.term, self.cfg.allow_column_switch, false);
         p.ai.filter = self.plugins.aiFilter();
+        p.ai.on_answer = voiceAnswer;
+        p.ai.answer_ctx = self.voice;
         p.term.command_start = commandStarted;
         p.term.command_start_ctx = p;
     }
@@ -965,6 +982,7 @@ const Gui = struct {
     }
 
     fn handleKey(self: *Gui, key: input.Key, mods: input.Mods) !void {
+        if (key == .escape) self.voice.stop();
         if (self.travel.isOpen()) {
             const result = self.travel.onKey(self.focusedPane().id, key);
             if (result == .close) self.travel.close();
@@ -1141,6 +1159,7 @@ const Gui = struct {
 
     fn handleAction(self: *Gui, a: events.ActionEvent) !void {
         const act = a.action;
+        if (act == .ai_dismiss) self.voice.stop();
         if (self.travel.isOpen()) {
             if (act == .time_travel) {
                 self.travel.toggle(self.focusedPane().id);
@@ -1179,6 +1198,15 @@ const Gui = struct {
             .ai_explain => try fp.ai.explain(&fp.ui, fp.term, now),
             .ai_ask => {
                 try fp.ai.openAsk(&fp.ui, fp.term, now);
+                self.touch(fp);
+            },
+            .ai_voice_mute => {
+                const msg: []const u8 = switch (self.voice.toggle()) {
+                    .muted => "Voice muted",
+                    .unmuted => "Voice on",
+                    .disabled => "Voice is off (ai.voice.enabled or --no-voice)",
+                };
+                try fp.ui.setNotice(.info, msg, &.{}, NOTICE_MS, now);
                 self.touch(fp);
             },
             .ssh_palette => if (self.chrome.paletteOpen(.ssh)) self.chrome.closePalette() else try self.openSshPalette(),
@@ -1716,6 +1744,7 @@ const Gui = struct {
         self.pace.read_budget = @as(usize, next.read_budget_kb) * 1024;
         el.installBindings(next);
         self.travel.apply(next);
+        self.voice.apply(next.ai_voice_enabled, next.ai_voice_id, next.ai_voice_model);
         if (old.status_bar != next.status_bar) try self.setStatusBar(next.status_bar);
         self.frame.invalidate();
         self.share.configure(next);

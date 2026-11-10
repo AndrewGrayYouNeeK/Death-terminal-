@@ -89,6 +89,18 @@ fn ghostPatternError(s: []const u8) ?[]const u8 {
     return null;
 }
 
+fn checkVoiceId(s: []const u8) ?[]const u8 {
+    if (s.len < 8 or s.len > 40) return "expected an ElevenLabs voice id (letters and digits)";
+    for (s) |ch| if (!std.ascii.isAlphanumeric(ch)) return "expected an ElevenLabs voice id (letters and digits)";
+    return null;
+}
+
+fn checkVoiceModel(s: []const u8) ?[]const u8 {
+    if (s.len < 3 or s.len > 64) return "expected a model id such as \"eleven_flash_v2_5\"";
+    for (s) |ch| if (!(std.ascii.isAlphanumeric(ch) or ch == '_')) return "expected a model id such as \"eleven_flash_v2_5\"";
+    return null;
+}
+
 fn checkChord(s: []const u8) ?[]const u8 {
     _ = events.parseChord(s) catch return "cannot parse the key chord (use e.g. \"tab\", \"ctrl+space\", \"right\")";
     return null;
@@ -225,6 +237,10 @@ pub const schema = [_]Field{
     .{ .path = "ai.ask", .kind = .section },
     .{ .path = "ai.ask.enabled", .kind = .boolean, .ref = ref(.boolean, "ai_ask_enabled") },
     .{ .path = "ai.ask.max_lines", .kind = .integer, .min = 1, .max = 4000, .ref = ref(.u16, "ai_ask_max_lines") },
+    .{ .path = "ai.voice", .kind = .section },
+    .{ .path = "ai.voice.enabled", .kind = .boolean, .ref = ref(.boolean, "ai_voice_enabled") },
+    .{ .path = "ai.voice.voice_id", .kind = .string, .ref = ref(.string, "ai_voice_id"), .check = checkVoiceId },
+    .{ .path = "ai.voice.model", .kind = .string, .ref = ref(.string, "ai_voice_model"), .check = checkVoiceModel },
 
     .{ .path = "muscle_memory", .kind = .section },
     .{ .path = "muscle_memory.enabled", .kind = .boolean, .ref = ref(.boolean, "muscle_enabled") },
