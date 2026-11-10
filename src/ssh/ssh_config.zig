@@ -1,15 +1,18 @@
 //! A reader for the basics of OpenSSH's ~/.ssh/config: Host blocks with
 //! wildcard / negated patterns, HostName, User, Port, IdentityFile,
-//! ProxyJump and Include (globs, relative to ~/.ssh). Match blocks are
-//! skipped; unknown keywords are ignored. As in OpenSSH, the first value
+//! ProxyJump and Include (globs, relative to ~/.ssh). `Match` supports
+//! `all`, `host`, `user`, and `localuser` (AND). `exec`, `canonical`, and
+//! unknown criteria do not apply. Other unknown keywords are ignored. As in OpenSSH, the first value
 //! obtained for each keyword wins, except IdentityFile, which accumulates.
 
 const std = @import("std");
 
 pub const Entry = struct {
-    /// Patterns of the enclosing Host line ("*" before any Host line;
-    /// null inside a Match block, which never applies).
+    /// Patterns of the enclosing Host line ("*" before any Host line).
+    /// Null when the entry belongs to a Match block (`match` is set).
     patterns: ?[]const u8,
+    /// Raw `Match` criteria for this entry. Null inside a Host block.
+    match: ?[]const u8 = null,
     /// Lower-cased keyword.
     key: []const u8,
     value: []const u8,
@@ -61,6 +64,7 @@ pub const SshConfig = struct {
     fn parse(self: *SshConfig, text: []const u8, home: []const u8, start_ctx: ?[]const u8, depth: u8) anyerror!void {
         const a = self.arena.allocator();
         var patterns: ?[]const u8 = start_ctx orelse "*";
+        var match_expr: ?[]const u8 = null;
         var lines = std.mem.splitScalar(u8, text, '\n');
         while (lines.next()) |raw| {
             const line = std.mem.trim(u8, raw, " \t\r");
@@ -72,10 +76,12 @@ pub const SshConfig = struct {
             if (rest.len > 0 and rest[0] == '=') rest = std.mem.trimLeft(u8, rest[1..], " \t");
             if (std.mem.eql(u8, key, "host")) {
                 patterns = rest;
+                match_expr = null;
                 continue;
             }
             if (std.mem.eql(u8, key, "match")) {
                 patterns = null;
+                match_expr = rest;
                 continue;
             }
             if (std.mem.eql(u8, key, "include")) {
@@ -87,7 +93,7 @@ pub const SshConfig = struct {
             var words = Words{ .s = rest };
             const value = words.next() orelse continue;
             const v = if (std.mem.eql(u8, key, "proxyjump")) unquote(rest) else value;
-            try self.entries.append(a, .{ .patterns = patterns, .key = key, .value = v });
+            try self.entries.append(a, .{ .patterns = patterns, .key = key, .value = v, .match = match_expr });
         }
     }
 
@@ -122,8 +128,12 @@ pub const SshConfig = struct {
         var r = Resolved{};
         var ids = std.ArrayList([]const u8).init(a);
         for (self.entries.items) |e| {
-            const pats = e.patterns orelse continue;
-            if (!hostMatches(pats, alias)) continue;
+            if (e.match) |m| {
+                if (!matchApplies(m, alias, ctx)) continue;
+            } else {
+                const pats = e.patterns orelse continue;
+                if (!hostMatches(pats, alias)) continue;
+            }
             if (std.mem.eql(u8, e.key, "hostname")) {
                 if (r.hostname == null) r.hostname = e.value;
             } else if (std.mem.eql(u8, e.key, "user")) {
@@ -231,6 +241,27 @@ fn unquote(s: []const u8) []const u8 {
     return s;
 }
 
+/// `Match` criteria, ANDed. `all` is always true. `host`, `user`, and
+/// `localuser` take one pattern (wildcards, quotes, negation via hostMatches).
+/// Anything else (`exec`, `canonical`, a missing argument) does not apply.
+pub fn matchApplies(expr: []const u8, host: []const u8, ctx: Expand) bool {
+    var words = Words{ .s = expr };
+    var saw = false;
+    while (words.next()) |crit| {
+        saw = true;
+        if (std.ascii.eqlIgnoreCase(crit, "all")) continue;
+        const arg = words.next() orelse return false;
+        if (std.ascii.eqlIgnoreCase(crit, "host")) {
+            if (!hostMatches(arg, host)) return false;
+        } else if (std.ascii.eqlIgnoreCase(crit, "user")) {
+            if (!hostMatches(arg, ctx.remote_user)) return false;
+        } else if (std.ascii.eqlIgnoreCase(crit, "localuser")) {
+            if (!hostMatches(arg, ctx.local_user)) return false;
+        } else return false;
+    }
+    return saw;
+}
+
 /// A Host line applies when any pattern matches and no negated one does.
 pub fn hostMatches(patterns: []const u8, host: []const u8) bool {
     var any = false;
@@ -315,7 +346,22 @@ test "ssh_config: host patterns, first value wins, identity files accumulate" {
     const db = try cfg.resolve("db", x);
     try t.expectEqualStrings("db.internal", db.hostname.?);
     try t.expectEqualStrings("bastion,jump2:2222", db.proxy_jump.?);
-    try t.expectEqualStrings("fallback", db.user.?);
+    try t.expectEqualStrings("wrong", db.user.?);
+    const other = Expand{ .home = "/home/me", .local_user = "me", .remote_user = "someone" };
+    var cfg2 = SshConfig.init(t.allocator);
+    defer cfg2.deinit();
+    try cfg2.parseString(
+        \\Match user someone
+        \\  User from-match
+        \\Match exec "true"
+        \\  User from-exec
+        \\Host *
+        \\  User fallback
+    );
+    const hit = try cfg2.resolve("box", other);
+    try t.expectEqualStrings("from-match", hit.user.?);
+    const miss = try cfg2.resolve("box", Expand{ .home = "/home/me", .local_user = "me", .remote_user = "me" });
+    try t.expectEqualStrings("fallback", miss.user.?);
     try t.expectEqual(@as(usize, 2), db.identity_files.len);
     try t.expectEqualStrings("/home/me/.ssh/id_db.internal", db.identity_files[1]);
 

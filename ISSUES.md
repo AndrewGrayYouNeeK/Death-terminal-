@@ -104,9 +104,10 @@
 - [x] Standard SSH config file support (Host/HostName/User/Port/IdentityFile/ProxyJump/Include)
 - [x] Security: secrets wiped, never logged or stored; known_hosts append-only
 - [x] Integration tests against a local sshd (`zig build test-ssh`)
-- [ ] SSH certificates (@cert-authority), `Match`, agent/X11 forwarding, SFTP
-- [ ] Recursive ProxyJump for hops; partial-success (multi-factor) chains get no special UI
-- [ ] macOS/Windows builds of the SSH client (Linux only for now)
+- [x] `Match` (`all`, `host`, `user`, `localuser`) and recursive ProxyJump
+- [ ] SSH certificates (@cert-authority), agent/X11 forwarding, SFTP
+- [ ] Partial-success (multi-factor) chains get no special UI
+- [ ] macOS/Windows builds of the SSH client (Linux only: vendored libssh2 is OpenSSL-only, and cross builds have no libcrypto)
 
 ### Phase 5 - Lua Scripting (Lower Priority)
 - [x] Lua state initialization (vendored Lua 5.4.7, built by zig)
