@@ -24,6 +24,8 @@ pub const Resolved = struct {
     port: ?u16 = null,
     identity_files: []const []const u8 = &.{},
     proxy_jump: ?[]const u8 = null,
+    /// null until a ForwardAgent line matches.
+    forward_agent: ?bool = null,
 };
 
 pub const SshConfig = struct {
@@ -144,6 +146,8 @@ pub const SshConfig = struct {
                 if (r.proxy_jump == null) r.proxy_jump = e.value;
             } else if (std.mem.eql(u8, e.key, "identityfile")) {
                 try ids.append(e.value);
+            } else if (std.mem.eql(u8, e.key, "forwardagent")) {
+                if (r.forward_agent == null) r.forward_agent = std.ascii.eqlIgnoreCase(e.value, "yes");
             }
         }
         if (r.hostname) |h| r.hostname = try expandTokens(a, h, .{ .host = alias, .home = ctx.home, .local_user = ctx.local_user, .remote_user = ctx.remote_user, .port = ctx.port });

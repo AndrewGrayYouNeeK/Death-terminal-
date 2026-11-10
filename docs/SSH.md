@@ -154,13 +154,18 @@ a different host key. It covers the following (71 checks):
 - `@cert-authority` trusts `ssh-ed25519` host certificates when the CA key matches,
   the signature checks, the time window is open, principals allow the host (empty
   means any), and there are no critical options. Other certificate types are refused.
-- No X11/agent forwarding, no SFTP.
+- No X11 forwarding.
+- `ForwardAgent yes` (or `forward_agent = true` on a profile) requests agent
+  forwarding and bridges `auth-agent@openssh.com` to `SSH_AUTH_SOCK`.
+- `sftp = "/remote/dir"` lists that directory and exits. `get` and `put` are
+  in `src/ssh/sftp.zig`.
+- When publickey does not finish sign-in, the next method is announced
+  (`Continuing with keyboard-interactive` / `password`). There is no separate
+  multi-factor prompt; each step still uses the existing prompt.
 - `Match` applies `all`, `host`, `user`, and `localuser`. `exec` and other criteria do not.
 - A hop's own `ProxyJump` is expanded, first jump first, up to 8 hops. A repeated host
   in that expansion is `error.JumpCycle`. Each hop uses its own `~/.ssh/config` identity,
   then the profile's.
-- Multi-step (`partial success`) auth chains work only when each step is one of the
-  supported methods. There is no special prompt for them.
 - An encrypted key asks for its passphrase before the server says whether it would
   accept that key.
 - `command` is typed into the interactive shell rather than run as an exec request, so

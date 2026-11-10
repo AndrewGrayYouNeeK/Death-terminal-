@@ -16,6 +16,8 @@ const ssh_config = @import("ssh_config.zig");
 const target_mod = @import("target.zig");
 const session = @import("session.zig");
 const bridge = @import("bridge.zig");
+const sftp_mod = @import("sftp.zig");
+const env_mod = @import("../platform/env.zig");
 const control = @import("control.zig");
 const tty_mod = @import("tty.zig");
 const Tty = tty_mod.Tty;
@@ -101,6 +103,8 @@ pub const Client = struct {
     ctl: ?control.Server = null,
     conn: ?session.Connection = null,
     chan: ?*c.LIBSSH2_CHANNEL = null,
+    /// OpenSSH agent channel, when ForwardAgent is on and the server asks.
+    agent: ?bridge.Bridge = null,
     state: enum { connecting, connected, disconnected } = .connecting,
     reconnect_requested: bool = false,
     /// A connect report went out (OSC 7799); a disconnect one is owed.
@@ -235,6 +239,12 @@ pub const Client = struct {
             f.conns = 0;
             if (f.spec.enabled) f.setMsg("waiting for the connection", .{});
         }
+        if (self.agent) |*br| {
+            posix.close(br.fd);
+            _ = c.libssh2_channel_free(br.chan);
+            self.agent = null;
+        }
+        agent_owner = null;
         if (self.conn) |*cn| {
             if (self.chan) |ch| _ = c.libssh2_channel_free(ch);
             cn.close("bye");
@@ -249,6 +259,7 @@ pub const Client = struct {
     // --------------------------------------------------------- session
 
     fn runSession(self: *Client) Outcome {
+        if (self.target.sftp.len > 0) return self.runSftp();
         const s = self.sess();
         const chan = c.libssh2_channel_open_ex(s, "session", 7, c.LIBSSH2_CHANNEL_WINDOW_DEFAULT, c.LIBSSH2_CHANNEL_PACKET_DEFAULT, null, 0) orelse
             return .{ .lost = session.lastError(s) };
@@ -258,6 +269,7 @@ pub const Client = struct {
             // Refused names (the server's AcceptEnv) are not an error.
             _ = c.libssh2_channel_setenv_ex(chan, kv.ptr, @intCast(eq), kv[eq + 1 ..].ptr, @intCast(kv.len - eq - 1));
         }
+        if (self.target.forward_agent) self.enableAgent(chan);
         if (self.tty.isTty()) {
             const sz = self.tty.size();
             const term = @import("../platform/env.zig").get("TERM") orelse "xterm-256color";
@@ -325,6 +337,11 @@ pub const Client = struct {
             self.addFd(&fds, &kinds, sig_pipe[0], posix.POLL.IN, .signal) catch return .quit;
             if (self.ctl) |srv| self.addFd(&fds, &kinds, srv.fd, posix.POLL.IN, .control) catch return .quit;
             for (self.fwds.items, 0..) |f, i| if (f.listen_fd) |lfd| self.addFd(&fds, &kinds, lfd, posix.POLL.IN, .{ .listener = i }) catch return .quit;
+            if (self.agent) |*br| {
+                var ev: i16 = posix.POLL.IN;
+                if (br.wantsWrite()) ev |= posix.POLL.OUT;
+                self.addFd(&fds, &kinds, br.fd, ev, .agent) catch return .quit;
+            }
             for (self.conns.items) |cn| {
                 var ev: i16 = 0;
                 if (cn.state == .socks or (cn.state == .open and cn.br.wantsRead())) ev |= posix.POLL.IN;
@@ -342,13 +359,38 @@ pub const Client = struct {
                     .signal => if (self.readSignals()) return .quit,
                     .control => self.serveControl(),
                     .listener => |i| self.acceptLocal(i),
-                    .conn => {},
+                    .conn, .agent => {},
                 }
             }
         }
     }
 
-    const PollKind = union(enum) { ssh, stdin, signal, control, listener: usize, conn };
+    const PollKind = union(enum) { ssh, stdin, signal, control, listener: usize, conn, agent };
+
+    fn runSftp(self: *Client) Outcome {
+        var out = std.ArrayList(u8).init(self.a);
+        defer out.deinit();
+        sftp_mod.list(self.sess(), self.target.sftp, &out) catch |err| {
+            self.tty.print("sftp: {s}: {s}\n", .{ self.target.sftp, @errorName(err) });
+            return .{ .exited = 1 };
+        };
+        self.tty.write(out.items);
+        return .{ .exited = 0 };
+    }
+
+    fn enableAgent(self: *Client, chan: *c.LIBSSH2_CHANNEL) void {
+        if (env_mod.get("SSH_AUTH_SOCK") == null) {
+            self.tty.print("ssh: ForwardAgent is set, and SSH_AUTH_SOCK is unset.\n", .{});
+            return;
+        }
+        agent_owner = self;
+        _ = c.libssh2_session_callback_set(self.sess(), c.LIBSSH2_CALLBACK_AUTHAGENT, @ptrCast(&onAuthAgent));
+        if (c.libssh2_channel_request_auth_agent(chan) != 0) {
+            self.tty.print("ssh: the server refused agent forwarding.\n", .{});
+        } else {
+            self.tty.print("ssh: agent forwarding requested.\n", .{});
+        }
+    }
 
     fn addFd(self: *Client, fds: *std.ArrayList(posix.pollfd), kinds: *std.ArrayList(PollKind), fd: posix.fd_t, ev: i16, k: PollKind) !void {
         _ = self;
@@ -430,6 +472,9 @@ pub const Client = struct {
             if (rc != c.LIBSSH2_ERROR_EAGAIN) self.resize_pending = false;
         }
 
+        if (self.agent) |*br| {
+            if (br.step()) progress = true;
+        }
         if (self.remoteOps()) progress = true;
         if (self.acceptRemote()) progress = true;
         if (self.pumpConns()) progress = true;
@@ -883,6 +928,40 @@ pub fn main(a: std.mem.Allocator, args: []const []const u8) u8 {
     }
     for (client.fwds.items) |*f| f.setMsg("{s}", .{if (f.spec.enabled) "waiting for the connection" else "off"});
     return client.run();
+}
+
+var agent_owner: ?*Client = null;
+
+fn onAuthAgent(_: ?*c.LIBSSH2_SESSION, channel: ?*c.LIBSSH2_CHANNEL, _: ?*?*anyopaque) callconv(.C) void {
+    const cl = agent_owner orelse return;
+    const ch = channel orelse return;
+    if (cl.agent != null) {
+        _ = c.libssh2_channel_free(ch);
+        return;
+    }
+    const fd = connectAgent() orelse {
+        _ = c.libssh2_channel_free(ch);
+        return;
+    };
+    cl.agent = .{ .chan = ch, .fd = fd };
+}
+
+fn connectAgent() ?posix.fd_t {
+    const path = env_mod.get("SSH_AUTH_SOCK") orelse return null;
+    if (path.len == 0 or path.len >= 108) return null;
+    const fd = posix.socket(posix.AF.UNIX, posix.SOCK.STREAM | posix.SOCK.NONBLOCK | posix.SOCK.CLOEXEC, 0) catch return null;
+    var addr = std.mem.zeroes(posix.sockaddr.un);
+    addr.family = posix.AF.UNIX;
+    @memcpy(addr.path[0..path.len], path);
+    const len: posix.socklen_t = @intCast(@sizeOf(posix.sa_family_t) + path.len + 1);
+    posix.connect(fd, @ptrCast(&addr), len) catch |err| switch (err) {
+        error.WouldBlock, error.ConnectionPending => {},
+        else => {
+            posix.close(fd);
+            return null;
+        },
+    };
+    return fd;
 }
 
 pub fn libssh2Version() []const u8 {

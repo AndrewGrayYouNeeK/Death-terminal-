@@ -874,7 +874,7 @@ fn parseLayoutNode(ctx: *Ctx, L: *State, idx_in: c_int, path: []const u8, depth:
     return node;
 }
 
-const profile_fields = "host, port, user, identity_file, jump, env, command, theme, forwards, keepalive_s, reconnect";
+const profile_fields = "host, port, user, identity_file, jump, env, command, theme, forwards, keepalive_s, reconnect, forward_agent, sftp";
 
 fn invalid(ctx: *Ctx, comptime fmt: []const u8, args: anytype) error{Invalid} {
     ctx.msg_len = (std.fmt.bufPrint(&ctx.buf, fmt, args) catch blk: {
@@ -935,6 +935,11 @@ fn parseProfile(ctx: *Ctx, L: *State, name_in: []const u8, idx_in: c_int) error{
             p.theme = th.name;
         } else if (std.mem.eql(u8, key, "keepalive_s")) {
             p.keepalive_s = try profileInt(ctx, L, name, key, -1, 0, 3600);
+        } else if (std.mem.eql(u8, key, "forward_agent")) {
+            if (c.lua_type(L, -1) != c.LUA_TBOOLEAN) return invalid(ctx, "ssh.profiles.{s}.forward_agent: expected true or false, got {s}", .{ name, describe(ctx, L, -1) });
+            p.forward_agent = c.lua_toboolean(L, -1) != 0;
+        } else if (std.mem.eql(u8, key, "sftp")) {
+            p.sftp = try profileString(ctx, L, name, key, -1);
         } else if (std.mem.eql(u8, key, "reconnect")) {
             if (c.lua_type(L, -1) != c.LUA_TBOOLEAN) return invalid(ctx, "ssh.profiles.{s}.reconnect: expected true or false, got {s}", .{ name, describe(ctx, L, -1) });
             p.reconnect = c.lua_toboolean(L, -1) != 0;
