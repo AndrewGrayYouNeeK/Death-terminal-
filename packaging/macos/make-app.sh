@@ -64,10 +64,13 @@ if "deathterminal" not in schemes:
     raise SystemExit("CFBundleURLTypes is missing the deathterminal scheme")
 PY
 cp "$STAGE/bin/deathterminal" "$APP/Contents/MacOS/deathterminal"
-# Finder launches without arguments; open a window.
+# Finder launches without arguments and with cwd /. Leave any other
+# directory alone, then open a window.
 cat > "$APP/Contents/MacOS/deathterminal-gui" <<'SH'
 #!/bin/sh
-exec "$(dirname "$0")/deathterminal" --gui "$@"
+here=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+[ "$(pwd)" = "/" ] && cd "$HOME"
+exec "$here/deathterminal" --gui "$@"
 SH
 chmod +x "$APP/Contents/MacOS/deathterminal-gui" "$APP/Contents/MacOS/deathterminal"
 cp -R "$STAGE/share" "$APP/Contents/Resources/"

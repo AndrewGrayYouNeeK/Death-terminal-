@@ -88,6 +88,10 @@ pub fn main() !void {
     }
     if (hasFlag(args, "--ai-setup") or hasFlag(args, "--doctor")) std.process.exit(aiSetup(allocator, args));
 
+    // macOS: a bare `deathterminal` (the ~/.local/bin symlink into the .app)
+    // opens that bundle and exits, so it is not drawn inside iTerm.
+    try launchMacApp(allocator, args);
+
     // Print banner only for interactive runs
     try printBanner();
 
@@ -267,6 +271,57 @@ test "--share is not --share-relay, and --join takes the invite" {
     try std.testing.expectEqualStrings("dt1.xyz", joinArg(&eq).?);
 }
 
+/// Bundle path when `exe` is `…/Something.app/Contents/MacOS/<name>`.
+fn enclosingAppBundle(exe: []const u8) ?[]const u8 {
+    const marker = ".app/Contents/MacOS/";
+    const at = std.mem.lastIndexOf(u8, exe, marker) orelse return null;
+    if (at == 0) return null;
+    return exe[0 .. at + ".app".len];
+}
+
+/// On macOS, no arguments means "open the enclosing app". Any flag, including
+/// `--gui` and `--tui`, keeps this process. Other operating systems never match.
+fn macAppToOpen(os: std.Target.Os.Tag, args: []const []const u8, exe: []const u8) ?[]const u8 {
+    if (os != .macos or args.len != 1) return null;
+    return enclosingAppBundle(exe);
+}
+
+fn launchMacApp(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    if (builtin.os.tag != .macos or args.len != 1) return;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const exe = std.fs.selfExePath(&buf) catch return;
+    const app = macAppToOpen(.macos, args, exe) orelse return;
+    var child = std.process.Child.init(&.{ "open", "-n", app }, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Inherit;
+    const term = child.spawnAndWait() catch |err| {
+        std.debug.print("deathterminal: open {s}: {s}\n", .{ app, @errorName(err) });
+        std.process.exit(1);
+    };
+    switch (term) {
+        .Exited => |code| std.process.exit(code),
+        .Signal, .Stopped, .Unknown => std.process.exit(1),
+    }
+}
+
+test "macOS bare argv opens the enclosing app; flags and other OS do not" {
+    const app = "/Users/a/Applications/YouNeeK Death Terminal.app/Contents/MacOS/deathterminal";
+    const bare = [_][]const u8{"deathterminal"};
+    try std.testing.expectEqualStrings("/Users/a/Applications/YouNeeK Death Terminal.app", macAppToOpen(.macos, &bare, app).?);
+    const gui = [_][]const u8{ "deathterminal", "--gui" };
+    try std.testing.expect(macAppToOpen(.macos, &gui, app) == null);
+    const tui = [_][]const u8{ "deathterminal", "--tui" };
+    try std.testing.expect(macAppToOpen(.macos, &tui, app) == null);
+    const ssh = [_][]const u8{ "deathterminal", "--ssh", "box" };
+    try std.testing.expect(macAppToOpen(.macos, &ssh, app) == null);
+    try std.testing.expect(macAppToOpen(.linux, &bare, app) == null);
+    try std.testing.expect(macAppToOpen(.windows, &bare, app) == null);
+    try std.testing.expect(macAppToOpen(.macos, &bare, "/usr/local/bin/deathterminal") == null);
+    const nested = "/tmp/Outer.app/Contents/MacOS/Inner.app/Contents/MacOS/deathterminal";
+    try std.testing.expectEqualStrings("/tmp/Outer.app/Contents/MacOS/Inner.app", enclosingAppBundle(nested).?);
+}
+
 fn joinArg(args: []const []const u8) ?[]const u8 {
     for (args[1..], 1..) |a, i| {
         if (std.mem.eql(u8, a, "--join") and i + 1 < args.len) return args[i + 1];
@@ -350,8 +405,11 @@ fn printHelp() !void {
         \\    --no-voice       Do not speak AI answers. The key stays in ELEVENLABS_API_KEY, never in config
         \\    --ai-setup       Print whether config, Ollama, the model, and the voice key are ready.
         \\                     --doctor is the same command. No config file is required.
-        \\    --headless       Run without a GUI window (default)
-        \\    --gui            Open a native window (Wayland/X11/Win32/Cocoa; falls back to headless)
+        \\    --headless       Run in this terminal, without a GUI window (default)
+        \\    --tui            Same as --headless. On macOS this keeps the session in the current terminal
+        \\    --gui            Open a native window in this process (Wayland/X11/Win32/Cocoa; falls back to headless)
+        \\                     On macOS, `deathterminal` with no arguments opens the enclosing .app
+        \\                     (its own window and Dock icon) when this binary lives inside one.
         \\    --scale <n>      UI scale 1–4 (default: auto from DPI / compositor / env)
         \\    --backend <name>  Window backend: auto | x11 | wayland | win32 | cocoa
         \\    --font <retro|default>  Font renderer (retro = built-in 8x8 bitmap)

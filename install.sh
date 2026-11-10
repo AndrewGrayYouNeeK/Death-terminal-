@@ -483,6 +483,7 @@ macos_make_app() {
   cat > "$APP_PATH/Contents/MacOS/deathterminal-gui" <<'SH'
 #!/bin/sh
 here=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+[ "$(pwd)" = "/" ] && cd "$HOME"
 exec "$here/deathterminal" --gui "$@"
 SH
   chmod 755 "$APP_PATH/Contents/MacOS/deathterminal-gui"
@@ -558,6 +559,8 @@ print_macos_instructions() {
   printf 'Add ~/.local/bin to PATH if it is not already there:\n\n'
   # shellcheck disable=SC2016
   printf '  export PATH="$HOME/.local/bin:$PATH"\n\n'
+  printf 'Typing deathterminal with no arguments opens this app (its own window and Dock icon).\n'
+  printf 'deathterminal --tui runs inside the current terminal.\n\n'
   printf 'Next: it works as-is. No config file is required. AI suggestions are optional.\n'
   printf 'To turn on local AI:\n\n'
   printf '  ollama pull qwen2.5-coder:0.5b\n\n'

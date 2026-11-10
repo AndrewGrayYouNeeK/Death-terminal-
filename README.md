@@ -126,11 +126,12 @@ macOS (Apple Silicon and Intel) and Linux (x86_64 and aarch64):
 curl -fsSL https://raw.githubusercontent.com/AndrewGrayYouNeeK/Death-terminal-/main/install.sh | sh
 ```
 
-On a Mac that installs `~/Applications/YouNeeK Death Terminal.app`, puts a symlink on the Desktop, and adds `~/.local/bin/deathterminal`. Double-click the Desktop app. The binary is the prebuilt one from the `nightly` branch (cross-compiled on Linux). Zig 0.13 cannot link on current macOS, so a missing prebuilt stops with an error instead of compiling. Linux still builds from source.
+On a Mac that installs `~/Applications/YouNeeK Death Terminal.app`, puts a symlink on the Desktop, and adds `~/.local/bin/deathterminal` (a symlink to the binary inside the app). Double-click the Desktop app, or type `deathterminal` with no arguments: that opens the app as its own window, with the skull in the Dock, instead of drawing inside iTerm or Terminal.app. `deathterminal --tui` runs in the current terminal. `deathterminal --gui` opens a window from this process. The binary is the prebuilt one from the `nightly` branch (cross-compiled on Linux). Zig 0.13 cannot link on current macOS, so a missing prebuilt stops with an error instead of compiling. Linux still builds from source, and a bare `deathterminal` there stays in the current terminal.
 
 ```sh
 export PATH="$HOME/.local/bin:$PATH"
-deathterminal --gui
+deathterminal            # macOS: the app. Linux: this terminal
+deathterminal --tui      # this terminal, including on macOS
 ```
 
 Next: that works with no config file. The death theme and the other defaults are built in. AI suggestions stay off, with a small "AI offline" badge, until Ollama is running and the default model is present. One hint the first time tells you the next command. To turn local AI on:

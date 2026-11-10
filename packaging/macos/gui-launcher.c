@@ -1,8 +1,9 @@
 /* Mach-O stand-in for Contents/MacOS/deathterminal-gui.
-   Finder launches CFBundleExecutable with no arguments. The unsigned bundle
-   uses a shell script for that; notarization rejects a non-Mach-O main
-   executable, so the sign step compiles this over the script. It execs
-   deathterminal --gui and forwards any extra arguments. */
+   Finder launches CFBundleExecutable with no arguments and with cwd /.
+   The unsigned bundle uses a shell script for that; notarization rejects a
+   non-Mach-O main executable, so the sign step compiles this over the script.
+   It chdirs to $HOME when cwd is /, then execs deathterminal --gui and
+   forwards any extra arguments. */
 #include <limits.h>
 #include <mach-o/dyld.h>
 #include <stdio.h>
@@ -11,6 +12,12 @@
 #include <unistd.h>
 
 int main(int argc, char **argv) {
+    char cwd[PATH_MAX];
+    if (getcwd(cwd, sizeof(cwd)) != NULL && strcmp(cwd, "/") == 0) {
+        const char *home = getenv("HOME");
+        if (home != NULL && home[0] != '\0') (void)chdir(home);
+    }
+
     char self[PATH_MAX];
     uint32_t size = (uint32_t)sizeof(self);
     if (_NSGetExecutablePath(self, &size) != 0) return 127;
