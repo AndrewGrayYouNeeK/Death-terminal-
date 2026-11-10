@@ -1,0 +1,14 @@
+# CodeQL configuration.
+#
+# vendor/ is third-party source (libssh2, Lua, Vulkan headers, FreeType is
+# fetched separately). It is not patched in-tree. Alert
+# cpp/redundant-null-check-simple at vendor/libssh2-1.11.1/src/userauth.c:1497
+# is upstream code; excluding vendor/ is the suppression, not an in-tree edit.
+#
+# GitHub code scanning default setup reads this file when the repository is
+# configured to use .github/codeql/codeql-config.yml (the path default setup
+# documents for a custom configuration).
+name: "Death Terminal CodeQL"
+paths-ignore:
+  - vendor
+  - vendor/**
