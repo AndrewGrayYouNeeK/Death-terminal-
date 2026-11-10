@@ -91,7 +91,7 @@
 - [x] Configuration for AI endpoints (`config.ai.*`)
 - [x] Rate limiting and error handling (one request at a time, backoff)
 - [x] Connect timeout: DNS + connect obey `ai.timeout_ms` (src/net/dial.zig)
-- [ ] Multi-line suggestions; keep-alive connections
+- [x] Multi-line suggestions; keep-alive connections
 
 ### Phase 4 - SSH (Medium Priority)
 - [x] SSH library integration (libssh2 1.11.1 vendored, system libcrypto) — src/ssh/, docs/SSH.md

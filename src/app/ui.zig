@@ -792,10 +792,11 @@ pub const Ui = struct {
         self.status_ai_len = @intCast(n);
     }
 
-    fn drawGhost(self: *const Ui, term: *const Terminal, row_cells: []Cell, col: u16) void {
+    fn drawGhost(self: *const Ui, term: *const Terminal, grid: []Cell, cols: usize, row: usize, rows: usize, col: u16) void {
         const text = self.ghostText() orelse return;
         const g = self.ghost.?;
         const unicode = @import("../terminal/unicode.zig");
+        var r: usize = row;
         var c: usize = col;
         var counter_buf: [32]u8 = undefined;
         const counter: []const u8 = if (g.alternatives.items.len > 1)
@@ -806,9 +807,16 @@ pub const Ui = struct {
         for ([_][]const u8{ text, counter }) |part| {
             var it = (std.unicode.Utf8View.init(part) catch return).iterator();
             while (it.nextCodepoint()) |cp| {
+                if (cp == '\n') {
+                    r += 1;
+                    c = 0;
+                    if (r >= rows) return;
+                    continue;
+                }
                 const w = unicode.width(cp);
                 if (w == 0) continue;
-                if (c + w > row_cells.len) return;
+                if (c + w > cols or r >= rows) return;
+                const row_cells = grid[r * cols ..][0..cols];
                 // Never paint over real text (e.g. a right prompt).
                 for (row_cells[c..][0..w]) |cell| if (cell.char != ' ' and cell.char != 0) return;
                 var cell = row_cells[c];
@@ -1356,8 +1364,7 @@ pub const Ui = struct {
         if (self.ghostVisible(term) and out.cursor_visible and out.cursor_row < rows) {
             const g = self.ghost.?;
             if (g.anchor.col < cols) {
-                const row_cells = cells.items[@as(usize, out.cursor_row) * cols ..][0..cols];
-                self.drawGhost(term, row_cells, g.anchor.col);
+                self.drawGhost(term, cells.items, cols, out.cursor_row, rows, g.anchor.col);
             }
         }
 

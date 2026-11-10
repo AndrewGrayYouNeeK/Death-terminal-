@@ -93,6 +93,9 @@ pub const Engine = struct {
     retry_at_ms: i64 = 0,
     /// Requests actually sent (tests).
     requests: u64 = 0,
+    /// Reused across requests on the worker thread. `chatStream` returns
+    /// the socket to this pool when the server allows keep-alive.
+    http: std.http.Client,
 
     pub fn init(allocator: std.mem.Allocator, opts: Options) !*Engine {
         const self = try allocator.create(Engine);
@@ -104,6 +107,7 @@ pub const Engine = struct {
             .opts = undefined,
             .result = std.ArrayList(u8).init(allocator),
             .wake_ch = wake_ch,
+            .http = .{ .allocator = allocator },
         };
         self.opts = try copyOptions(self.opts_arena.allocator(), opts);
         self.thread = try std.Thread.spawn(.{}, worker, .{self});
@@ -119,6 +123,7 @@ pub const Engine = struct {
             self.cond.signal();
         }
         if (self.thread) |th| th.join();
+        self.http.deinit();
         if (self.pending) |*p| p.deinit();
         self.result.deinit();
         self.opts_arena.deinit();
@@ -291,6 +296,7 @@ pub const Engine = struct {
                     .max_tokens = job.max_tokens,
                     .timeout_ms = opts.timeout_ms,
                     .reasoning = opts.reasoning,
+                    .http = &self.http,
                 }, &self.cancel, Sink{ .engine = self, .gen = job.gen, .max_lines = job.max_lines }) catch |e| {
                     err = e;
                 };

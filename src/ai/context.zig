@@ -35,6 +35,7 @@ const suggest_system =
     \\You are a shell autocompletion engine. The user is typing a command line.
     \\Reply with up to 3 likely complete command lines, one per line, best first.
     \\Every line must start with exactly the text typed so far and continue it.
+    \\A multi-line command is one suggestion: end each line but the last with a backslash.
     \\Reply with commands only: no explanations, no numbering, no markdown, no backticks.
 ;
 
@@ -124,15 +125,36 @@ pub fn parseSuggestions(allocator: std.mem.Allocator, input: []const u8, reply: 
     }
     const typed_trimmed = std.mem.trimLeft(u8, input, " ");
     var it = std.mem.splitScalar(u8, reply, '\n');
+    var block = std.ArrayList(u8).init(allocator);
+    defer block.deinit();
+    var continued = false;
     while (it.next()) |raw| {
-        if (out.items.len >= max) break;
-        const line = cleanLine(raw);
-        if (line.len == 0) continue;
-        const suffix = suffixFor(typed_trimmed, line) orelse continue;
+        if (out.items.len >= max and !continued) break;
+        var line = cleanLine(raw);
+        if (line.len == 0) {
+            continued = false;
+            block.clearRetainingCapacity();
+            continue;
+        }
+        const cont = std.mem.endsWith(u8, line, "\\") and !std.mem.endsWith(u8, line, "\\\\");
+        if (cont) line = std.mem.trimRight(u8, line[0 .. line.len - 1], " \t");
+        if (block.items.len > 0) try block.append('\n');
+        try block.appendSlice(line);
+        continued = cont;
+        if (cont) continue;
+        if (out.items.len >= max) {
+            block.clearRetainingCapacity();
+            break;
+        }
+        const suffix = suffixFor(typed_trimmed, block.items) orelse {
+            block.clearRetainingCapacity();
+            continue;
+        };
+        block.clearRetainingCapacity();
         if (suffix.len == 0) continue;
-        // One line only, and no control characters may reach the PTY.
+        // Newlines from a continued command are the only control bytes kept.
         var ok = true;
-        for (suffix) |ch| if (ch < 0x20 or ch == 0x7f) {
+        for (suffix) |ch| if ((ch < 0x20 and ch != '\n' and ch != '\t') or ch == 0x7f) {
             ok = false;
         };
         if (!ok) continue;
@@ -215,6 +237,14 @@ test "parseSuggestions keeps lines that extend the input" {
     try t.expectEqualStrings("sh origin main", s[0]);
     try t.expectEqualStrings("ll --rebase", s[1]);
     try t.expectEqualStrings("sh --force-with-lease", s[2]);
+}
+
+test "parseSuggestions joins a backslash into one multi-line command" {
+    const s = try parseSuggestions(t.allocator, "git commit", "git commit -m \"fix a\" \\\n  -m \"and b\"\ngit commit -m one", 3);
+    defer freeSuggestions(t.allocator, s);
+    try t.expectEqual(@as(usize, 2), s.len);
+    try t.expectEqualStrings(" -m \"fix a\"\n-m \"and b\"", s[0]);
+    try t.expectEqualStrings(" -m one", s[1]);
 }
 
 test "parseSuggestions: trailing space, nothing new, control characters" {
