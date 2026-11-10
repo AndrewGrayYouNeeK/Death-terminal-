@@ -12,7 +12,7 @@
 | URL open | `xdg-open` | `ShellExecuteW` | `open` |
 | Config reload | inotify | `FindFirstChangeNotification` | kqueue |
 | Built-in SSH | yes | no (`--ssh` reports unsupported) | no |
-| Tested | yes | under Wine 10 (see below) | **compile only** |
+| Tested | yes | under Wine 10 (see below) | **compile only — pending real-Mac verification** |
 
 The Vulkan loader is always loaded at run time (no `-lvulkan`). The headers are
 vendored in `vendor/vulkan-headers` (Vulkan-Headers v1.4.309), so no Vulkan SDK
@@ -93,17 +93,40 @@ draft release gets.
 
 The Cocoa backend (`src/platform/cocoa_backend.zig`) loads libobjc, AppKit, QuartzCore, CoreGraphics and CoreFoundation with `dlopen`. That is why it cross-compiles without an SDK. It uses no NSApplicationDelegate. The content view is a runtime `NSView` subclass (`DTContentView`) and the first responder:
 
-- **Events:** read off the AppKit queue. Ordinary keys are handled from `keyDown` without `sendEvent:`, so unhandled keys don't beep. The content view implements `acceptsFirstResponder`, `mouseDown:`, `mouseDragged:`, and `mouseUp:` (and the right and other-button variants). AppKit's tracking loop delivers the drag and the button-up to the view, so those methods are what reach selection. Coordinates are converted into the view, flipped, and scaled. Command chords are not delivered as `keyDown:`. AppKit sends them to `performKeyEquivalent:` (and the main menu will swallow a letter that matches Hide or Quit, including Cmd+Shift+letter). The view implements `performKeyEquivalent:` and feeds that event to the same matcher. Menu key equivalents are cleared so Hide cannot eat Cmd+Shift+H; Cmd+H still hides the app, and Cmd+Option+H still hides the others.
+- **Events:** read off the AppKit queue. Ordinary keys are handled from `keyDown` without `sendEvent:`, so unhandled keys don't beep. Printable keys (no Command, no Control), including Option, are given to `interpretKeyEvents:`. Dead keys and IME commit through `insertText:` / `insertText:replacementRange:`; the preedit is stored by `setMarkedText:selectedRange:replacementRange:`. If the input context produces nothing, Option still falls back to Meta (ESC + the character). Command and Control chords do not go through the input context. The content view implements `acceptsFirstResponder`, `mouseDown:`, `mouseDragged:`, and `mouseUp:` (and the right and other-button variants). AppKit's tracking loop delivers the drag and the button-up to the view, so those methods are what reach selection. Coordinates are converted into the view, flipped, and scaled. Command chords are not delivered as `keyDown:`. AppKit sends them to `performKeyEquivalent:` (and the main menu will swallow a letter that matches Hide or Quit, including Cmd+Shift+letter). The view implements `performKeyEquivalent:` and feeds that event to the same matcher. Menu key equivalents are cleared so Hide cannot eat Cmd+Shift+H; Cmd+H still hides the app, and Cmd+Option+H still hides the others.
 - **Cmd shortcuts:** Command is not a binding modifier. Cmd+C, Cmd+V, and Cmd+A are copy, paste, and select-all, including with Shift. Other Command chords without Option try Ctrl+Shift first, then Ctrl, so Cmd+T opens a tab. Cmd+Q quits. Cmd+H (Hide) and Cmd+Option+H (Hide Others) are not bindings. Share, grant, join, and Ask the Output are Command+Shift: Cmd+Shift+H, Cmd+Shift+G, Cmd+Shift+J, and Cmd+Shift+Q. Stop sharing is Cmd+Shift+Option+H. Time Travel is Cmd+Option+T, so it does not take New Tab. The command palette is Cmd+Shift+P. Physical Control chords are matched from the virtual key code, because `charactersIgnoringModifiers` is a C0 control character while Control is held. A matched Command chord is logged to stderr (`cocoa: performKeyEquivalent Cmd+Shift+H -> share_pane`, then `gui: share_pane`). The `wss://` relay dial does not use Zig's keychain parser. Trust anchors come from Security.framework, a PEM file, or the roots embedded in the binary. Darwin sockets set `SO_NOSIGPIPE` instead of `MSG_NOSIGNAL`, and `socketpair` does not pass `SOCK_CLOEXEC`.
 - **Option:** acts as Meta.
 - **Waiting:** a helper thread `poll()`s the PTY and wake fds and posts an application-defined NSEvent. The main thread sleeps in `nextEventMatchingMask:`.
 - **Vulkan:** needs MoltenVK. The loader resolves paths next to the executable and in `../Frameworks` (`dlopen` does not expand `@executable_path`), then `/opt/homebrew/lib` and `/usr/local/lib`. The release workflow bundles `libMoltenVK.dylib` and `MoltenVK_icd.json` in `Contents/Frameworks`. The instance enables `VK_KHR_portability_enumeration` and the device enables `VK_KHR_portability_subset` when offered.
 
-None of this has run on a Mac yet. Expect fixes after a first test, especially in the areas below:
+## macOS manual test checklist
 
-- **Live resize:** AppKit runs a nested loop, and the grid catches up afterwards.
-- **IME / dead keys:** `interpretKeyEvents` is not used.
-- **Retina scale changes** between displays.
+**Status: pending real-Mac verification.** This section was not run on Apple hardware. The Linux CI job only cross-compiles `aarch64-macos` and `x86_64-macos`. Do not treat a green cross job as a runtime pass.
+
+A Mac run should use a native build, not a Linux cross-compile:
+
+```sh
+zig build -Dtarget=aarch64-macos
+# MoltenVK must be next to the binary or in ../Frameworks
+./zig-out/bin/deathterminal --gui
+```
+
+Check each line and record pass or fail here. Until that happens, macOS stays "compile only".
+
+- [ ] Vulkan instance and device come up via MoltenVK. The loader resolves `libMoltenVK` next to the executable and in `../Frameworks`.
+- [ ] The window opens and the swapchain presents.
+- [ ] Text renders with the embedded JetBrains Mono font.
+- [ ] Command palette: Cmd+Shift+P.
+- [ ] New tab: Cmd+T.
+- [ ] Copy, paste, select-all: Cmd+C, Cmd+V, Cmd+A.
+- [ ] Quit: Cmd+Q.
+- [ ] Time Travel: Cmd+Option+T (must not steal New Tab).
+- [ ] PTY: a shell starts, typed commands echo, and VT clear / title / cursor movement render.
+- [ ] **Live resize (pending).** Drag the window edge. AppKit runs a nested tracking loop and does not return to the Zig poll until the mouse is up. `resizeWithOldSuperviewSize:`, `viewDidEndLiveResize`, and `windowDidResize:` / `windowDidEndLiveResize:` call `syncGeometry` during that loop and queue one coalesced resize. After the mouse is released, the grid must match the new pixel size (not a stretched old frame).
+- [ ] **IME / dead keys (pending).** `interpretKeyEvents:` is installed. On a US layout, Option+e then e should insert `é`, not ESC + `e` + `e`. An active IME should commit the composed string through `insertText:`. Command and Control chords must be unchanged.
+- [ ] **Retina scale (pending).** Drag the window between a 2x display and a 1x display. `viewDidChangeBackingProperties` and `windowDidChangeBackingProperties:` re-read `backingScaleFactor` and `convertRectToBacking:`, update the Metal layer's `contentsScale`, and queue a resize when the scale or the pixel size changes. Glyphs should be sharp on both displays, not blurry or double-sized.
+
+What failed on the real Mac: nothing recorded yet.
 
 ## 80/132 columns (DECCOLM)
 
