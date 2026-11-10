@@ -679,6 +679,21 @@ pub fn configArg(args: []const []const u8) ?[]const u8 {
     return null;
 }
 
+test "config: absent file keeps the defaults and writes nothing" {
+    const testing = std.testing;
+    var diags = Diagnostics.init(testing.allocator);
+    defer diags.deinit();
+    const args = [_][]const u8{"deathterminal"};
+    var cfg = try load(testing.allocator, null, &args, .{}, &diags);
+    defer cfg.deinit();
+    try testing.expectEqual(@as(usize, 0), diags.items.items.len);
+    try testing.expect(!diags.hasErrors());
+    try testing.expectEqualStrings("death", cfg.theme);
+    try testing.expect(cfg.ai_enabled);
+    try testing.expectEqualStrings("http://localhost:11434/v1", cfg.ai_endpoint);
+    try testing.expectEqualStrings("qwen2.5-coder:0.5b", cfg.ai_model);
+}
+
 test "Config defaults" {
     const testing = std.testing;
     var config = Config.init(testing.allocator);

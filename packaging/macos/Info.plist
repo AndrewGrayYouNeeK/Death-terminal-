@@ -2,17 +2,50 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>YouNeeK Death Terminal</string>
-  <key>CFBundleDisplayName</key><string>YouNeeK Death Terminal</string>
-  <key>CFBundleIdentifier</key><string>com.github.andrewgrayyouneek.deathterminal</string>
-  <key>CFBundleVersion</key><string>0.1.0</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleExecutable</key><string>deathterminal-gui</string>
-  <key>CFBundleIconFile</key><string>deathterminal</string>
-  <key>LSMinimumSystemVersion</key><string>11.0</string>
-  <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
-  <key>NSHighResolutionCapable</key><true/>
-  <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleExecutable</key>
+  <string>deathterminal-gui</string>
+  <key>CFBundleIconFile</key>
+  <string>deathterminal</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.github.andrewgrayyouneek.deathterminal</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>YouNeeK Death Terminal</string>
+  <key>CFBundleDisplayName</key>
+  <string>YouNeeK Death Terminal</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <!-- packaging/macos/make-app.sh replaces this from the staged release directory,
+       which zig build release -Dversion= names deathterminal-<version>-<arch>-macos. -->
+  <key>CFBundleShortVersionString</key>
+  <string>__VERSION__</string>
+  <key>CFBundleVersion</key>
+  <string>__VERSION__</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>CFBundleURLName</key>
+      <string>com.github.andrewgrayyouneek.deathterminal.join</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>deathterminal</string>
+      </array>
+    </dict>
+  </array>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.developer-tools</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>11.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSPrincipalClass</key>
+  <string>NSApplication</string>
+  <key>NSSupportsAutomaticGraphicsSwitching</key>
+  <true/>
 </dict>
 </plist>

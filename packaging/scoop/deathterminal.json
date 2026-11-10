@@ -1,0 +1,21 @@
+{
+  "version": "__VERSION__",
+  "description": "Brutalist GPU terminal emulator with AI suggestions, built-in SSH and Lua plugins",
+  "homepage": "https://github.com/AndrewGrayYouNeeK/Death-terminal-",
+  "license": "Unlicense",
+  "architecture": {
+    "64bit": {
+      "url": "__URL_WINDOWS_ZIP_X86_64__",
+      "hash": "__SHA256_WINDOWS_ZIP_X86_64__",
+      "extract_dir": "deathterminal-__VERSION__-x86_64-windows",
+      "bin": "deathterminal.exe",
+      "shortcuts": [
+        [
+          "deathterminal.exe",
+          "YouNeeK Death Terminal",
+          "--gui"
+        ]
+      ]
+    }
+  }
+}

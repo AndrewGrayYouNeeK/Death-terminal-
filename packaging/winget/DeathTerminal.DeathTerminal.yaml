@@ -1,0 +1,9 @@
+# winget version manifest. Submit, after packaging/update-manifests.sh,
+# to microsoft/winget-pkgs at
+# manifests/d/DeathTerminal/DeathTerminal/<version>/.
+# PackageVersion stays a placeholder until that script runs.
+PackageIdentifier: DeathTerminal.DeathTerminal
+PackageVersion: "__VERSION__"
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0

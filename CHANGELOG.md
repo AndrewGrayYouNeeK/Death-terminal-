@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 New work stays under Unreleased. A date is the day that change landed on main. 0.1.0, further down, is the version the build already reports.
 
+### 2026-11-10
+
+- A missing config file is fine. If Ollama is down or the default model is missing, one hint names the next command (`ollama pull …`). `deathterminal --ai-setup` (same as `--doctor`) prints that status and does not write a config file or print the voice key. (#64)
+- The README and the download page lead with "The terminal that is both fast and smart without becoming a browser," then Ghost Run and Time Travel. (#65)
+- Homebrew, winget, Scoop, and Flatpak templates keep version and sha256 as placeholders until `packaging/update-manifests.sh` fills them from a real SHA256SUMS. Nothing is published. The macOS bundle ships an icns rendered from the green-skull logo. (#66)
+
 ### 2026-11-09
 
 - Finished AI answers can be spoken with ElevenLabs. The voice id is QMnwdN2oOwNXPcl9oXIl, the model is eleven_flash_v2_5, and the key is only `ELEVENLABS_API_KEY`. Mute and unmute with Ctrl+Shift+Alt+V (Cmd+Shift+Option+V on macOS). Ghost text is not spoken. (#63)

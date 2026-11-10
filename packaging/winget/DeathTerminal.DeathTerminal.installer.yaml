@@ -1,0 +1,17 @@
+# winget installer manifest: portable zip of the Windows release archive.
+# InstallerUrl is a placeholder. packaging/update-manifests.sh writes the
+# GitHub Releases URL from SHA256SUMS. Do not submit before that.
+PackageIdentifier: DeathTerminal.DeathTerminal
+PackageVersion: "__VERSION__"
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: deathterminal-__VERSION__-x86_64-windows\deathterminal.exe
+    PortableCommandAlias: deathterminal
+Installers:
+  - Architecture: x64
+    InstallerUrl: "__URL_WINDOWS_ZIP_X86_64__"
+    InstallerSha256: "__SHA256_WINDOWS_ZIP_X86_64__"
+MinimumOSVersion: 10.0.17763.0
+ManifestType: installer
+ManifestVersion: 1.6.0

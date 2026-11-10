@@ -7,6 +7,12 @@ default is a local [Ollama](https://ollama.com) at
 `http://localhost:11434/v1` with the small `qwen2.5-coder:0.5b` model, so
 nothing leaves your machine unless you point it somewhere else.
 
+No `config.lua` is required. With no file, the terminal uses the death theme and AI enabled at the endpoint above. It does not create a config file for you.
+
+If nothing is listening on that port, the first suggestion attempt shows the small **AI offline** badge and one hint: Ollama is not running, and the next command is `ollama pull qwen2.5-coder:0.5b`. You can keep typing. Esc dismisses the hint. It is not shown again that session.
+
+If Ollama is running but `qwen2.5-coder:0.5b` is not pulled, the hint names that model and the same pull command, instead of a bare HTTP status. `deathterminal --ai-setup` (or `--doctor`) prints the same facts without opening a window: config found or not, Ollama reachable or not, model present or not, and whether `ELEVENLABS_API_KEY` is set. The key's value is never printed.
+
 > **Why HTTP and not gRPC.** The original README planned a gRPC AI
 > service. That plan is dropped: the OpenAI-style HTTP/JSON API is what
 > Ollama, llama.cpp's server, vLLM, LM Studio, OpenAI, Groq, OpenRouter and
@@ -72,7 +78,7 @@ The corner badge and the status bar share one label:
 - **AI offline** when the endpoint is unreachable, times out, or returns an error
 - **AI off** when `config.ai.enabled` is false or the process was started with `--no-ai`
 
-Nothing else pops up for an unreachable endpoint. Suggestion requests back off (5 s, doubling up to
+The first time the label becomes **AI offline** in a session, one hint names the next command (Ollama not running, or `ollama pull` when the model is missing). Esc dismisses it. It is not shown again. Suggestion requests back off (5 s, doubling up to
 60 s) so a missing server costs nothing. An explicit `Ctrl+Shift+A` always
 tries and, if it fails, says so in the overlay. **Ask the Output** (`Ctrl+Shift+Q`) does the same: the bar and the overlay both say **AI offline**. The label returns to **AI ready** after
 the next successful request.

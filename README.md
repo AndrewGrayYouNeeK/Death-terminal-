@@ -4,24 +4,19 @@
 
 # YouNeeK Death Terminal
 
-**A brutalist, GPU-accelerated terminal with AI-native command workflows.**
+**The terminal that is both fast and smart without becoming a browser.**
 
-Fast. Minimal. Unapologetically powerful.
+Ghost Run and Time Travel are there for people who work on production machines: a risky Enter is held for a local preview, and a GUI session can rewind the working directory to just before a command.
 
 Download: https://andrewgrayyouneek.github.io/Death-terminal-/
 
 ## ⚡ Why YouNeeK Death Terminal?
 
-Most terminals are either:
+The aim is a terminal with low-level drawing and AI suggestions, without turning the window into a browser. Other terminals (see Inspiration) sit in different places on that line. This one keeps:
 
-- fast but dumb (like Alacritty), or
-- smart but heavy (like Warp)
-
-YouNeeK Death Terminal aims for both:
-
-- low-level performance
-- AI-native workflows
-- zero visual fluff
+- a Vulkan grid, with a software fallback
+- AI ghost text that is not inserted until you accept it
+- no animations
 
 ## 🚀 Demo
 
@@ -137,6 +132,15 @@ On a Mac that installs `~/Applications/YouNeeK Death Terminal.app`, puts a symli
 export PATH="$HOME/.local/bin:$PATH"
 deathterminal --gui
 ```
+
+Next: that works with no config file. The death theme and the other defaults are built in. AI suggestions stay off, with a small "AI offline" badge, until Ollama is running and the default model is present. One hint the first time tells you the next command. To turn local AI on:
+
+```sh
+ollama pull qwen2.5-coder:0.5b
+deathterminal --ai-setup
+```
+
+`--ai-setup` prints whether a config file was found (it is optional), whether Ollama is up, whether `qwen2.5-coder:0.5b` is installed, and whether `ELEVENLABS_API_KEY` is set. It does not print the key.
 
 Run either command again to update. Uninstall:
 
