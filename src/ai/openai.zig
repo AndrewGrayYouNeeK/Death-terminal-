@@ -130,6 +130,14 @@ pub const Cancel = struct {
 
 /// Status code of the last `HttpStatus` failure (for logs).
 pub threadlocal var last_status: u16 = 0;
+/// Short note from the last failed body. "model not found" or empty.
+/// Never a copy of an API key.
+pub threadlocal var last_detail_buf: [64]u8 = undefined;
+pub threadlocal var last_detail_len: usize = 0;
+
+pub fn lastDetail() []const u8 {
+    return last_detail_buf[0..last_detail_len];
+}
 
 /// POST `{endpoint}/chat/completions`, or `{endpoint}/responses` on
 /// api.x.ai and us.api.x.ai. `stream: true`. `sink.onDelta` may return
@@ -189,8 +197,17 @@ pub fn chatStream(allocator: std.mem.Allocator, req: Request, cancel: *Cancel, s
     r.wait() catch |err| return mapErr(err, cancel, deadline);
     if (r.response.status != .ok) {
         last_status = @intFromEnum(r.response.status);
+        last_detail_len = 0;
+        var err_buf: [512]u8 = undefined;
+        const n = r.read(&err_buf) catch 0;
+        if (std.ascii.indexOfIgnoreCase(err_buf[0..n], "not found") != null) {
+            const msg = "model not found";
+            @memcpy(last_detail_buf[0..msg.len], msg);
+            last_detail_len = msg.len;
+        }
         return error.HttpStatus;
     }
+    last_detail_len = 0;
     // Trust text/event-stream; anything else (missing, or a proxy that
     // relabels the stream as JSON) is decided by the first body byte.
     var sse: ?bool = if (r.response.content_type) |ct| (if (std.mem.indexOf(u8, ct, "event-stream") != null) true else null) else null;

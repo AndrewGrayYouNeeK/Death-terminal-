@@ -14,6 +14,7 @@ const openai = @import("../ai/openai.zig");
 const context = @import("../ai/context.zig");
 const ask = @import("../ai/ask.zig");
 const ghost_explain = @import("../ghost/explain.zig");
+const doctor = @import("../ai/doctor.zig");
 const si = terminal.shell_integration;
 
 const Terminal = terminal.Terminal;
@@ -92,6 +93,8 @@ pub const Controller = struct {
     ghost_done: bool = false,
     ghost_failed: bool = false,
     shown_status: ?engine_mod.Status = null,
+    /// The first offline failure explains itself once. Later failures keep the badge only.
+    offline_hinted: bool = false,
     /// Plugins' `ai_suggestion` hook (set by the event loop).
     filter: ?Filter = null,
     /// Time Travel one-line summaries (`Kind.summarize`). The callback
@@ -411,9 +414,10 @@ pub const Controller = struct {
                     if (u.failed) |_| {
                         var buf: [96]u8 = undefined;
                         const why = e.statusText(&buf);
-                        var line_buf: [160]u8 = undefined;
-                        const line = std.fmt.bufPrint(&line_buf, "The AI endpoint is not available ({s}). Check config.ai.endpoint / that Ollama is running.", .{if (why.len > 0) why else "error"}) catch "The AI endpoint is not available.";
+                        var line_buf: [220]u8 = undefined;
+                        const line = self.offlineLine(&line_buf, why);
                         try ui.setAiNotice(self.explain_title.items, line, now_ms);
+                        self.offline_hinted = true;
                     } else {
                         if (u.done and u.text.len > 0) self.noteAnswer(u.text);
                         const body = if (u.done) u.text else try std.fmt.allocPrint(self.allocator, "{s}\u{2026}", .{u.text});
@@ -607,8 +611,9 @@ pub const Controller = struct {
             var buf: [96]u8 = undefined;
             const why = eng.statusText(&buf);
             var line_buf: [180]u8 = undefined;
-            const line = std.fmt.bufPrint(&line_buf, "AI offline ({s}). Check config.ai.endpoint, or that Ollama is running.", .{if (why.len > 0) why else "error"}) catch "AI offline.";
+            const line = self.offlineLine(&line_buf, why);
             try ui.setAiNotice(self.ask_title.items, line, now_ms);
+            self.offline_hinted = true;
             ui.askMarkOffline();
             self.ask_active = false;
             self.freeAskRegion();
@@ -640,12 +645,31 @@ pub const Controller = struct {
         return true;
     }
 
+    fn offlineLine(self: *Controller, buf: []u8, status: []const u8) []const u8 {
+        var head: [160]u8 = undefined;
+        var detail: [160]u8 = undefined;
+        const h = doctor.hint(&head, &detail, self.settings.endpoint, self.settings.model, status);
+        return std.fmt.bufPrint(buf, "{s} {s}", .{ h.headline, h.detail }) catch "AI offline.";
+    }
+
     fn syncStatus(self: *Controller, ui: *Ui) bool {
         const e = self.engine orelse return false;
         const st = e.getStatus();
         if (self.shown_status != null and self.shown_status.? == st) return false;
         self.shown_status = st;
         ui.setAiStatus(if (st == .offline) "AI offline" else null);
+        if (st == .offline and !self.offline_hinted) {
+            self.offline_hinted = true;
+            const showing_ai = if (ui.notice) |n| n.kind == .ai else false;
+            if (!showing_ai) {
+                var why_buf: [96]u8 = undefined;
+                const why = e.statusText(&why_buf);
+                var head: [160]u8 = undefined;
+                var detail: [160]u8 = undefined;
+                const h = doctor.hint(&head, &detail, self.settings.endpoint, self.settings.model, why);
+                ui.setNotice(.info, h.headline, &.{h.detail}, 15000, std.time.milliTimestamp()) catch {};
+            }
+        }
         return true;
     }
 };
@@ -914,6 +938,38 @@ test "controller: ask reports AI offline when the endpoint is down" {
     try t.expect(std.mem.indexOf(u8, ui.ask.barText(&buf), "AI offline") != null);
 }
 
+test "controller: a missing model says so, once" {
+    const replies = [_]mock.Reply{.{
+        .status = 404,
+        .content_type = "application/json",
+        .chunks = &.{"{\"error\":{\"message\":\"model 'qwen2.5-coder:0.5b' not found\"}}"},
+    }};
+    const srv = try mock.MockServer.start(t.allocator, &replies);
+    defer srv.deinit();
+    var url_buf: [64]u8 = undefined;
+    var term = try Terminal.initBuffer(t.allocator, 5, 40, 16);
+    defer term.deinit();
+    var ui = Ui.init(t.allocator, .{});
+    defer ui.deinit();
+    var c = Controller.init(t.allocator, .{ .endpoint = srv.url(&url_buf), .model = "qwen2.5-coder:0.5b", .debounce_ms = 0 });
+    defer c.deinit();
+    try term.processOutput("$ make te");
+    c.onKeystroke(&ui, 0);
+    c.tick(&term, 0);
+    try waitFor(&c, &ui, &term, offlineTag);
+    const note = ui.notice orelse return error.TestUnexpectedResult;
+    const joined = try std.mem.join(t.allocator, "\n", note.lines.items);
+    defer t.allocator.free(joined);
+    try t.expect(std.mem.indexOf(u8, joined, "not installed") != null);
+    try t.expect(std.mem.indexOf(u8, joined, "ollama pull qwen2.5-coder:0.5b") != null);
+    try t.expectEqualStrings("AI offline", ui.ai_status.?);
+    ui.clearNotice();
+    c.onKeystroke(&ui, 0);
+    c.tick(&term, 10_000);
+    _ = try c.onWake(&ui, &term, std.time.milliTimestamp());
+    try t.expect(ui.notice == null);
+}
+
 test "controller: ask stays closed when config.ai.ask.enabled is false" {
     var term = try Terminal.initBuffer(t.allocator, 4, 20, 4);
     defer term.deinit();
@@ -930,7 +986,7 @@ fn offlineTag(ui: *Ui) bool {
     return ui.ai_status != null;
 }
 
-test "controller: an unreachable endpoint only shows the status tag" {
+test "controller: an unreachable endpoint shows the badge and one hint" {
     const srv = try mock.MockServer.start(t.allocator, &.{});
     var url_buf: [64]u8 = undefined;
     const url = try t.allocator.dupe(u8, srv.url(&url_buf));
@@ -948,7 +1004,16 @@ test "controller: an unreachable endpoint only shows the status tag" {
     try waitFor(&c, &ui, &term, offlineTag);
     try t.expectEqualStrings("AI offline", ui.ai_status.?);
     try t.expect(ui.ghost == null);
+    const note = ui.notice orelse return error.TestUnexpectedResult;
+    try t.expect(std.mem.indexOf(u8, note.lines.items[0], "AI offline") != null);
+    try t.expect(std.mem.indexOf(u8, note.lines.items[1], "ollama pull m") != null);
+    ui.clearNotice();
+    // A later failure in the same session does not show the hint again.
+    c.onKeystroke(&ui, 0);
+    c.tick(&term, 0);
+    _ = try c.onWake(&ui, &term, std.time.milliTimestamp());
     try t.expect(ui.notice == null);
+    try t.expectEqualStrings("AI offline", ui.ai_status.?);
     // Disabling AI on reload clears it.
     c.applySettings(&ui, .{ .enabled = false });
     try t.expect(ui.ai_status == null);

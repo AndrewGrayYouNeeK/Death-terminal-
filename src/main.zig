@@ -13,6 +13,8 @@ const event_loop = @import("app/event_loop.zig");
 const plugin_registry = @import("plugins/registry.zig");
 const spawn = @import("app/spawn.zig");
 const share = @import("share.zig");
+const doctor = @import("ai/doctor.zig");
+const env_mod = @import("platform/env.zig");
 
 const VERSION = @import("build_options").version;
 
@@ -79,6 +81,7 @@ pub fn main() !void {
     for (args[1..], 1..) |a, i| {
         if (std.mem.eql(u8, a, "--plugins")) std.process.exit(pluginsCli(allocator, args, args[i + 1 ..]));
     }
+    if (hasFlag(args, "--ai-setup") or hasFlag(args, "--doctor")) std.process.exit(aiSetup(allocator, args));
 
     // Print banner only for interactive runs
     try printBanner();
@@ -160,6 +163,38 @@ pub fn main() !void {
         .share_now = hasFlag(args, "--share"),
     };
     try loop.run(&vulkan_renderer, &term, &lua);
+}
+
+/// `deathterminal --ai-setup`. Prints status and the next command. Does not
+/// write a config file and does not print ELEVENLABS_API_KEY.
+fn aiSetup(allocator: std.mem.Allocator, args: []const []const u8) u8 {
+    var diags = config.Diagnostics.init(allocator);
+    defer diags.deinit();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const src = config.locate(&path_buf, config.configArg(args));
+    var cfg = config.load(allocator, src, args, .{ .lua_unsafe = hasFlag(args, "--lua-unsafe") }, &diags) catch |err| {
+        std.debug.print("config: {s}\n", .{@errorName(err)});
+        return 1;
+    };
+    defer cfg.deinit();
+    const tags = doctor.tagsUrl(allocator, cfg.ai_endpoint) catch {
+        std.debug.print("config.ai.endpoint is not a URL: {s}\n", .{cfg.ai_endpoint});
+        return 1;
+    };
+    defer allocator.free(tags);
+    const got = doctor.httpGet(allocator, tags) catch doctor.GetResult{};
+    defer got.deinit(allocator);
+    const key = env_mod.get("ELEVENLABS_API_KEY");
+    const out = std.io.getStdOut().writer();
+    doctor.writeReport(out, .{
+        .config_path = if (src) |s| s.path else null,
+        .config_errors = diags.hasErrors(),
+        .endpoint = cfg.ai_endpoint,
+        .model = cfg.ai_model,
+        .got = got,
+        .voice_key_set = key != null and key.?.len > 0,
+    }) catch return 1;
+    return 0;
 }
 
 /// `deathterminal --plugins list|enable <name>|disable <name>`.
@@ -307,6 +342,8 @@ fn printHelp() !void {
         \\    --no-plugins     Start without loading any plugin
         \\    --no-ai          Disable AI command suggestions
         \\    --no-voice       Do not speak AI answers. The key stays in ELEVENLABS_API_KEY, never in config
+        \\    --ai-setup       Print whether config, Ollama, the model, and the voice key are ready.
+        \\                     --doctor is the same command. No config file is required.
         \\    --headless       Run without a GUI window (default)
         \\    --gui            Open a native window (Wayland/X11/Win32/Cocoa; falls back to headless)
         \\    --scale <n>      UI scale 1–4 (default: auto from DPI / compositor / env)
@@ -405,6 +442,7 @@ test {
     _ = @import("ai/context.zig");
     _ = @import("ai/engine.zig");
     _ = @import("ai/voice.zig");
+    _ = @import("ai/doctor.zig");
     _ = @import("app/ai_controller.zig");
     _ = @import("app/shell_inject.zig");
     _ = @import("ghost/match.zig");
