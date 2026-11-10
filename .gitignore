@@ -37,6 +37,7 @@ vendor/*
 
 # Distribution
 packaging/.cache/
+packaging/dist/
 dist/
 release/
 *.tar.gz

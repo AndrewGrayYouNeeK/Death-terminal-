@@ -1,0 +1,35 @@
+# Flatpak manifest. The source is this repository (type: dir), not a
+# GitHub Release. @@VERSION@@ is filled by packaging/update-manifests.sh.
+#
+# org.freedesktop.Sdk does not ship Zig 0.13. This manifest does not
+# download Zig and does not point at a Death Terminal release asset.
+# `flatpak-builder` cannot finish until the SDK provides `zig` 0.13,
+# or a later change adds that module. The icon files are the green-skull
+# PNGs already in packaging/icons/png (no other icon).
+app-id: org.youneek.DeathTerminal
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: deathterminal
+finish-args:
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+  - --share=network
+modules:
+  - name: deathterminal
+    buildsystem: simple
+    build-commands:
+      - zig build -Doptimize=ReleaseFast -Dversion=@@VERSION@@ --prefix ${FLATPAK_DEST} --summary none
+      - install -Dm644 packaging/flatpak/org.youneek.DeathTerminal.desktop ${FLATPAK_DEST}/share/applications/org.youneek.DeathTerminal.desktop
+      - install -Dm644 packaging/flatpak/org.youneek.DeathTerminal.metainfo.xml ${FLATPAK_DEST}/share/metainfo/org.youneek.DeathTerminal.metainfo.xml
+      - install -Dm644 packaging/icons/deathterminal.svg ${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/org.youneek.DeathTerminal.svg
+      - |
+        for s in 16 32 48 64 128 256 512; do
+          install -Dm644 "packaging/icons/png/deathterminal-${s}.png" \
+            "${FLATPAK_DEST}/share/icons/hicolor/${s}x${s}/apps/org.youneek.DeathTerminal.png"
+        done
+    sources:
+      - type: dir
+        path: ../..

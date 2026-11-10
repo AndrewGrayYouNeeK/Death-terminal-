@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=YouNeeK Death Terminal
+GenericName=Terminal
+Comment=The terminal that is both fast and smart without becoming a browser
+Exec=deathterminal --gui
+Icon=org.youneek.DeathTerminal
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;shell;prompt;command;commandline;ssh;
+StartupNotify=true
+StartupWMClass=deathterminal

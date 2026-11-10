@@ -14,5 +14,20 @@
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>NSPrincipalClass</key><string>NSApplication</string>
+  <!-- Declares deathterminal:// (join links). The process does not install
+       a GURL Apple Event handler, so a clicked link is not passed to --join
+       until that is tested on a Mac. -->
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>YouNeeK Death Terminal</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>deathterminal</string>
+      </array>
+    </dict>
+  </array>
 </dict>
 </plist>

@@ -1,20 +1,28 @@
-# Homebrew formula skeleton (build from source). UNTESTED on macOS.
-# brew install --build-from-source ./packaging/macos/deathterminal.rb
+# Homebrew formula for the Linux archive from `zig build release`.
+# On macOS, install the cask (the .app) instead. This file is a template:
+# packaging/update-manifests.sh fills version and sha256 into packaging/dist/.
+# The url stays https://example.invalid until the archive exists.
 class Deathterminal < Formula
-  desc "YouNeeK Death Terminal: brutalist GPU terminal emulator with AI suggestions, built-in SSH and Lua plugins"
-  homepage "https://github.com/AndrewGrayYouNeeK/Death-terminal-"
-  url "https://github.com/AndrewGrayYouNeeK/Death-terminal-/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  desc "The terminal that is both fast and smart without becoming a browser"
+  homepage "https://andrewgrayyouneek.github.io/Death-terminal-/"
   license "Unlicense"
+  version "@@VERSION@@"
 
-  depends_on "zig@0.13" => :build
-  depends_on "molten-vk"
-  depends_on "vulkan-loader"
+  on_intel do
+    url "https://example.invalid/pending-release/deathterminal-@@VERSION@@-x86_64-linux.tar.gz"
+    sha256 "@@SHA256:deathterminal-@@VERSION@@-x86_64-linux.tar.gz@@"
+  end
+  on_arm do
+    url "https://example.invalid/pending-release/deathterminal-@@VERSION@@-aarch64-linux.tar.gz"
+    sha256 "@@SHA256:deathterminal-@@VERSION@@-aarch64-linux.tar.gz@@"
+  end
 
   def install
-    system "zig", "build", "-Doptimize=ReleaseFast", "-Dversion=#{version}", "--prefix", prefix, "--summary", "none"
-    man1.install "packaging/linux/deathterminal.1"
-    doc.install "README.md", "CHANGELOG.md", "config.example.lua"
+    odie "On macOS, brew install --cask deathterminal" if OS.mac?
+    prefix_dir = "deathterminal-#{version}-#{Hardware::CPU.arm? ? "aarch64" : "x86_64"}-linux"
+    bin.install "#{prefix_dir}/bin/deathterminal"
+    man1.install "#{prefix_dir}/share/man/man1/deathterminal.1"
+    doc.install Dir["#{prefix_dir}/share/doc/deathterminal/*"]
   end
 
   test do

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.youneek.DeathTerminal</id>
+  <name>YouNeeK Death Terminal</name>
+  <summary>The terminal that is both fast and smart without becoming a browser</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Unlicense</project_license>
+  <developer id="org.youneek">
+    <name>Andrew Gray</name>
+  </developer>
+  <url type="homepage">https://andrewgrayyouneek.github.io/Death-terminal-/</url>
+  <description>
+    <p>Ghost Run and Time Travel are there for people who work on production machines. A risky Enter is held for a local preview, and a GUI session can rewind the working directory to just before a command.</p>
+  </description>
+  <launchable type="desktop-id">org.youneek.DeathTerminal.desktop</launchable>
+  <content_rating type="oars-1.1"/>
+  <categories>
+    <category>System</category>
+    <category>TerminalEmulator</category>
+  </categories>
+</component>

@@ -10,6 +10,15 @@ password. Do not commit any of those.
 
 ## macOS
 
+The steps below are unchanged. Nothing in the store-manifest templates
+runs `sign-release.sh`, and this repository still does not create a tag
+or a GitHub Release. When you do decide to sign, the release job still
+needs every secret below, then: import the Developer ID `.p12`, compile
+`gui-launcher.c` over the shell wrapper, sign dylibs then the app
+inside-out with the hardened runtime, rebuild the `.dmg` with `hdiutil`,
+`notarytool submit --wait`, and `stapler staple`. A Mac has to confirm
+Gatekeeper, the Dock icon, and the About panel.
+
 `packaging/macos/make-app.sh` runs `codesign --force --deep --sign -` only
 when `codesign` is on `PATH`. That is an ad-hoc signature so a local Apple
 silicon Mac can launch the bundle. It does not satisfy Gatekeeper.

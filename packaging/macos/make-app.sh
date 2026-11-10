@@ -53,6 +53,8 @@ if [ -n "${MOLTENVK_DIR:-}" ]; then
   fi
 fi
 
+# Green-skull icon only (packaging/icons/png). iconutil on a Mac; the
+# Python writer elsewhere, so the bundle still has an .icns off a Mac.
 if command -v iconutil >/dev/null; then
   ICONSET=$(mktemp -d)/deathterminal.iconset
   mkdir -p "$ICONSET"
@@ -63,7 +65,11 @@ if command -v iconutil >/dev/null; then
   cp "$ROOT/packaging/icons/png/deathterminal-64.png" "$ICONSET/icon_32x32@2x.png"
   cp "$ROOT/packaging/icons/png/deathterminal-256.png" "$ICONSET/icon_128x128@2x.png"
   cp "$ROOT/packaging/icons/png/deathterminal-512.png" "$ICONSET/icon_256x256@2x.png"
+  # 512@2x is 1024. The repo PNG stops at 512; scale that one slot when Pillow is present.
+  python3 -c "from PIL import Image; Image.open('$ROOT/packaging/icons/png/deathterminal-512.png').convert('RGBA').resize((1024,1024), Image.Resampling.LANCZOS).save('$ICONSET/icon_512x512@2x.png')" || true
   iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/deathterminal.icns"
+else
+  python3 "$HERE/make-icns.py" "$APP/Contents/Resources/deathterminal.icns"
 fi
 
 # Ad-hoc signature only, and only when codesign exists (a local Mac).

@@ -2,7 +2,7 @@
 # AUR package skeleton: builds YouNeeK Death Terminal from the release source tarball.
 # Update pkgver and sha256sums (`updpkgsums`) for each release.
 pkgname=deathterminal
-pkgver=0.1.0
+pkgver=@@VERSION@@
 pkgrel=1
 pkgdesc="YouNeeK Death Terminal: brutalist GPU terminal emulator with AI suggestions, built-in SSH and Lua plugins"
 arch=('x86_64' 'aarch64')
@@ -12,8 +12,11 @@ depends=('libx11' 'wayland' 'libxkbcommon' 'freetype2' 'harfbuzz' 'fontconfig' '
 optdepends=('vulkan-icd-loader: GPU rendering (software fallback otherwise)'
             'vulkan-driver: GPU rendering')
 makedepends=('zig>=0.13.0' 'zig<0.14.0' 'vulkan-headers' 'wayland-protocols' 'python')
-source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+# No source tarball until a tag exists. update-manifests.sh leaves this
+# sha256 as SKIP when SHA256SUMS has no matching file. The url is not a
+# GitHub Release.
+source=("$pkgname-$pkgver.tar.gz::https://example.invalid/pending-release/Death-terminal--$pkgver.tar.gz")
+sha256sums=('@@SHA256?:Death-terminal--@@VERSION@@.tar.gz@@')
 
 build() {
   cd "Death-terminal--$pkgver"

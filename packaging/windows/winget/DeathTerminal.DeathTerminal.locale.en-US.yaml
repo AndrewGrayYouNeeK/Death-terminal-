@@ -1,18 +1,17 @@
-# winget default locale manifest (skeleton).
+# winget default locale manifest.
 PackageIdentifier: DeathTerminal.DeathTerminal
-PackageVersion: 0.1.0
+PackageVersion: "@@VERSION@@"
 PackageLocale: en-US
 Publisher: YouNeeK Death Terminal
 PublisherUrl: https://github.com/AndrewGrayYouNeeK
 PackageName: YouNeeK Death Terminal
-PackageUrl: https://github.com/AndrewGrayYouNeeK/Death-terminal-
+PackageUrl: https://andrewgrayyouneek.github.io/Death-terminal-/
 License: Unlicense
 LicenseUrl: https://github.com/AndrewGrayYouNeeK/Death-terminal-/blob/main/LICENSE
-ShortDescription: YouNeeK Death Terminal, a brutalist GPU terminal emulator with AI suggestions, built-in SSH and Lua plugins
+ShortDescription: The terminal that is both fast and smart without becoming a browser
 Tags:
   - terminal
   - console
-  - vulkan
 ReleaseNotesUrl: https://github.com/AndrewGrayYouNeeK/Death-terminal-/blob/main/CHANGELOG.md
 ManifestType: defaultLocale
 ManifestVersion: 1.6.0

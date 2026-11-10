@@ -1,6 +1,12 @@
 # Packaging
 
-Version **0.1.0**. `build.zig` (`default_version`) is the single source; `-Dversion=` overrides it. The rc file, winget, cask, formula and PKGBUILD carry the number too; bump them together.
+Version **0.1.0**. `build.zig` (`default_version`) is the single source; `-Dversion=` overrides it. Store manifests (cask, formula, winget, Scoop, AUR, Flatpak) keep `@@VERSION@@` and `@@SHA256:filename@@` until release time:
+
+```sh
+packaging/update-manifests.sh 0.1.0 zig-out/release/SHA256SUMS
+```
+
+That writes `packaging/dist/` (gitignored). Download URLs in those files stay `https://example.invalid/pending-release` so nothing points at a GitHub Release that does not exist. Replace the urls in the dist copy after the files are actually uploaded. The script does not create a tag or a release.
 
 ```sh
 zig build release                                # host target, ReleaseFast, stripped
@@ -38,7 +44,10 @@ Output goes to `zig-out/release/`:
 | `macos/fetch-moltenvk.sh` | Pins MoltenVK 1.4.2 (`MoltenVK-macos.tar` + sha256) for the release workflow |
 | `macos/sign-release.sh`, `macos/entitlements.plist`, `macos/gui-launcher.c` | Release-job signing: Developer ID, hardened runtime, `hdiutil` DMG, notarize, staple. Signs `Contents/Frameworks/libMoltenVK.dylib`. Copies artifacts through unsigned when secrets are absent |
 | `SIGNING.md` | Developer ID setup, notarization, and the Windows/Linux TODOs. No secrets are stored here |
-| `macos/deathterminal-cask.rb`, `macos/deathterminal.rb` | Homebrew cask (the .app) and formula (from source) skeletons |
+| `macos/deathterminal-cask.rb`, `macos/deathterminal.rb` | Homebrew cask (the .dmg/.app zip) and a Linux formula. Templates: version and sha256 are `@@…@@` until `update-manifests.sh` |
+| `scoop/deathterminal.json` | Scoop manifest. Same placeholders. URL stays `example.invalid` |
+| `flatpak/` | `org.youneek.DeathTerminal` manifest, desktop file, metainfo. Icon is the green-skull PNG set in `icons/png`. The Freedesktop SDK has no Zig 0.13, so this does not build in a stock sandbox |
+| `update-manifests.sh` | `update-manifests.sh <version> <SHA256SUMS>` writes `packaging/dist/`. It does not create a tag or a GitHub Release |
 | `ci/` | GitHub workflows to copy into `.github/workflows` (see `ci/README.md`) |
 
 Icons:

@@ -1,0 +1,22 @@
+{
+  "version": "@@VERSION@@",
+  "description": "The terminal that is both fast and smart without becoming a browser",
+  "homepage": "https://andrewgrayyouneek.github.io/Death-terminal-/",
+  "license": "Unlicense",
+  "architecture": {
+    "64bit": {
+      "url": "https://example.invalid/pending-release/deathterminal-@@VERSION@@-x86_64-windows.zip",
+      "hash": "@@SHA256:deathterminal-@@VERSION@@-x86_64-windows.zip@@",
+      "extract_dir": "deathterminal-@@VERSION@@-x86_64-windows"
+    },
+    "arm64": {
+      "url": "https://example.invalid/pending-release/deathterminal-@@VERSION@@-aarch64-windows.zip",
+      "hash": "@@SHA256:deathterminal-@@VERSION@@-aarch64-windows.zip@@",
+      "extract_dir": "deathterminal-@@VERSION@@-aarch64-windows"
+    }
+  },
+  "bin": "deathterminal.exe",
+  "shortcuts": [
+    ["deathterminal.exe", "YouNeeK Death Terminal", "--gui"]
+  ]
+}
