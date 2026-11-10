@@ -35,6 +35,7 @@ const color = @import("../terminal/color.zig");
 const config_watch = @import("config_watch.zig");
 const travel_hub = @import("time_travel.zig");
 const share_ctrl = @import("share_ctrl.zig");
+const share_link = @import("../share/join_url.zig");
 const ghost_hold = @import("../ghost/hold.zig");
 const time_travel = @import("../ghost/time_travel.zig");
 const muscle_mod = @import("../muscle/session.zig");
@@ -165,7 +166,11 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
         try el.showDiagnostics(&gui.focusedPane().ui, d, loop.watch_path orelse "config", if (d.hasErrors()) "using the defaults" else null);
     };
     gui.startPlugins();
-    if (loop.join_code) |code| gui.share.joinCode(gui.focusedPane().id, code);
+    if (loop.join_code) |code| {
+        // `--join` wins. Drop a launch URL so it is not applied again below.
+        gui.share.joinCode(gui.focusedPane().id, code);
+        _ = share_link.take();
+    } else try gui.applyPendingLink();
     if (loop.share_now) {
         std.debug.print("gui: --share\n", .{});
         gui.share.startHost(gui.focusedPane().id);
@@ -269,6 +274,7 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
             gui.force_present = true;
         };
 
+        try gui.applyPendingLink();
         while (!gui.closing) {
             const ev = window.poll();
             if (ev == .none) break;
@@ -394,6 +400,23 @@ const Gui = struct {
     closing: bool = false,
     last_focus: PaneId,
     last_tab: u32,
+
+    /// Cold start and a later click both land here. The payload is the
+    /// `--join` argument; the guest is started on the focused pane.
+    fn applyPendingLink(self: *Gui) !void {
+        const action = share_link.take() orelse return;
+        switch (action) {
+            .join_focused => |code| {
+                self.share.joinCode(self.focusedPane().id, code);
+                try self.showShare();
+                self.touch(self.focusedPane());
+            },
+            .toast => |text| {
+                try self.focusedPane().ui.setNotice(.err, "Share", &.{text}, 6000, std.time.milliTimestamp());
+                self.touch(self.focusedPane());
+            },
+        }
+    }
 
     fn focusedPane(self: *Gui) *Pane {
         return self.ws.focused();

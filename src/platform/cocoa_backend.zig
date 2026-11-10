@@ -5,10 +5,11 @@
 //! UNTESTED AT RUNTIME: this file is cross-compiled from Linux only. The
 //! design keeps the dependency surface small: the Objective-C runtime and
 //! frameworks are loaded with dlopen (see objc.zig). A small
-//! NSApplicationDelegate installs the About / Hide / Quit / Window menus.
-//! A clicked deathterminal:// link is not delivered: a GURL Apple Event
-//! handler would have to start the share guest, which lives outside this
-//! file. A runtime NSView subclass is the content view and
+//! NSApplicationDelegate installs the About / Hide / Quit / Window menus
+//! and the GURL Apple Event (`kAEGetURL` on `kInternetEventClass`). A
+//! clicked deathterminal://join/ link is stored for the GUI, which joins
+//! the focused pane the same way `--join` does. A runtime NSView subclass
+//! is the content view and
 //! first responder so Command chords arrive through `performKeyEquivalent:`
 //! (AppKit does not deliver those as `keyDown:`). Other events are read
 //! straight off the AppKit queue.
@@ -26,6 +27,7 @@ const build_options = @import("build_options");
 const Event = events.Event;
 const input = @import("../terminal/input.zig");
 const io = @import("io.zig");
+const join_url = @import("../share/join_url.zig");
 const objc = @import("objc.zig");
 const Id = objc.Id;
 const msg = objc.msg;
@@ -177,6 +179,12 @@ fn postWake(app: Id) void {
 /// NSApplicationActivationPolicyRegular. The Dock shows the app.
 const activation_policy_regular: isize = 0;
 
+/// `kInternetEventClass` and `kAEGetURL` are both `'GURL'`.
+const gurl_event_class: u32 = 0x4755524C;
+const gurl_event_id: u32 = 0x4755524C;
+/// `keyDirectObject` (`'----'`), the URL string on a GURL event.
+const gurl_direct_object: u32 = 0x2D2D2D2D;
+
 const MenuEntry = struct {
     menu: []const u8,
     title: [:0]const u8,
@@ -234,8 +242,35 @@ fn dtZoom(_: Id, _: objc.Sel, _: Id) callconv(.C) void {
     if (cocoa_key_state) |st| if (st.window) |w| msg(void, w, "zoom:", .{@as(Id, null)});
 }
 
-fn installMainMenu(st: *State) void {
-    if (builtin.os.tag != .macos or st.app == null) return;
+fn dtWillFinishLaunching(_: Id, _: objc.Sel, _: Id) callconv(.C) void {
+    if (cocoa_key_state) |st| registerGetUrl(st.app_delegate);
+}
+
+fn dtGetUrl(_: Id, _: objc.Sel, event: Id, _: Id) callconv(.C) void {
+    if (event == null) return;
+    const desc = msg(Id, event, "paramDescriptorForKeyword:", .{gurl_direct_object});
+    if (desc == null) return;
+    const text = msg(Id, desc, "stringValue", .{});
+    if (text == null) return;
+    join_url.deliver(objc.utf8(text));
+    if (cocoa_key_state) |st| if (st.app != null) postWake(st.app);
+}
+
+/// `NSAppleEventManager setEventHandler:andSelector:forEventClass:andEventID:`.
+fn registerGetUrl(del: Id) void {
+    if (del == null) return;
+    const mgr = msg(Id, objc.class("NSAppleEventManager"), "sharedAppleEventManager", .{});
+    if (mgr == null) return;
+    msg(void, mgr, "setEventHandler:andSelector:forEventClass:andEventID:", .{
+        del,
+        objc.sel("handleGetURLEvent:withReplyEvent:"),
+        gurl_event_class,
+        gurl_event_id,
+    });
+}
+
+fn ensureAppDelegate(st: *State) void {
+    if (builtin.os.tag != .macos or st.app == null or st.app_delegate != null) return;
     const super = objc.class("NSObject");
     if (super == null) return;
     if (objc.class("DTAppDelegate") == null) {
@@ -243,13 +278,24 @@ fn installMainMenu(st: *State) void {
         for (main_menu) |item| {
             if (!objc.addMethod(cls, item.action, delegateImp(item.action), "v@:")) return;
         }
+        if (!objc.addMethod(cls, "applicationWillFinishLaunching:", @ptrCast(&dtWillFinishLaunching), "v@:@")) return;
+        if (!objc.addMethod(cls, "handleGetURLEvent:withReplyEvent:", @ptrCast(&dtGetUrl), "v@:@@")) return;
         objc.registerClassPair(cls);
     }
     const del = msg(Id, objc.alloc("DTAppDelegate"), "init", .{});
     if (del == null) return;
     st.app_delegate = del;
     msg(void, st.app, "setDelegate:", .{del});
+    // Before finishLaunching, so a cold-start GURL is queued for this process.
+    // applicationWillFinishLaunching: registers it again when AppKit calls in.
+    registerGetUrl(del);
+}
 
+fn installMainMenu(st: *State) void {
+    if (builtin.os.tag != .macos or st.app == null) return;
+    ensureAppDelegate(st);
+    const del = st.app_delegate;
+    if (del == null) return;
     const bar = msg(Id, objc.alloc("NSMenu"), "init", .{});
     if (bar == null) return;
     _ = addMenu(bar, del, "YouNeeK Death Terminal", "app");
@@ -318,6 +364,7 @@ pub fn open(st: *State, allocator: std.mem.Allocator, title: []const u8, width: 
 
     msg(void, st.window, "center", .{});
     msg(void, st.window, "makeKeyAndOrderFront:", .{@as(Id, null)});
+    ensureAppDelegate(st);
     msg(void, st.app, "finishLaunching", .{});
     msg(void, st.app, "activateIgnoringOtherApps:", .{objc.YES});
     installMainMenu(st);
@@ -1289,6 +1336,9 @@ test "cocoa: the menu bar" {
         try std.testing.expect(found);
     }
     try std.testing.expectEqual(@as(isize, 0), activation_policy_regular);
+    try std.testing.expectEqual(@as(u32, 0x4755524C), gurl_event_class);
+    try std.testing.expectEqual(gurl_event_class, gurl_event_id);
+    try std.testing.expectEqual(@as(u32, 0x2D2D2D2D), gurl_direct_object);
 }
 
 test "cocoa: Cmd+Q quits; Cmd+Shift+Q does not" {
