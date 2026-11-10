@@ -30,6 +30,7 @@ const input = @import("../terminal/input.zig");
 const fonts_mod = @import("../font/fonts.zig");
 const frame_mod = @import("../renderer/frame.zig");
 const events = @import("../platform/events.zig");
+const changelog = @import("changelog");
 const color = @import("../terminal/color.zig");
 const config_watch = @import("config_watch.zig");
 const travel_hub = @import("time_travel.zig");
@@ -171,6 +172,8 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
         try gui.showShare();
         if (gui.share.inviteText()) |t| std.io.getStdOut().writeAll(t) catch {};
     }
+    _ = gui.focusedPane().ai.publishStatus(&gui.focusedPane().ui);
+    gui.chrome.setStatusAi(gui.focusedPane().ai.statusLabel());
     if (gui.focusedPane().ai.engine != null) std.debug.print("  → AI: {s} via {s}\n", .{ cfg.ai_model, cfg.ai_endpoint });
     std.debug.print("GUI terminal active ({s}, scale={d:.2}). Close the window or exit the shell to quit.\n", .{ @tagName(window.backend), window.scale });
 
@@ -242,6 +245,8 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
                 if (gui.ghost.pullAi(st.text, st.done, st.failed)) gui.touchAll();
             }
             p.ai.tick(p.term, std.time.milliTimestamp());
+            if (p.ai.publishStatus(&p.ui)) gui.touch(p);
+            if (p.id == gui.focusedPane().id) gui.chrome.setStatusAi(p.ai.statusLabel());
             if (p.ui.tickNotice(std.time.milliTimestamp())) gui.touch(p);
             if (gui.voice.takeHint()) |hint| {
                 p.ui.setNotice(.info, hint, &.{}, 4000, std.time.milliTimestamp()) catch {};
@@ -1323,6 +1328,7 @@ const Gui = struct {
                 self.share.openPrompt();
                 self.touchAll();
             },
+            .whats_new => try self.showWhatsNew(now),
             else => {
                 if (try fp.ui.handleAction(fp.term, act)) {
                     if (act == .ai_accept) fp.ai.onAccepted();
@@ -1514,6 +1520,13 @@ const Gui = struct {
             .palette => {},
         };
         self.touch(p);
+    }
+
+    fn showWhatsNew(self: *Gui, now: i64) !void {
+        var lines: [5][]const u8 = undefined;
+        const n = whatsNewPreview(changelog.text, &lines);
+        try self.focusedPane().ui.setNotice(.info, "What's new", lines[0..n], null, now);
+        self.touchAll();
     }
 
     fn palettePick(self: *Gui, pick: palette_mod.Pick) !void {
@@ -2102,4 +2115,31 @@ fn termMouse(term: *terminal.Terminal, st: *session.MouseState, m: events.MouseI
         .mods = m.mods,
     };
     if (input.encodeMouse(ev, term.modes, st.held != .none)) |seq| try term.write(seq.constSlice());
+}
+
+/// First four changelog bullets, then the command that prints the whole file.
+fn whatsNewPreview(text: []const u8, out: *[5][]const u8) usize {
+    var n: usize = 0;
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |line| {
+        if (!std.mem.startsWith(u8, line, "- ")) continue;
+        if (n == 4) break;
+        out[n] = line;
+        n += 1;
+    }
+    out[n] = "Full text: deathterminal --whats-new";
+    return n + 1;
+}
+
+test "what's new previews the bundled changelog" {
+    const text = changelog.text;
+    try std.testing.expect(std.mem.indexOf(u8, text, "## [Unreleased]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "### 2026-11-09") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Ghost Run") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "## [0.9.0]") == null);
+    var lines: [5][]const u8 = undefined;
+    const n = whatsNewPreview(text, &lines);
+    try std.testing.expectEqual(@as(usize, 5), n);
+    try std.testing.expect(std.mem.startsWith(u8, lines[0], "- "));
+    try std.testing.expectEqualStrings("Full text: deathterminal --whats-new", lines[4]);
 }

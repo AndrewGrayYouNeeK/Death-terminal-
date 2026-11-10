@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+New work stays under Unreleased. A date is the day that change landed on main. 0.1.0, further down, is the version the build already reports.
+
+### 2026-11-09
+
+- Finished AI answers can be spoken with ElevenLabs. The voice id is QMnwdN2oOwNXPcl9oXIl, the model is eleven_flash_v2_5, and the key is only `ELEVENLABS_API_KEY`. Mute and unmute with Ctrl+Shift+Alt+V (Cmd+Shift+Option+V on macOS). Ghost text is not spoken. (#63)
+- The download page documents the shipped features: AI, Ghost Run, Muscle Memory, Time Travel, Shared Haunting, SSH, tabs, rendering, the death theme, YouNeeK Time, config, and plugins. (#62)
+- The download page keeps the green skull logo fixed behind the glass panels, including on iPhone. (#61)
+
+### 2026-11-06
+
+- The installers, the README, and the download page use the glowing green skull logo.
+
 ### Added
+- The default death theme raises faint text and ghost text (ANSI bright black) so body text stays at least 4.5:1 and ghost text stays readable and dimmer. The red cursor is unchanged.
+- The corner badge and the status bar show one label: `AI thinking`, `AI ready`, `AI offline`, or `AI off`.
+- Command palette entry "What's new", and `deathterminal --whats-new`, show this file. It is not opened on launch.
 - macOS install creates a double-clickable app. `curl -fsSL https://raw.githubusercontent.com/AndrewGrayYouNeeK/Death-terminal-/main/install.sh | sh` installs `~/Applications/YouNeeK Death Terminal.app` (Info.plist, the repo icon, and a launcher that runs `deathterminal --gui`), strips quarantine, ad-hoc signs the bundle, symlinks it onto `~/Desktop`, and leaves `deathterminal` on `~/.local/bin`. The binary is downloaded from the rolling `nightly` branch (`raw.githubusercontent.com`, not a GitHub Release). Zig 0.13 cannot link on current macOS, so a missing prebuilt is an error. `DT_REF` selects that git ref. `.github/workflows/nightly.yml` cross-compiles the macOS binaries on Linux and publishes them on push to `main`
 - Shared Haunting over the internet without a port forward. An empty `config.share.relay` dials `wss://relay.youneek.xyz` (override with a `wss://` URL, or `"off"` for LAN only). The host still listens on the LAN. The guest tries that address for about a second, then the relay in the invite. Both sides connect outbound. The relay is a Cloudflare Worker in `relay/` (one Durable Object per session) and only forwards opaque Noise frames. `deathterminal --share-relay` remains the self-hosted TCP splice, and that path also tries the LAN first. Deploy steps are in [docs/SHARING.md](docs/SHARING.md). The Worker is deployed at `relay.youneek.xyz`; this change does not tag a release
 - `install.ps1`: Windows x64 and ARM64 install from PowerShell (`irm ... | iex`), with no administrator prompt. Downloads portable Zig 0.13.0 into `%LOCALAPPDATA%\DeathTerminal\zig` when Zig 0.13 is missing, builds `main` with `-Doptimize=ReleaseSafe` for the Windows target, installs `deathterminal.exe` and any needed DLLs to `%LOCALAPPDATA%\DeathTerminal\bin`, adds that folder to the user PATH, and creates a Start Menu shortcut that runs `--gui`. Re-run to update. `$env:DEATHTERMINAL_UNINSTALL='1'` uninstalls

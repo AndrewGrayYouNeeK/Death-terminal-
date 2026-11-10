@@ -119,6 +119,13 @@ fn addLibssh2(b: *std.Build, step: *std.Build.Step.Compile, target: std.Build.Re
 }
 
 /// The documented default config, printed by --print-default-config.
+fn addChangelog(b: *std.Build, step: *std.Build.Step.Compile) void {
+    const wf = b.addWriteFiles();
+    _ = wf.addCopyFile(b.path("CHANGELOG.md"), "CHANGELOG.md");
+    const mod = wf.add("changelog.zig", "pub const text = @embedFile(\"CHANGELOG.md\");\n");
+    step.root_module.addAnonymousImport("changelog", .{ .root_source_file = mod });
+}
+
 fn addDefaultConfig(b: *std.Build, step: *std.Build.Step.Compile) void {
     const wf = b.addWriteFiles();
     _ = wf.addCopyFile(b.path("config.example.lua"), "config.example.lua");
@@ -196,6 +203,7 @@ fn addApp(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin
     addLua(b, exe, target);
     addLibssh2(b, exe, target);
     addDefaultConfig(b, exe);
+    addChangelog(b, exe);
     addShellIntegration(b, exe);
     addVersion(b, exe, version);
     if (target.result.os.tag == .windows) {
@@ -397,6 +405,7 @@ pub fn build(b: *std.Build) void {
     addLua(b, unit_tests, target);
     addLibssh2(b, unit_tests, target);
     addDefaultConfig(b, unit_tests);
+    addChangelog(b, unit_tests);
     addShellIntegration(b, unit_tests);
     addVersion(b, unit_tests, version);
 

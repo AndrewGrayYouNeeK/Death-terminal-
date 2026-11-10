@@ -134,6 +134,8 @@ pub const Action = enum {
     /// Copy the current invite (address, port, and code) to the clipboard.
     /// Palette only; the invite is already copied when sharing starts.
     share_copy,
+    /// Show the bundled changelog. Palette only; also `deathterminal --whats-new`.
+    whats_new,
 
     /// goto_tab_N -> N-1.
     pub fn gotoIndex(self: Action) ?usize {
@@ -197,6 +199,7 @@ pub const Action = enum {
             .share_stop => "Share: stop sharing",
             .share_join => "Share: join a haunting",
             .share_copy => "Share: copy invite",
+            .whats_new => "What's new",
             // Listed as "Go to tab N: <title>" entries instead.
             .goto_tab_1, .goto_tab_2, .goto_tab_3, .goto_tab_4, .goto_tab_5, .goto_tab_6, .goto_tab_7, .goto_tab_8, .goto_tab_9 => null,
             .none, .ai_accept, .ai_dismiss, .ai_next, .ai_prev, .command_palette, .plugin_binding => null,
@@ -747,6 +750,8 @@ test "chord formatting and action titles" {
     try std.testing.expectEqualStrings("Ctrl+Shift+P", chordFor(&d, .command_palette, &b).?);
     try std.testing.expectEqualStrings("Ctrl+Shift+H", chordLabel(&d, .share_pane, &b).?);
     try std.testing.expectEqualStrings("Share: share this pane", Action.share_pane.title().?);
+    try std.testing.expectEqualStrings("What's new", Action.whats_new.title().?);
+    try std.testing.expectEqual(Action.whats_new, Action.parse("whats_new").?);
     try std.testing.expect(Action.copy.title() != null);
     try std.testing.expect(Action.plugin_binding.title() == null);
     var x = Bindings{};

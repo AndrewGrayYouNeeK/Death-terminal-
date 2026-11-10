@@ -45,7 +45,8 @@ Context-aware, not just history-based.
 - Dim ghost text after the cursor: Tab accepts, Esc dismisses, Alt+] / Alt+[ cycle alternatives; nothing is inserted unless you accept
 - Ctrl+Shift+A explains the last failed command and suggests a fix
 - Ctrl+Shift+Q (Cmd+Shift+Q on macOS; Cmd+Q still quits) asks a question about the selection, the last command's output, or the screen. The answer cites lines, which are highlighted; Down and Enter jump between them. Long output is truncated with a note. `config.ai.ask.enabled` and `config.ai.ask.max_lines` control it
-- Secrets (tokens, keys, passwords, env assignments) are redacted before anything is sent; offline endpoints just show a small "AI offline" badge
+- Secrets (tokens, keys, passwords, env assignments) are redacted before anything is sent. The status area shows `AI thinking`, `AI ready`, `AI offline`, or `AI off`
+- What's new: the command palette entry "What's new", or `deathterminal --whats-new`, prints [CHANGELOG.md](CHANGELOG.md)
 - bash/zsh/fish OSC 133 shell integration, injected automatically (see [docs/AI.md](docs/AI.md))
 
 ### 👻 Ghost Run

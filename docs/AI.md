@@ -65,13 +65,17 @@ The `.app` opened from Finder does not load that file. Set it for GUI launches w
 
 ### Offline
 
-If the endpoint is unreachable, times out or returns an error, nothing pops
-up: a small **`AI offline`** badge appears in the bottom-right (or
-top-right) corner, and suggestion requests back off (5 s, doubling up to
+The corner badge and the status bar share one label:
+
+- **AI thinking** while a suggestion, explanation, Ghost Run note, summary, or Ask the Output request is in flight
+- **AI ready** when the endpoint is up and nothing is in flight
+- **AI offline** when the endpoint is unreachable, times out, or returns an error
+- **AI off** when `config.ai.enabled` is false or the process was started with `--no-ai`
+
+Nothing else pops up for an unreachable endpoint. Suggestion requests back off (5 s, doubling up to
 60 s) so a missing server costs nothing. An explicit `Ctrl+Shift+A` always
-tries and, if it fails, says so in the overlay. **Ask the Output** (`Ctrl+Shift+Q`) does the same: the bar and the overlay both say **AI offline**. The badge goes away after
-the next successful request or when the config is reloaded with a new
-endpoint/model.
+tries and, if it fails, says so in the overlay. **Ask the Output** (`Ctrl+Shift+Q`) does the same: the bar and the overlay both say **AI offline**. The label returns to **AI ready** after
+the next successful request.
 
 ## Setup
 

@@ -500,7 +500,7 @@ test "resolvedColors applies inverse, faint and hidden" {
     try t.expectEqual(@as(u32, 0xFF0000), cell.resolvedColors().bg);
     cell.inverse = false;
     cell.faint = true;
-    try t.expectEqual(@as(u32, 0x7F0000), cell.resolvedColors().fg);
+    try t.expectEqual(@as(u32, 0x9F0000), cell.resolvedColors().fg);
     cell.hidden = true;
     try t.expectEqual(@as(u32, 0x0000FF), cell.resolvedColors().fg);
 }

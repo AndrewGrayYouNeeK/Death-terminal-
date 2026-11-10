@@ -13,6 +13,7 @@ const event_loop = @import("app/event_loop.zig");
 const plugin_registry = @import("plugins/registry.zig");
 const spawn = @import("app/spawn.zig");
 const share = @import("share.zig");
+const changelog = @import("changelog");
 
 const VERSION = @import("build_options").version;
 
@@ -44,6 +45,10 @@ pub fn main() !void {
     for (args[1..]) |a| {
         if (std.mem.eql(u8, a, "--print-default-config")) {
             try std.io.getStdOut().writeAll(@import("default_config").text);
+            return;
+        }
+        if (std.mem.eql(u8, a, "--whats-new")) {
+            try std.io.getStdOut().writeAll(changelog.text);
             return;
         }
     }
@@ -290,6 +295,7 @@ fn printHelp() !void {
         \\                     $XDG_CONFIG_HOME/death-terminal/config.lua (~/.config/...);
         \\                     Windows: %APPDATA%\\death-terminal\\config.lua
         \\    --print-default-config  Print a documented config.lua with every default
+        \\    --whats-new      Print CHANGELOG.md (also the command palette entry "What's new")
         \\    --lua-unsafe     Give config.lua the full Lua library (io, os.execute, require)
         \\    --print-shell-integration <bash|zsh|fish>  Print the OSC 133 shell snippet
         \\    --ssh <target>   Open a window connected over SSH (built-in client). <target> is a

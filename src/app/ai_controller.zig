@@ -91,7 +91,10 @@ pub const Controller = struct {
     ghost_text: std.ArrayList(u8),
     ghost_done: bool = false,
     ghost_failed: bool = false,
-    shown_status: ?engine_mod.Status = null,
+    /// True from submit until that request finishes. The engine status stays
+    /// `.ready` while a request is in flight, so the label needs these.
+    explain_pending: bool = false,
+    summary_pending: bool = false,
     /// Plugins' `ai_suggestion` hook (set by the event loop).
     filter: ?Filter = null,
     /// Time Travel one-line summaries (`Kind.summarize`). The callback
@@ -122,6 +125,7 @@ pub const Controller = struct {
         self.noteAnswer(null);
         const gen = try e.submit(.summarize, messages, 48, 1);
         self.summary_gen = gen;
+        self.summary_pending = true;
         return gen;
     }
 
@@ -182,11 +186,13 @@ pub const Controller = struct {
             if (self.engine) |e| e.deinit();
             self.engine = null;
             ui.clearGhost();
-            ui.setAiStatus(null);
-            self.shown_status = null;
+            self.explain_pending = false;
+            self.summary_pending = false;
             self.ghost_gen = 0;
             self.ghost_done = true;
             self.ghost_failed = true;
+            self.suggest_anchor = null;
+            _ = self.publishStatus(ui);
             return;
         }
         if (!settings.ask_enabled and ui.askIsOpen()) self.cancelAsk(ui);
@@ -196,10 +202,9 @@ pub const Controller = struct {
                 was.timeout_ms != settings.timeout_ms)
             {
                 e.setOptions(settings.engineOptions()) catch {};
-                ui.setAiStatus(null);
-                self.shown_status = null;
             }
         } else self.startEngine();
+        _ = self.publishStatus(ui);
     }
 
     pub fn wakeFd(self: *const Controller) io.Fd {
@@ -342,6 +347,7 @@ pub const Controller = struct {
         }
         const msgs = try context.explainMessages(arena, ctx, failed, output);
         self.explain_gen = try e.submit(.explain, msgs, self.settings.explain_max_tokens, 0);
+        self.explain_pending = true;
         // A suggestion request was just cancelled by this one.
         self.suggest_anchor = null;
         ui.clearGhost();
@@ -405,6 +411,7 @@ pub const Controller = struct {
                     changed = try self.showSuggestion(ui, term, u) or changed;
                 },
                 .explain => if (u.gen == self.explain_gen) {
+                    if (u.done or u.failed != null) self.explain_pending = false;
                     // Only while our answer is still the notice on screen.
                     if (ui.askIsOpen()) continue;
                     if (ui.notice == null or ui.notice.?.kind != .ai) continue;
@@ -434,6 +441,7 @@ pub const Controller = struct {
                     changed = true;
                 },
                 .summarize => if (u.gen == self.summary_gen) {
+                    if (u.done or u.failed != null) self.summary_pending = false;
                     if (self.on_summary) |cb| if (self.summary_ctx) |ctx| {
                         cb(ctx, self.summary_for, u.text, u.done, u.failed != null);
                     };
@@ -441,7 +449,7 @@ pub const Controller = struct {
                 },
             }
         }
-        changed = self.syncStatus(ui) or changed;
+        changed = self.publishStatus(ui) or changed;
         return changed;
     }
 
@@ -640,12 +648,28 @@ pub const Controller = struct {
         return true;
     }
 
-    fn syncStatus(self: *Controller, ui: *Ui) bool {
-        const e = self.engine orelse return false;
-        const st = e.getStatus();
-        if (self.shown_status != null and self.shown_status.? == st) return false;
-        self.shown_status = st;
-        ui.setAiStatus(if (st == .offline) "AI offline" else null);
+    /// Corner badge and status-bar label. One function for every caller.
+    pub fn statusLabel(self: *Controller) []const u8 {
+        if (!self.settings.enabled or self.engine == null) return "AI off";
+        if (self.thinking()) return "AI thinking";
+        if (self.engine.?.getStatus() == .offline) return "AI offline";
+        return "AI ready";
+    }
+
+    fn thinking(self: *const Controller) bool {
+        if (self.suggest_anchor != null) return true;
+        if (self.ask_active) return true;
+        if (self.explain_pending) return true;
+        if (self.summary_pending) return true;
+        if (self.ghost_gen != 0 and !self.ghost_done) return true;
+        return false;
+    }
+
+    /// Copy `statusLabel` onto the pane badge. False when the text is unchanged.
+    pub fn publishStatus(self: *Controller, ui: *Ui) bool {
+        const label = self.statusLabel();
+        if (ui.ai_status) |cur| if (std.mem.eql(u8, cur, label)) return false;
+        ui.setAiStatus(label);
         return true;
     }
 };
@@ -949,10 +973,37 @@ test "controller: an unreachable endpoint only shows the status tag" {
     try t.expectEqualStrings("AI offline", ui.ai_status.?);
     try t.expect(ui.ghost == null);
     try t.expect(ui.notice == null);
-    // Disabling AI on reload clears it.
+    // Disabling AI on reload leaves a distinct "off" label.
     c.applySettings(&ui, .{ .enabled = false });
-    try t.expect(ui.ai_status == null);
+    try t.expectEqualStrings("AI off", ui.ai_status.?);
     try t.expect(c.engine == null);
+}
+
+test "controller: the status label is thinking, ready, offline, or off" {
+    var off = Controller.init(t.allocator, .{ .enabled = false });
+    defer off.deinit();
+    try t.expectEqualStrings("AI off", off.statusLabel());
+
+    var c = Controller.init(t.allocator, .{});
+    defer c.deinit();
+    try t.expect(c.engine != null);
+    try t.expectEqualStrings("AI ready", c.statusLabel());
+    c.explain_pending = true;
+    try t.expectEqualStrings("AI thinking", c.statusLabel());
+    c.explain_pending = false;
+    c.summary_pending = true;
+    try t.expectEqualStrings("AI thinking", c.statusLabel());
+    c.summary_pending = false;
+    c.engine.?.mutex.lock();
+    c.engine.?.status = .offline;
+    c.engine.?.mutex.unlock();
+    try t.expectEqualStrings("AI offline", c.statusLabel());
+
+    var ui = Ui.init(t.allocator, .{});
+    defer ui.deinit();
+    try t.expect(c.publishStatus(&ui));
+    try t.expectEqualStrings("AI offline", ui.ai_status.?);
+    try t.expect(!c.publishStatus(&ui));
 }
 
 test "controller: the offline badge sits in a free corner" {
