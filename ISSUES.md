@@ -105,7 +105,8 @@
 - [x] Security: secrets wiped, never logged or stored; known_hosts append-only
 - [x] Integration tests against a local sshd (`zig build test-ssh`)
 - [x] `Match` (`all`, `host`, `user`, `localuser`) and recursive ProxyJump
-- [ ] SSH certificates (@cert-authority), agent/X11 forwarding, SFTP
+- [x] SSH certificates (`@cert-authority`, Ed25519 host certificates)
+- [ ] agent/X11 forwarding, SFTP
 - [ ] Partial-success (multi-factor) chains get no special UI
 - [ ] macOS/Windows builds of the SSH client (Linux only: vendored libssh2 is OpenSSL-only, and cross builds have no libcrypto)
 
@@ -222,7 +223,7 @@ The old "~40%, no UTF-8 / full-screen apps / AI / SSH / Lua" line is out of date
 - Real Windows hardware verification (list above; Wine 10 covered the GUI, not ConPTY shell I/O)
 - DECCOLM side effects still owed: left/right margins (DECSLRM) and double-size lines; blinking text (SGR 5)
 - AI: multi-line suggestions and HTTP keep-alive
-- SSH: certificates (`@cert-authority`), `Match`, agent/X11 forwarding, SFTP, recursive ProxyJump, a UI for partial-success multi-factor chains, and macOS/Windows builds (libssh2 is Linux-only)
+- SSH: agent/X11 forwarding, SFTP, a UI for partial-success multi-factor chains, and macOS/Windows builds (libssh2 is Linux-only)
 - Lua: hot reload of `require`d modules; SSH hooks for an `ssh` started inside the local shell
 - Colour emoji (sbix/CBDT needs libpng in the FreeType build), ZWJ sequences and flags as one glyph, preferences persistence
 - Tabs: SSH profile themes inside tabs/splits, detach/move panes, session restore of layouts

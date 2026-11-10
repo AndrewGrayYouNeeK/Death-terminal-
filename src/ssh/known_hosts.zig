@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const c = @import("c.zig").c;
+const cert = @import("cert.zig");
 
 pub const KeyType = struct {
     name: []const u8,
@@ -31,6 +32,11 @@ pub fn keyType(hostkey_type: c_int) ?KeyType {
 }
 
 pub const Check = enum { match, not_found, mismatch, failure };
+
+pub const Ca = struct {
+    hosts: []const u8,
+    raw: []const u8,
+};
 
 /// "host" for port 22, else "[host]:port".
 pub fn hostName(buf: []u8, host: []const u8, port: u16) [:0]const u8 {
@@ -57,6 +63,9 @@ pub const KnownHosts = struct {
     /// Base64 keys from @revoked lines.
     revoked: [16][]const u8 = undefined,
     revoked_len: usize = 0,
+    /// `@cert-authority` CA public keys (wire format) and their host patterns.
+    cas: [16]Ca = undefined,
+    ca_len: usize = 0,
 
     pub fn open(session: *c.LIBSSH2_SESSION, path: []const u8) !KnownHosts {
         const hosts = c.libssh2_knownhost_init(session) orelse return error.OutOfMemory;
@@ -73,8 +82,12 @@ pub const KnownHosts = struct {
             var line = std.mem.trim(u8, raw, " \t\r");
             if (line.len == 0 or line[0] == '#') continue;
             if (line[0] == '@') {
-                // "@revoked <hosts> <type> <key>": refuse that key for any
-                // host. @cert-authority needs certificate support: skipped.
+                if (std.mem.startsWith(u8, line, "@cert-authority ")) {
+                    if (kh.storeCa(line)) continue;
+                    kh.skipped += 1;
+                    continue;
+                }
+                // "@revoked <hosts> <type> <key>": refuse that key for any host.
                 if (std.mem.startsWith(u8, line, "@revoked ")) {
                     var w = std.mem.tokenizeAny(u8, line, " \t");
                     _ = w.next();
@@ -102,7 +115,52 @@ pub const KnownHosts = struct {
 
     pub fn deinit(self: *KnownHosts) void {
         for (self.revoked[0..self.revoked_len]) |k| std.heap.page_allocator.free(k);
+        for (self.cas[0..self.ca_len]) |ca| {
+            std.heap.page_allocator.free(ca.hosts);
+            std.heap.page_allocator.free(ca.raw);
+        }
         c.libssh2_knownhost_free(self.hosts);
+    }
+
+    fn storeCa(self: *KnownHosts, line: []const u8) bool {
+        if (self.ca_len >= self.cas.len) return false;
+        var w = std.mem.tokenizeAny(u8, line, " \t");
+        _ = w.next();
+        const hosts = w.next() orelse return false;
+        const ktype = w.next() orelse return false;
+        const b64 = w.next() orelse return false;
+        if (!std.mem.eql(u8, ktype, "ssh-ed25519")) return false;
+        var raw_buf: [512]u8 = undefined;
+        const dec = std.base64.standard.Decoder;
+        const n = dec.calcSizeForSlice(b64) catch return false;
+        if (n > raw_buf.len) return false;
+        dec.decode(raw_buf[0..n], b64) catch return false;
+        const raw = std.heap.page_allocator.dupe(u8, raw_buf[0..n]) catch return false;
+        const host_copy = std.heap.page_allocator.dupe(u8, hosts) catch {
+            std.heap.page_allocator.free(raw);
+            return false;
+        };
+        self.cas[self.ca_len] = .{ .hosts = host_copy, .raw = raw };
+        self.ca_len += 1;
+        return true;
+    }
+
+    /// `.no_ca` when `blob` is not a certificate or no CA pattern matches.
+    pub fn checkCert(self: *const KnownHosts, host: []const u8, blob: []const u8, now_sec: i64) cert.Verdict {
+        const info = cert.inspect(blob);
+        if (info.kind == .not_cert) return .no_ca;
+        if (info.kind != .ed25519) return .rejected;
+        var matches: [16][]const u8 = undefined;
+        var n: usize = 0;
+        for (self.cas[0..self.ca_len]) |ca| {
+            if (!cert.hostPatternMatches(ca.hosts, host)) continue;
+            if (n < matches.len) {
+                matches[n] = ca.raw;
+                n += 1;
+            }
+        }
+        if (n == 0) return .no_ca;
+        return if (cert.trusted(info, matches[0..n], host, now_sec)) .trusted else .rejected;
     }
 
     pub fn isRevoked(self: *const KnownHosts, key: []const u8) bool {
@@ -131,10 +189,16 @@ pub const KnownHosts = struct {
     pub fn methodPref(self: *KnownHosts, buf: []u8, host: []const u8, port: u16) []const u8 {
         var fbs = std.io.fixedBufferStream(buf);
         const w = fbs.writer();
+        var first = true;
+        for (self.cas[0..self.ca_len]) |ca| {
+            if (!cert.hostPatternMatches(ca.hosts, host)) continue;
+            w.writeAll("ssh-ed25519-cert-v01@openssh.com") catch {};
+            first = false;
+            break;
+        }
         var known: [key_types.len]bool = undefined;
         const dummy = "\x00";
         for (key_types, 0..) |k, i| known[i] = self.check(host, port, dummy, k[1]) == .mismatch;
-        var first = true;
         for ([_]bool{ true, false }) |want| for (key_types, 0..) |k, i| {
             if (known[i] != want) continue;
             if (!first) w.writeByte(',') catch {};
@@ -216,7 +280,8 @@ test "known_hosts: match, mismatch, unknown, port-specific names, append" {
     try t.expectEqual(Check.mismatch, kh.check("127.0.0.1", 2222, bad[0..ed_raw.len], ed_t));
     try t.expectEqual(Check.match, kh.check("box.lan", 22, ec_raw, ec_t));
     try t.expect(kh.isRevoked(ec_raw) and !kh.isRevoked(ed_raw));
-    try t.expectEqual(@as(usize, 2), kh.skipped);
+    try t.expectEqual(@as(usize, 1), kh.skipped);
+    try t.expectEqual(@as(usize, 1), kh.ca_len);
     var pb: [256]u8 = undefined;
     try t.expect(std.mem.startsWith(u8, kh.methodPref(&pb, "box.lan", 22), "ecdsa-sha2-nistp256,ssh-ed25519"));
     try t.expect(std.mem.startsWith(u8, kh.methodPref(&pb, "new.host", 22), "ssh-ed25519,"));

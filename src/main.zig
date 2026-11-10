@@ -525,6 +525,7 @@ test {
         _ = @import("ssh/tty.zig");
         _ = @import("ssh/keyfile.zig");
         _ = @import("ssh/known_hosts.zig");
+        _ = @import("ssh/cert.zig");
         _ = @import("ssh/bridge.zig");
         _ = @import("ssh/session.zig");
         _ = @import("ssh/control.zig");
