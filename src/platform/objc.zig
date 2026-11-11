@@ -25,6 +25,8 @@ pub const CGFloat = f64;
 pub const NSPoint = extern struct { x: CGFloat = 0, y: CGFloat = 0 };
 pub const NSSize = extern struct { width: CGFloat = 0, height: CGFloat = 0 };
 pub const NSRect = extern struct { origin: NSPoint = .{}, size: NSSize = .{} };
+/// `NSRange` / `_NSRange`. Both fields are `NSUInteger` (pointer-sized).
+pub const NSRange = extern struct { location: usize = 0, length: usize = 0 };
 
 const Lib = struct {
     handle: ?*anyopaque = null,

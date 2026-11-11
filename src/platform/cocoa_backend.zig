@@ -11,8 +11,12 @@
 //! the focused pane the same way `--join` does. A runtime NSView subclass
 //! is the content view and
 //! first responder so Command chords arrive through `performKeyEquivalent:`
-//! (AppKit does not deliver those as `keyDown:`). Other events are read
-//! straight off the AppKit queue.
+//! (AppKit does not deliver those as `keyDown:`). Printable keys go through
+//! `interpretKeyEvents:` so dead keys and IME commit via `insertText:`.
+//! Live resize runs inside AppKit's nested tracking loop; the content view
+//! and the window delegate record the drawable size there, and the grid
+//! applies the coalesced resize once that loop returns. Other events are
+//! read straight off the AppKit queue.
 //!
 //! Waiting: AppKit wants its main thread blocked in
 //! nextEventMatchingMask, but the event loop also waits on PTY / wake fds.
@@ -105,6 +109,11 @@ pub const State = struct {
     mouse_type: u64 = 0,
     mouse_clicks: i64 = -1,
     mouse_seen: bool = false,
+    /// IME / dead-key preedit (`setMarkedText:`). Empty when nothing is composing.
+    marked: [64]u8 = [_]u8{0} ** 64,
+    marked_len: u8 = 0,
+    /// `insertText:` or `doCommandBySelector:` ran for the key in flight.
+    text_from_context: bool = false,
 };
 
 /// The one window. View callbacks have no ivar slot (no SDK).
@@ -238,6 +247,10 @@ fn dtQuit(_: Id, _: objc.Sel, _: Id) callconv(.C) void {
     if (cocoa_key_state) |st| st.queue.pushClose();
 }
 
+fn dtWindowGeometry(_: Id, _: objc.Sel, _: Id) callconv(.C) void {
+    if (cocoa_key_state) |st| syncGeometry(st, true);
+}
+
 fn dtMinimize(_: Id, _: objc.Sel, _: Id) callconv(.C) void {
     if (cocoa_key_state) |st| if (st.window) |w| msg(void, w, "miniaturize:", .{@as(Id, null)});
 }
@@ -301,6 +314,11 @@ fn ensureAppDelegate(st: *State) void {
         }
         if (!objc.addMethod(cls, "applicationWillFinishLaunching:", @ptrCast(&dtWillFinishLaunching), "v@:@")) return;
         if (!objc.addMethod(cls, "handleGetURLEvent:withReplyEvent:", @ptrCast(&dtGetUrl), "v@:@@")) return;
+        // NSWindowDelegate. Live resize and display moves call these from
+        // inside AppKit's tracking loop, before our poll resumes.
+        if (!objc.addMethod(cls, "windowDidResize:", @ptrCast(&dtWindowGeometry), "v@:@")) return;
+        if (!objc.addMethod(cls, "windowDidEndLiveResize:", @ptrCast(&dtWindowGeometry), "v@:@")) return;
+        if (!objc.addMethod(cls, "windowDidChangeBackingProperties:", @ptrCast(&dtWindowGeometry), "v@:@")) return;
         objc.registerClassPair(cls);
     }
     const del = msg(Id, objc.alloc("DTAppDelegate"), "init", .{});
@@ -391,6 +409,7 @@ pub fn open(st: *State, allocator: std.mem.Allocator, title: []const u8, width: 
     msg(void, st.app, "activateIgnoringOtherApps:", .{objc.YES});
     installMainMenu(st);
     disarmMenu(st);
+    if (st.app_delegate != null) msg(void, st.window, "setDelegate:", .{st.app_delegate});
     _ = msg(objc.BOOL, st.window, "makeFirstResponder:", .{st.view});
 
     syncGeometry(st, false);
@@ -622,23 +641,44 @@ fn pump(st: *State) void {
     syncGeometry(st, true);
 }
 
+/// Pixel size of a view. `scale` is the window backing scale; pass 1 when
+/// `width_pt`/`height_pt` are already backing pixels.
+fn drawablePixels(width_pt: f64, height_pt: f64, scale: f64) struct { w: u32, h: u32 } {
+    const s = if (scale < 1) 1 else scale;
+    return .{
+        .w = @intFromFloat(@max(1.0, @round(width_pt * s))),
+        .h = @intFromFloat(@max(1.0, @round(height_pt * s))),
+    };
+}
+
+fn geometryNeedsEvent(old_w: u32, old_h: u32, old_s: f32, new_w: u32, new_h: u32, new_s: f32) bool {
+    return old_w != new_w or old_h != new_h or old_s != new_s;
+}
+
 /// Pixel size / scale / visibility / focus, pushing events on change.
+/// Called from the poll loop and from AppKit's live-resize / backing-change
+/// callbacks, which run inside the nested tracking loop. The queued resize
+/// is what the grid applies once that loop returns.
 fn syncGeometry(st: *State, notify: bool) void {
-    if (st.window == null) return;
+    if (st.window == null or st.view == null) return;
     const scale = msg(f64, st.window, "backingScaleFactor", .{});
-    const frame = msg(objc.NSRect, st.view, "frame", .{});
+    const bounds = msg(objc.NSRect, st.view, "bounds", .{});
+    const backing = msg(objc.NSRect, st.view, "convertRectToBacking:", .{bounds});
+    const from_backing = backing.size.width >= 1 and backing.size.height >= 1;
+    const px = if (from_backing)
+        drawablePixels(backing.size.width, backing.size.height, 1)
+    else
+        drawablePixels(bounds.size.width, bounds.size.height, scale);
     const s: f32 = @floatCast(@max(1.0, scale));
-    const w: u32 = @intFromFloat(@max(1.0, @round(frame.size.width * s)));
-    const h: u32 = @intFromFloat(@max(1.0, @round(frame.size.height * s)));
+    const changed = geometryNeedsEvent(st.width, st.height, st.scale, px.w, px.h, s);
     if (s != st.scale) {
         st.scale = s;
-        msg(void, st.layer, "setContentsScale:", .{@as(f64, s)});
+        if (st.layer != null) msg(void, st.layer, "setContentsScale:", .{@as(f64, s)});
+        if (st.sw_layer != null) msg(void, st.sw_layer, "setContentsScale:", .{@as(f64, s)});
     }
-    if (w != st.width or h != st.height) {
-        st.width = w;
-        st.height = h;
-        if (notify) st.queue.pushResize(w, h);
-    }
+    st.width = px.w;
+    st.height = px.h;
+    if (notify and changed) st.queue.pushResize(px.w, px.h);
     const visible = objc.isTrue(msg(objc.BOOL, st.window, "isVisible", .{}));
     const miniaturized = objc.isTrue(msg(objc.BOOL, st.window, "isMiniaturized", .{}));
     if (st.visible and !visible and !miniaturized) {
@@ -712,7 +752,7 @@ fn matchKey(st: *State, ev: Id, via: KeyVia) bool {
     // virtual key code in that case; see `keysymOf`.
     const chars = objc.utf8(msg(Id, ev, "charactersIgnoringModifiers", .{}));
 
-        if (keysymOf(code, chars)) |sym| {
+    if (keysymOf(code, chars)) |sym| {
         if (macStandardEdit(sym, mac)) |action| {
             logCommand(ev, via, mac, sym, @tagName(action));
             st.queue.pushAction(.{ .action = action, .sym = sym, .mods = modsOf(flags) });
@@ -764,6 +804,10 @@ fn matchKey(st: *State, ev: Id, via: KeyVia) bool {
         st.queue.pushKey(key, mods);
         return true;
     }
+    // Dead keys and IME. Command and Control chords stay on the shortcut /
+    // C0 path above and below; Option goes through the input context so
+    // Option+e, e can compose, and falls back to Meta if it does not.
+    if (textUsesInputContext(mac, code) and interpretKey(st, ev)) return true;
     if (mods.alt) {
         // Option as Meta: ESC + the unmodified character.
         const raw = objc.utf8(msg(Id, ev, "charactersIgnoringModifiers", .{}));
@@ -776,6 +820,128 @@ fn matchKey(st: *State, ev: Id, via: KeyVia) bool {
     if (std.unicode.utf8Decode(text) catch null) |cp| if (cp >= 0xF700 and cp <= 0xF8FF) return true;
     st.queue.pushText(text, false);
     return true;
+}
+
+/// Printable keys (including Option) are composed by AppKit. Command chords
+/// and Control chords are not: those are shortcuts or raw C0 bytes. Named
+/// keys (Return, arrows, Escape) are delivered as `input.Key`.
+fn textUsesInputContext(flags: MacFlags, code: u16) bool {
+    if (flags.command or flags.control) return false;
+    return keyOf(code) == null;
+}
+
+fn interpretKey(st: *State, ev: Id) bool {
+    if (builtin.os.tag != .macos or st.view == null) return false;
+    const pool = objc.rt.poolPush();
+    defer objc.rt.poolPop(pool);
+    st.text_from_context = false;
+    const marked_before = st.marked_len;
+    const arr = msg(Id, objc.class("NSArray"), "arrayWithObject:", .{ev});
+    if (arr == null) return false;
+    msg(void, st.view, "interpretKeyEvents:", .{arr});
+    return st.text_from_context or st.marked_len != marked_before;
+}
+
+fn commitUtf8(st: *State, bytes: []const u8) void {
+    if (bytes.len == 0) return;
+    var i: usize = 0;
+    while (i < bytes.len) {
+        const n = @min(@as(usize, 32), bytes.len - i);
+        st.queue.pushText(bytes[i..][0..n], false);
+        i += n;
+    }
+    st.marked_len = 0;
+    st.text_from_context = true;
+}
+
+fn nsToUtf8(obj: Id) []const u8 {
+    if (obj == null) return "";
+    if (isKind(obj, "NSString")) return objc.utf8(obj);
+    if (isKind(obj, "NSAttributedString")) return objc.utf8(msg(Id, obj, "string", .{}));
+    return "";
+}
+
+fn isKind(obj: Id, name: [:0]const u8) bool {
+    const cls = objc.class(name);
+    if (cls == null) return false;
+    return objc.isTrue(msg(objc.BOOL, obj, "isKindOfClass:", .{cls}));
+}
+
+fn storeMarked(st: *State, obj: Id) void {
+    const text = nsToUtf8(obj);
+    const n = @min(text.len, st.marked.len);
+    if (n > 0) @memcpy(st.marked[0..n], text[0..n]);
+    st.marked_len = @intCast(n);
+    st.text_from_context = true;
+    st.queue.pushRedraw();
+}
+
+fn viewInsertText(_: Id, _: objc.Sel, obj: Id) callconv(.C) void {
+    const st = cocoa_key_state orelse return;
+    commitUtf8(st, nsToUtf8(obj));
+}
+
+fn viewInsertTextRange(_: Id, _: objc.Sel, obj: Id, _: objc.NSRange) callconv(.C) void {
+    viewInsertText(null, null, obj);
+}
+
+fn viewSetMarked(_: Id, _: objc.Sel, obj: Id, _: objc.NSRange, _: objc.NSRange) callconv(.C) void {
+    const st = cocoa_key_state orelse return;
+    storeMarked(st, obj);
+}
+
+fn viewUnmark(_: Id, _: objc.Sel) callconv(.C) void {
+    const st = cocoa_key_state orelse return;
+    st.marked_len = 0;
+    st.text_from_context = true;
+}
+
+fn viewHasMarked(_: Id, _: objc.Sel) callconv(.C) objc.BOOL {
+    const st = cocoa_key_state orelse return objc.NO;
+    return if (st.marked_len > 0) objc.YES else objc.NO;
+}
+
+const ns_not_found: usize = @intCast(std.math.maxInt(isize));
+
+fn viewSelectedRange(_: Id, _: objc.Sel) callconv(.C) objc.NSRange {
+    return .{ .location = ns_not_found, .length = 0 };
+}
+
+fn viewMarkedRange(_: Id, _: objc.Sel) callconv(.C) objc.NSRange {
+    const st = cocoa_key_state orelse return .{ .location = ns_not_found, .length = 0 };
+    if (st.marked_len == 0) return .{ .location = ns_not_found, .length = 0 };
+    return .{ .location = 0, .length = st.marked_len };
+}
+
+fn viewDoCommand(_: Id, _: objc.Sel, cmd: objc.Sel) callconv(.C) void {
+    const st = cocoa_key_state orelse return;
+    if (cmd == objc.sel("insertNewline:")) {
+        st.queue.pushText("\r", false);
+        st.text_from_context = true;
+        return;
+    }
+    if (cmd == objc.sel("insertTab:")) {
+        st.queue.pushText("\t", false);
+        st.text_from_context = true;
+        return;
+    }
+    if (cmd == objc.sel("deleteBackward:")) {
+        st.queue.pushKey(.backspace, .{});
+        st.text_from_context = true;
+        return;
+    }
+    if (cmd == objc.sel("cancelOperation:")) {
+        st.marked_len = 0;
+        st.text_from_context = true;
+    }
+}
+
+fn viewLiveResize(_: Id, _: objc.Sel) callconv(.C) void {
+    if (cocoa_key_state) |st| syncGeometry(st, true);
+}
+
+fn viewResizeOld(_: Id, _: objc.Sel, _: objc.NSSize) callconv(.C) void {
+    if (cocoa_key_state) |st| syncGeometry(st, true);
 }
 
 fn logCommand(ev: Id, via: KeyVia, mac: MacFlags, sym: u32, what: []const u8) void {
@@ -908,6 +1074,17 @@ const content_selectors = [_]struct { name: [:0]const u8, types: [:0]const u8 }{
     .{ .name = "hitTest:", .types = "@@:{CGPoint=dd}" },
     .{ .name = "keyDown:", .types = "v@:@" },
     .{ .name = "performKeyEquivalent:", .types = "c@:@" },
+    .{ .name = "insertText:", .types = "v@:@" },
+    .{ .name = "insertText:replacementRange:", .types = "v@:@{_NSRange=QQ}" },
+    .{ .name = "setMarkedText:selectedRange:replacementRange:", .types = "v@:@{_NSRange=QQ}{_NSRange=QQ}" },
+    .{ .name = "unmarkText", .types = "v@:" },
+    .{ .name = "hasMarkedText", .types = "c@:" },
+    .{ .name = "selectedRange", .types = "{_NSRange=QQ}@:" },
+    .{ .name = "markedRange", .types = "{_NSRange=QQ}@:" },
+    .{ .name = "doCommandBySelector:", .types = "v@::" },
+    .{ .name = "viewDidEndLiveResize", .types = "v@:" },
+    .{ .name = "viewDidChangeBackingProperties", .types = "v@:" },
+    .{ .name = "resizeWithOldSuperviewSize:", .types = "v@:{NSSize=dd}" },
     .{ .name = "copy:", .types = "v@:@" },
     .{ .name = "paste:", .types = "v@:@" },
     .{ .name = "selectAll:", .types = "v@:@" },
@@ -928,6 +1105,16 @@ fn contentImp(name: [:0]const u8) *const anyopaque {
     if (std.mem.eql(u8, name, "hitTest:")) return @ptrCast(&viewHitTest);
     if (std.mem.eql(u8, name, "keyDown:")) return @ptrCast(&viewKeyDown);
     if (std.mem.eql(u8, name, "performKeyEquivalent:")) return @ptrCast(&viewKeyEquivalent);
+    if (std.mem.eql(u8, name, "insertText:")) return @ptrCast(&viewInsertText);
+    if (std.mem.eql(u8, name, "insertText:replacementRange:")) return @ptrCast(&viewInsertTextRange);
+    if (std.mem.eql(u8, name, "setMarkedText:selectedRange:replacementRange:")) return @ptrCast(&viewSetMarked);
+    if (std.mem.eql(u8, name, "unmarkText")) return @ptrCast(&viewUnmark);
+    if (std.mem.eql(u8, name, "hasMarkedText")) return @ptrCast(&viewHasMarked);
+    if (std.mem.eql(u8, name, "selectedRange")) return @ptrCast(&viewSelectedRange);
+    if (std.mem.eql(u8, name, "markedRange")) return @ptrCast(&viewMarkedRange);
+    if (std.mem.eql(u8, name, "doCommandBySelector:")) return @ptrCast(&viewDoCommand);
+    if (std.mem.eql(u8, name, "viewDidEndLiveResize") or std.mem.eql(u8, name, "viewDidChangeBackingProperties")) return @ptrCast(&viewLiveResize);
+    if (std.mem.eql(u8, name, "resizeWithOldSuperviewSize:")) return @ptrCast(&viewResizeOld);
     if (std.mem.eql(u8, name, "copy:")) return @ptrCast(&viewCopy);
     if (std.mem.eql(u8, name, "paste:")) return @ptrCast(&viewPaste);
     if (std.mem.eql(u8, name, "selectAll:")) return @ptrCast(&viewSelectAll);
@@ -1311,6 +1498,13 @@ test "cocoa: content view takes mouse and Command-key events" {
         "mouseDragged:",
         "mouseUp:",
         "performKeyEquivalent:",
+        "insertText:",
+        "insertText:replacementRange:",
+        "setMarkedText:selectedRange:replacementRange:",
+        "doCommandBySelector:",
+        "viewDidEndLiveResize",
+        "viewDidChangeBackingProperties",
+        "resizeWithOldSuperviewSize:",
         "copy:",
         "paste:",
         "selectAll:",
@@ -1329,6 +1523,27 @@ test "cocoa: content view takes mouse and Command-key events" {
     try std.testing.expect(!mouseIsDrag(NSEventType.left_up));
     try std.testing.expectEqual(@as(u64, 0), mouseTrackMask(NSEventType.left_dragged));
     try std.testing.expectEqualStrings(pasteboard_type_utf8, "public.utf8-plain-text");
+}
+
+test "cocoa: backing scale changes the drawable size" {
+    const hi = drawablePixels(800, 600, 2);
+    try std.testing.expectEqual(@as(u32, 1600), hi.w);
+    try std.testing.expectEqual(@as(u32, 1200), hi.h);
+    const lo = drawablePixels(800, 600, 1);
+    try std.testing.expectEqual(@as(u32, 800), lo.w);
+    try std.testing.expectEqual(@as(u32, 600), lo.h);
+    try std.testing.expect(geometryNeedsEvent(1600, 1200, 2, 800, 600, 1));
+    try std.testing.expect(geometryNeedsEvent(800, 600, 2, 800, 600, 1));
+    try std.testing.expect(!geometryNeedsEvent(800, 600, 2, 800, 600, 2));
+}
+
+test "cocoa: printable keys use the input context" {
+    try std.testing.expect(textUsesInputContext(.{}, 0));
+    try std.testing.expect(textUsesInputContext(.{ .option = true }, 14));
+    try std.testing.expect(!textUsesInputContext(.{ .command = true }, 0));
+    try std.testing.expect(!textUsesInputContext(.{ .control = true }, 8));
+    try std.testing.expect(!textUsesInputContext(.{}, 36));
+    try std.testing.expect(!textUsesInputContext(.{ .option = true }, 123));
 }
 
 test "cocoa: view pixels flip Y and apply the backing scale" {

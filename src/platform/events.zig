@@ -260,6 +260,14 @@ pub const EventQueue = struct {
     }
 
     pub fn pushResize(self: *EventQueue, width: u32, height: u32) void {
+        // Live resize posts a size on every mouse move. Keep the latest only.
+        if (self.len > 0) {
+            const last = &self.items[(self.head + self.len - 1) % cap];
+            if (last.* == .resize) {
+                last.resize = .{ .width = width, .height = height };
+                return;
+            }
+        }
         self.push(.{ .resize = .{ .width = width, .height = height } });
     }
 
@@ -686,10 +694,15 @@ test "event queue preserves order and coalesces motion" {
     q.pushText("ab", true);
     q.pushMouse(.{ .action = .motion, .button = .none, .x = 1, .y = 1 });
     q.pushMouse(.{ .action = .motion, .button = .none, .x = 5, .y = 6 });
+    q.pushResize(100, 40);
+    q.pushResize(180, 50);
     q.pushFocus(false);
     try std.testing.expectEqualStrings("\x1bab", q.pop().input);
     const m = q.pop().mouse;
     try std.testing.expectEqual(@as(i32, 5), m.x);
+    const resized = q.pop().resize;
+    try std.testing.expectEqual(@as(u32, 180), resized.width);
+    try std.testing.expectEqual(@as(u32, 50), resized.height);
     try std.testing.expect(!q.pop().focus);
     try std.testing.expect(q.pop() == .none);
 }
