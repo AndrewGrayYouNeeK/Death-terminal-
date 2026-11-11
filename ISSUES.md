@@ -107,7 +107,7 @@
 - [x] `Match` (`all`, `host`, `user`, `localuser`) and recursive ProxyJump
 - [x] SSH certificates (`@cert-authority`, Ed25519 host certificates)
 - [x] Agent forwarding (`ForwardAgent` / `forward_agent`) and SFTP directory listing (`sftp = "path"`)
-- [x] Partial-success chains print which method failed and which method is next
+- [x] Partial-success chains ask before the next method's prompt (libssh2 does not report the partial-success bit)
 - [ ] X11 forwarding
 - [ ] macOS/Windows builds of the SSH client (Linux only: vendored libssh2 is OpenSSL-only, and cross builds have no libcrypto)
 
