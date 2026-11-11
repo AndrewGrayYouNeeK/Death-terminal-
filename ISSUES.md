@@ -181,37 +181,71 @@
 - [x] macOS window backend (Cocoa + MoltenVK; untested at runtime)
 - [ ] Runtime testing on real Windows and macOS hardware
 
+### Windows real-hardware testing (unverified)
+
+No Windows machine and no Windows VM were available on the Linux host that
+produced this note. Wine 10 is not a substitute (see docs/PLATFORMS.md).
+These items are still unverified on real Windows hardware:
+
+- ConPTY shell I/O: `cmd.exe` or `pwsh.exe` stays alive and VT output flows
+- `ResizePseudoConsole` when the window grid changes
+- Win32 clipboard read and write
+- URL opening via `ShellExecuteW`
+- Config watcher via `FindFirstChangeNotification`
+
+Build when a machine is available:
+
+```sh
+zig build -Dtarget=x86_64-windows
+# then run zig-out/bin/deathterminal.exe --gui
+```
+
+### CodeQL
+
+`cpp/redundant-null-check-simple` in `vendor/libssh2-1.11.1/src/userauth.c`
+(around the `if (!key_method)` check near line 1497) is upstream libssh2.
+That tree is vendored and is not patched in-tree. `.github/codeql/codeql-config.yml`
+excludes `vendor/` from analysis. `.github/workflows/ci.yml` sets
+`permissions: contents: read` at the workflow root. No job comments on pull
+requests, so `pull-requests: write` is not granted.
+
 ## 📊 Current Status Summary
 
-**Overall Progress**: ~40% (basic terminal core + Wayland/X11/Win32 GUI + HiDPI + GPU SPIR-V text pipeline; no UTF-8, full-screen app support, AI, SSH, or Lua yet)
+**Overall Progress**: ~85–90%. Phases 1–5 are in: terminal core (PTY, UTF-8, wide characters, full-screen VT, scrollback), Vulkan text on Wayland/X11/Win32 plus a Cocoa backend, AI suggestions, built-in SSH on Linux, Lua config and plugins, tabs and splits, packaging.
 
-**Lines of Code**:
-- terminal/terminal.zig: 650+ lines (PTY + ANSI parser + scrollback)
-- terminal/scrollback.zig: scrollback history buffer
-- terminal/ansi_parser.zig: 400+ lines (complete VT100/ANSI escape sequence parser)
-- app/event_loop.zig: headless + GUI PTY event loop
-- config/config.zig: runtime configuration
-- renderer/vulkan_renderer.zig: loader-backed instance/device init
-- renderer/loader.zig: DynLib Vulkan loader (`vkGetInstanceProcAddr`)
-- renderer/text_pipeline.zig: SPIR-V glyph pipeline
-- renderer/text_renderer.zig: cell instance packing
-- renderer/pipeline.zig: shader module + embedded SPIR-V
-- renderer/gpu_present.zig: swapchain creation, acquire/present (the real swapchain; the old `swapchain.zig` stub was removed)
-- renderer/software.zig: CPU rasterizer fallback
-- main.zig: CLI + subsystem wiring
-- ssh/tunnel.zig: 70 lines (stub)
-- ai/: openai.zig (HTTP/SSE client), engine.zig (worker), context.zig (prompts/parsing), redact.zig (secret scrubbing), mock_server.zig (tests)
-- scripting/lua_engine.zig: 48 lines (stub)
+The old "~40%, no UTF-8 / full-screen apps / AI / SSH / Lua" line is out of date. Those subsystems ship. What is left is the open boxes above, not the core.
 
-**Next Immediate Steps**:
-1. ✅ Implement PTY + terminal emulation (Phase 1) - COMPLETED
-2. ✅ Main event loop with headless rendering - COMPLETED
-3. ✅ Vulkan function loading + instance/device init - COMPLETED
-4. ✅ Window management (X11/Wayland/Win32 present + keys) - COMPLETED
-5. ✅ Connect GPU rendering to terminal output (swapchain blit) - COMPLETED
-6. ✅ SPIR-V text pipeline (glyph atlas + instanced draw) - COMPLETED
-7. ✅ HiDPI cell scaling (`--scale`, DPI, compositor buffer scale)
-8. ✅ UTF-8 + wide characters
-9. Full-screen app escape sequences (vim/htop/less/tmux)
-10. Real fonts, selection/copy-paste, scrollback navigation
-11. Lua config, AI suggestions, SSH, plugins, tabs/splits, packaging
+**Still open**:
+
+- Real macOS runtime verification (Cocoa + MoltenVK is compile-only today; see docs/PLATFORMS.md)
+- Real Windows hardware verification (list above; Wine 10 covered the GUI, not ConPTY shell I/O)
+- DECCOLM side effects still owed: left/right margins (DECSLRM) and double-size lines; blinking text (SGR 5)
+- AI: multi-line suggestions and HTTP keep-alive
+- SSH: certificates (`@cert-authority`), `Match`, agent/X11 forwarding, SFTP, recursive ProxyJump, a UI for partial-success multi-factor chains, and macOS/Windows builds (libssh2 is Linux-only)
+- Lua: hot reload of `require`d modules; SSH hooks for an `ssh` started inside the local shell
+- Colour emoji (sbix/CBDT needs libpng in the FreeType build), ZWJ sequences and flags as one glyph, preferences persistence
+- Tabs: SSH profile themes inside tabs/splits, detach/move panes, session restore of layouts
+- Optional image protocol, notifications, session persistence
+- Extra docs (generated API docs, wiki, troubleshooting, video demos, community chat)
+
+**Where the code lives now**:
+
+- `src/terminal/`: grid, VT parser, scrollback, PTY (POSIX + ConPTY)
+- `src/renderer/`: Vulkan loader, swapchain, glyph atlas, software fallback
+- `src/app/`: GUI event loop, tabs, splits, palette
+- `src/ai/`: OpenAI-compatible HTTP/SSE client, worker, redaction
+- `src/ssh/`: libssh2 client (Linux), known_hosts, forwards, config parser
+- `src/scripting/` and `src/plugins/`: Lua 5.4 and the plugin host
+- `src/platform/`: X11, Wayland, Win32, Cocoa
+
+**Done already** (do not re-open these):
+
+1. PTY and terminal emulation
+2. Headless and GUI event loops
+3. Vulkan instance, device, and swapchain
+4. Windows, Wayland, X11, and Cocoa window backends
+5. GPU text pipeline and software fallback
+6. HiDPI scaling
+7. UTF-8, wide characters, and full-screen app sequences
+8. Fonts, selection, scrollback search
+9. Lua config, AI ghost text, Linux SSH, plugins, tabs, packaging skeletons
