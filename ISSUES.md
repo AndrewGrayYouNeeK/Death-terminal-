@@ -227,7 +227,7 @@ The old "~40%, no UTF-8 / full-screen apps / AI / SSH / Lua" line is out of date
 - SSH: X11 forwarding and macOS/Windows builds (libssh2 is Linux-only)
 - Colour emoji: ZWJ sequences and flags share one cell; sbix/CBDT decode is linked via libpng on macOS/Windows
 - Tabs: a second OS window for a detached pane (detach opens a new tab in the one window)
-- Optional image protocol and session persistence (desktop notifications for BEL and OSC 9 / 777 while unfocused are in)
+- Optional image protocol and session persistence beyond the layout file (layout restore keeps the tab name, which tab was active, and each pane's title; scrollback is not saved; desktop notifications for BEL and OSC 9 / 777 while unfocused are in)
 - Extra docs (generated API docs, wiki, troubleshooting, video demos, community chat)
 
 **Where the code lives now**:

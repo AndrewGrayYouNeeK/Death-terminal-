@@ -42,10 +42,16 @@ pub fn parse(cfg: *config.Config, text: []const u8) !void {
     }
     var lines = lines_buf[0..n];
     while (lines.len > 0) {
-        if (!std.mem.eql(u8, lines[0], "tab")) return error.BadLayout;
+        if (!std.mem.startsWith(u8, lines[0], "tab")) return error.BadLayout;
+        const header = lines[0];
         lines = lines[1..];
         const root = try parseNode(cfg, &lines);
-        try cfg.startup_layout.append(.{ .root = root });
+        const name = restField(header, "name=");
+        try cfg.startup_layout.append(.{
+            .title = try cfg.dupe(name),
+            .root = root,
+            .focused = std.mem.indexOf(u8, header, "focus=1") != null,
+        });
     }
 }
 
@@ -54,9 +60,15 @@ fn parseNode(cfg: *config.Config, lines: *[]const []const u8) !config.LayoutNode
     const line = lines.*[0];
     lines.* = lines.*[1..];
     if (std.mem.startsWith(u8, line, "leaf")) {
+        const cwd_and_title = restField(line, "cwd=");
+        const title_at = std.mem.lastIndexOf(u8, cwd_and_title, " title=");
+        const cwd = if (title_at) |at| std.mem.trim(u8, cwd_and_title[0..at], " ") else cwd_and_title;
+        const title = if (title_at) |at| cwd_and_title[at + " title=".len ..] else "";
         return .{
             .ssh = try cfg.dupe(field(line, "ssh=")),
-            .cwd = try cfg.dupe(restField(line, "cwd=")),
+            .cwd = try cfg.dupe(cwd),
+            .title = try cfg.dupe(title),
+            .focus = std.mem.indexOf(u8, line, "focus=1") != null,
         };
     }
     if (std.mem.startsWith(u8, line, "split ")) {
@@ -113,6 +125,19 @@ test "layout file round trip" {
     try std.testing.expectEqualStrings("/tmp", root.children[0].cwd);
     try std.testing.expectEqualStrings("", root.children[1].ssh);
     try std.testing.expectEqualStrings("/home/me", cfg.startup_layout.items[1].root.cwd);
+
+    cfg.startup_layout.clearRetainingCapacity();
+    const extra =
+        \\tab focus=1 name=Build
+        \\leaf focus=1 ssh=box cwd=/tmp/my dir title=vim
+        \\
+    ;
+    try parse(&cfg, extra);
+    try std.testing.expect(cfg.startup_layout.items[0].focused);
+    try std.testing.expectEqualStrings("Build", cfg.startup_layout.items[0].title);
+    try std.testing.expect(cfg.startup_layout.items[0].root.focus);
+    try std.testing.expectEqualStrings("/tmp/my dir", cfg.startup_layout.items[0].root.cwd);
+    try std.testing.expectEqualStrings("vim", cfg.startup_layout.items[0].root.title);
     var buf: [64]u8 = undefined;
     try std.testing.expectEqualStrings("leaf ssh=box cwd=/tmp\n", formatLeaf(&buf, "box", "/tmp"));
 }
