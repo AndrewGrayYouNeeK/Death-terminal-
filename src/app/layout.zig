@@ -98,7 +98,7 @@ pub const Layout = struct {
         return @intCast(self.nodes.items.len - 1);
     }
 
-    fn node(self: *const Layout, id: NodeId) *Node {
+    pub fn node(self: *const Layout, id: NodeId) *Node {
         return &self.nodes.items[id];
     }
 

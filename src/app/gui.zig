@@ -21,6 +21,7 @@ const palette_mod = ui_mod.palette_mod;
 const plugin_bridge = @import("plugin_bridge.zig");
 const host_mod = plugin_bridge.host_mod;
 const spawn = @import("spawn.zig");
+const layout_state = @import("layout_state.zig");
 const session = @import("session.zig");
 const layout = session.layout;
 const config = @import("../config/config.zig");
@@ -163,7 +164,15 @@ pub fn run(loop: *el.EventLoop, vk: *renderer.VulkanRenderer, first_term: *termi
     defer time_travel.unregister();
     gui.setupPane(first);
     gui.fitWindow(window.width, window.height);
-    if (loop.startup_layout) gui.buildStartupLayout();
+    if (loop.startup_layout) {
+        gui.hold_layout_save = true;
+        gui.buildStartupLayout();
+        gui.hold_layout_save = false;
+    } else if (loop.ssh_target == null and gui.loadSavedLayout()) {
+        gui.hold_layout_save = true;
+        gui.buildStartupLayout();
+        gui.hold_layout_save = false;
+    }
     if (loop.startup_diags) |d| if (d.items.items.len > 0) {
         try el.showDiagnostics(&gui.focusedPane().ui, d, loop.watch_path orelse "config", if (d.hasErrors()) "using the defaults" else null);
     };
@@ -401,6 +410,8 @@ const Gui = struct {
     reload_at: ?i64 = null,
     /// The last pane closed (or the window close was confirmed).
     closing: bool = false,
+    /// Skip writing layout.txt while a saved layout is being built.
+    hold_layout_save: bool = false,
     /// SGR blink / blinking cursor phase. Idle when nothing wants it.
     blink_on: bool = true,
     blink_anchor_ms: i64 = 0,
@@ -566,6 +577,59 @@ const Gui = struct {
 
     fn relayout(self: *Gui) void {
         self.applyLayout(self.ws.relayout());
+        self.saveLayout();
+    }
+
+    fn loadSavedLayout(self: *Gui) bool {
+        const path = layout_state.sessionPath(self.a) catch return false;
+        defer self.a.free(path);
+        const text = std.fs.cwd().readFileAlloc(self.a, path, 64 * 1024) catch return false;
+        defer self.a.free(text);
+        self.cfg.startup_layout.clearRetainingCapacity();
+        layout_state.parse(self.cfg, text) catch return false;
+        return self.cfg.startup_layout.items.len > 0;
+    }
+
+    fn saveLayout(self: *Gui) void {
+        if (self.hold_layout_save) return;
+        const path = layout_state.sessionPath(self.a) catch return;
+        defer self.a.free(path);
+        var buf = std.ArrayList(u8).init(self.a);
+        defer buf.deinit();
+        for (self.ws.tabs.tabs.items) |tab| {
+            buf.appendSlice("tab\n") catch return;
+            self.writeLayoutNode(tab.layout, tab.layout.root, &buf) catch return;
+        }
+        if (std.fs.path.dirname(path)) |d| std.fs.cwd().makePath(d) catch return;
+        var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const tmp = std.fmt.bufPrint(&tmp_buf, "{s}.tmp", .{path}) catch return;
+        var f = std.fs.cwd().createFile(tmp, .{ .truncate = true, .mode = if (builtin.os.tag == .windows) 0 else 0o600 }) catch return;
+        f.writeAll(buf.items) catch {
+            f.close();
+            return;
+        };
+        f.close();
+        std.fs.cwd().rename(tmp, path) catch {};
+    }
+
+    fn writeLayoutNode(self: *Gui, tree: layout.Layout, id: layout.NodeId, buf: *std.ArrayList(u8)) !void {
+        const n = tree.node(id);
+        switch (n.kind) {
+            .leaf => |pid| {
+                const p = self.ws.pane(pid);
+                const ssh = if (p) |pane| pane.ssh_display else "";
+                var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+                const cwd = if (p) |pane| spawn.inheritedCwd(pane.term, &cwd_buf) else "";
+                try buf.writer().print("leaf ssh={s} cwd={s}\n", .{ ssh, cwd });
+            },
+            .split => |s| {
+                const dir = if (s.dir == .down) "down" else "right";
+                try buf.writer().print("split {s} {d:.2}\n", .{ dir, s.ratio });
+                try self.writeLayoutNode(tree, s.a, buf);
+                try self.writeLayoutNode(tree, s.b, buf);
+            },
+            .free => {},
+        }
     }
 
     // ------------------------------------------------------------- panes
