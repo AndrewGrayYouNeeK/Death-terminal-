@@ -169,7 +169,7 @@
 - [x] Tabs: session restore of layouts on restart (`$XDG_STATE_HOME/death-terminal/layout.txt`)
 - [x] Hyperlink detection and handling (Ctrl+click URLs and OSC 8)
 - [ ] Image protocol support (optional)
-- [ ] Notifications
+- [x] Notifications (BEL and OSC 9 / 777 via notify-send while the window is unfocused)
 - [ ] Session persistence
 
 ### Documentation & Release
@@ -227,7 +227,7 @@ The old "~40%, no UTF-8 / full-screen apps / AI / SSH / Lua" line is out of date
 - SSH: X11 forwarding and macOS/Windows builds (libssh2 is Linux-only)
 - Colour emoji: ZWJ sequences and flags share one cell; sbix/CBDT decode is linked via libpng on macOS/Windows
 - Tabs: a second OS window for a detached pane (detach opens a new tab in the one window)
-- Optional image protocol, notifications, session persistence
+- Optional image protocol and session persistence (desktop notifications for BEL and OSC 9 / 777 while unfocused are in)
 - Extra docs (generated API docs, wiki, troubleshooting, video demos, community chat)
 
 **Where the code lives now**:
