@@ -179,10 +179,27 @@ fn defaultIdentities(a: std.mem.Allocator, ids: *std.ArrayList([]const u8), home
 
 fn resolveJumps(a: std.mem.Allocator, list: []const u8, cfg: *ssh_config.SshConfig, env: Env, extra_id: ?[]const u8) ![]const Hop {
     var hops = std.ArrayList(Hop).init(a);
+    var seen = std.StringHashMap(void).init(a);
+    defer seen.deinit();
+    try appendJumps(a, &hops, &seen, list, cfg, env, extra_id);
+    return hops.items;
+}
+
+/// Expand `list`, and each hop's own ProxyJump, depth-first so the first
+/// jump is dialed first. A repeated host in one expansion is a cycle.
+fn appendJumps(a: std.mem.Allocator, hops: *std.ArrayList(Hop), seen: *std.StringHashMap(void), list: []const u8, cfg: *ssh_config.SshConfig, env: Env, extra_id: ?[]const u8) !void {
     var it = std.mem.tokenizeAny(u8, list, ", \t");
     while (it.next()) |item| {
+        if (hops.items.len >= 8) return error.TooManyJumps;
         const s = try parseSpec(item);
+        if (seen.contains(s.host)) return error.JumpCycle;
+        try seen.put(s.host, {});
         const sc = try cfg.resolve(s.host, .{ .home = env.home, .local_user = env.local_user, .remote_user = s.user orelse env.local_user, .port = s.port orelse 22 });
+        if (sc.proxy_jump) |pj| {
+            if (pj.len > 0 and !std.ascii.eqlIgnoreCase(pj, "none")) {
+                try appendJumps(a, hops, seen, pj, cfg, env, extra_id);
+            }
+        }
         var ids = std.ArrayList([]const u8).init(a);
         for (sc.identity_files) |f| try ids.append(try a.dupe(u8, f));
         if (extra_id) |x| try ids.append(x);
@@ -193,9 +210,7 @@ fn resolveJumps(a: std.mem.Allocator, list: []const u8, cfg: *ssh_config.SshConf
             .user = try a.dupe(u8, s.user orelse sc.user orelse env.local_user),
             .identity_files = ids.items,
         });
-        if (hops.items.len >= 8) return error.TooManyJumps;
     }
-    return hops.items;
 }
 
 // ------------------------------------------------------------------- tests
@@ -274,4 +289,30 @@ test "resolve: profile over ssh_config over defaults" {
     try t_.expectEqualStrings("/h/.ssh/id_ed25519", plain.identity_files[0]);
     const j = try resolve(a, "x@y:2", &.{}, &cfg, .{ .home = "/h", .local_user = "me" });
     try t_.expectEqual(@as(u16, 2), j.port);
+}
+
+test "resolveJumps follows a hop's own ProxyJump and rejects a cycle" {
+    var cfg = ssh_config.SshConfig.init(t_.allocator);
+    defer cfg.deinit();
+    try cfg.parseString(
+        \\Host inside
+        \\  HostName inside.example
+        \\  ProxyJump edge
+        \\Host edge
+        \\  HostName edge.example
+        \\  User jumper
+        \\Host loop-a
+        \\  ProxyJump loop-b
+        \\Host loop-b
+        \\  ProxyJump loop-a
+    );
+    var arena = std.heap.ArenaAllocator.init(t_.allocator);
+    defer arena.deinit();
+    const env = Env{ .home = "/h", .local_user = "me" };
+    const hops = try resolveJumps(arena.allocator(), "inside", &cfg, env, null);
+    try t_.expectEqual(@as(usize, 2), hops.len);
+    try t_.expectEqualStrings("edge.example", hops[0].host);
+    try t_.expectEqualStrings("jumper", hops[0].user);
+    try t_.expectEqualStrings("inside.example", hops[1].host);
+    try t_.expectError(error.JumpCycle, resolveJumps(arena.allocator(), "loop-a", &cfg, env, null));
 }

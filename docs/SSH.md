@@ -151,9 +151,11 @@ a different host key. It covers the following (71 checks):
 
 ## Limits
 
-- No SSH certificates (`@cert-authority`), no `Match`, no X11/agent forwarding, no SFTP.
-- Hops in `jump` don't follow their own ProxyJump (no recursion). Each hop uses its own
-  `~/.ssh/config` identity, then the profile's.
+- No SSH certificates (`@cert-authority`), no X11/agent forwarding, no SFTP.
+- `Match` applies `all`, `host`, `user`, and `localuser`. `exec` and other criteria do not.
+- A hop's own `ProxyJump` is expanded, first jump first, up to 8 hops. A repeated host
+  in that expansion is `error.JumpCycle`. Each hop uses its own `~/.ssh/config` identity,
+  then the profile's.
 - Multi-step (`partial success`) auth chains work only when each step is one of the
   supported methods. There is no special prompt for them.
 - An encrypted key asks for its passphrase before the server says whether it would
@@ -161,4 +163,7 @@ a different host key. It covers the following (71 checks):
 - `command` is typed into the interactive shell rather than run as an exec request, so
   the shell stays open afterwards.
 - Linux only for now: the build skips libssh2 on other targets, where `--ssh` reports
-  that it's unavailable.
+  that it's unavailable. The vendored 1.11.1 tree has the OpenSSL backend only
+  (`openssl.c`; no WinCNG or mbedTLS sources). A macOS or Windows cross build has no
+  libcrypto to link, so turning the gate off would fail those CI jobs. A port needs a
+  vendored crypto backend first.
