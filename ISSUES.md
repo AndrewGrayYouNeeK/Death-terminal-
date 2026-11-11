@@ -225,7 +225,6 @@ The old "~40%, no UTF-8 / full-screen apps / AI / SSH / Lua" line is out of date
 - DECCOLM side effects still owed: left/right margins (DECSLRM) and double-size lines; blinking text (SGR 5)
 - AI: multi-line suggestions and HTTP keep-alive
 - SSH: X11 forwarding and macOS/Windows builds (libssh2 is Linux-only)
-- Lua: hot reload of `require`d modules; SSH hooks for an `ssh` started inside the local shell
 - Colour emoji (sbix/CBDT needs libpng in the FreeType build), ZWJ sequences and flags as one glyph, preferences persistence
 - Tabs: SSH profile themes inside tabs/splits, detach/move panes, session restore of layouts
 - Optional image protocol, notifications, session persistence
