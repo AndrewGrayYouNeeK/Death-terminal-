@@ -63,6 +63,8 @@ config is reloaded.
 | `window.scale` | `0` | UI scale 1–4. `0` picks it automatically from DPI, the compositor and the environment (**restart**) |
 | `window.backend` | `"auto"` | `auto`, `x11`, `wayland`, `win32` (**restart**) |
 | `window.headless` | `true` | `false` opens a window. `--gui`, `--tui`, and `--headless` override it. `--tui` is `--headless`: stay in this terminal. On macOS, `deathterminal` with no arguments opens the enclosing .app instead (**restart**) |
+
+The last zoom (`font.size`) and theme chosen in the window are written to `$XDG_STATE_HOME/death-terminal/ui.txt` and win over config.lua on the next start. `--font-size` still wins over that file.
 | `font.family` | `""` | fontconfig family. `""` uses the bundled JetBrains Mono |
 | `font.size` | `11` | Points, 4–96 |
 | `font.line_height` | `1.0` | Cell height multiplier, 0.5–3 |

@@ -24,6 +24,7 @@ const spawn = @import("spawn.zig");
 const session = @import("session.zig");
 const layout = session.layout;
 const config = @import("../config/config.zig");
+const prefs_mod = @import("prefs.zig");
 const window_mod = @import("../platform/window.zig");
 const dpi = @import("../platform/dpi.zig");
 const input = @import("../terminal/input.zig");
@@ -572,6 +573,12 @@ const Gui = struct {
     fn voiceAnswer(ctx: *anyopaque, text: ?[]const u8) void {
         const speaker: *voice_mod.Speaker = @ptrCast(@alignCast(ctx));
         if (text) |t| speaker.speak(t) else speaker.stop();
+    }
+
+    fn savePrefs(self: *Gui) void {
+        const path = prefs_mod.statePath(self.a) catch return;
+        defer self.a.free(path);
+        prefs_mod.save(path, self.fonts.size_pt, self.cfg.theme) catch {};
     }
 
     /// Settings every pane gets (theme, cursor, plugin filter).
@@ -1304,6 +1311,7 @@ const Gui = struct {
                 if (try self.fonts.zoom(z)) {
                     self.fitWindow(self.window.width, self.window.height);
                     std.debug.print("  → zoom: {d:.1}pt, cell {d}x{d}, grid {d}x{d}\n", .{ self.fonts.size_pt, self.cellW(), self.cellH(), ws.cols, ws.rows });
+                    self.savePrefs();
                 }
             },
             .new_tab => self.openTab(.{}),
@@ -1685,9 +1693,11 @@ const Gui = struct {
             .theme => |t| {
                 self.palette.* = t.palette;
                 for (self.ws.panes.items) |p| p.term.palette = t.palette;
+                if (self.cfg.dupe(t.name)) |name| self.cfg.theme = name else |_| {}
                 h.setInfo(.theme, t.name);
                 self.frame.invalidate();
                 self.touchAll();
+                self.savePrefs();
             },
             .action => |act| self.window.queue.pushAction(.{ .action = act, .sym = 0, .mods = .{} }),
             .redraw => {
