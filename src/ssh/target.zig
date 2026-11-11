@@ -23,7 +23,7 @@ pub const Profile = struct {
     env: []const []const u8 = &.{},
     /// Typed into the remote shell once it starts.
     command: []const u8 = "",
-    /// Theme for windows connected to this profile ("" = keep).
+    /// Theme for panes connected to this profile ("" = the window theme).
     theme: []const u8 = "",
     forwards: []const forward.Forward = &.{},
     /// null = config.ssh.keepalive_s.
@@ -34,6 +34,14 @@ pub const Profile = struct {
     /// When set, list this remote directory over SFTP and exit. No shell.
     sftp: []const u8 = "",
 };
+
+/// Theme name from a profile, when that profile sets one.
+pub fn profileTheme(profiles: []const Profile, name: []const u8) ?[]const u8 {
+    for (profiles) |p| {
+        if (std.mem.eql(u8, p.name, name) and p.theme.len > 0) return p.theme;
+    }
+    return null;
+}
 
 pub const Hop = struct {
     host: []const u8,
@@ -280,6 +288,9 @@ test "resolve: profile over ssh_config over defaults" {
     try t_.expectEqualStrings("/h/.ssh/hop_key", p.jumps[0].identity_files[0]);
     try t_.expectEqualStrings("/h/.ssh/prod_andrew", p.jumps[0].identity_files[1]);
     try t_.expectEqualStrings("dracula", p.theme);
+    try t_.expectEqualStrings("dracula", profileTheme(&profiles, "prod").?);
+    try t_.expect(profileTheme(&profiles, "other") == null);
+    try t_.expect(profileTheme(&profiles, "direct") == null);
     try t_.expectEqual(@as(u16, 5), p.keepalive_s);
     try t_.expect(p.reconnect);
     var buf: [64]u8 = undefined;
