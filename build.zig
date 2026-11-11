@@ -437,6 +437,20 @@ pub fn build(b: *std.Build) void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
     test_step.dependOn(&run_unit_tests.step);
 
+    // Valgrind on the GPA leak-check test when the tool exists. The script
+    // exits 0 if valgrind is not installed.
+    const leak = b.addSystemCommand(&.{ "sh", "tests/leak/check.sh" });
+    leak.addFileArg(unit_tests.getEmittedBin());
+    leak.step.dependOn(&unit_tests.step);
+    test_step.dependOn(&leak.step);
+
+    // Local sshd suite (agent, encrypted key, keyboard-interactive, ProxyJump).
+    // Exit 77 is a skip so machines without sshd stay green.
+    const ssh_in_test = b.addSystemCommand(&.{ "sh", "tests/ssh/in-test.sh" });
+    ssh_in_test.addArtifactArg(exe);
+    ssh_in_test.has_side_effects = true;
+    test_step.dependOn(&ssh_in_test.step);
+
     // `zig build test-ssh`: integration tests against a throwaway local
     // sshd (needs openssh-server and passwordless sudo; see tests/ssh).
     const ssh_tests = b.addSystemCommand(&.{ "python3", "tests/ssh/run.py" });
