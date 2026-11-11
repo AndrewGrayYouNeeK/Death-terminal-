@@ -120,6 +120,11 @@ pub const Action = enum {
     resize_down,
     zoom_pane,
     equalize_panes,
+    /// Move the focused pane into a new tab. The process has one window,
+    /// so this is the pane's own tab rather than a second OS window.
+    detach_pane,
+    /// Move the focused pane into the next tab.
+    move_pane_next,
     /// Rewind the working tree to just before a command in this session.
     time_travel,
     /// A plugin keybinding (ActionEvent.arg = the binding's id). Not
@@ -192,6 +197,8 @@ pub const Action = enum {
             .resize_down => "Panes: grow / shrink down",
             .zoom_pane => "Panes: zoom (toggle)",
             .equalize_panes => "Panes: equalize sizes",
+            .detach_pane => "Panes: move into a new tab",
+            .move_pane_next => "Panes: move into the next tab",
             .time_travel => "Time Travel: rewind the working tree",
             .share_pane => "Share: share this pane",
             .share_grant => "Share: grant or revoke guest control",
@@ -427,6 +434,8 @@ pub const Bindings = struct {
         "alt+shift+down=resize_down",
         "ctrl+shift+z=zoom_pane",
         "ctrl+shift+alt+e=equalize_panes",
+        "ctrl+shift+alt+d=detach_pane",
+        "ctrl+shift+alt+n=move_pane_next",
         "ctrl+shift+h=share_pane",
         "ctrl+shift+g=share_grant",
         "f12=share_kick",

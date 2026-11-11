@@ -104,6 +104,49 @@ pub const TabSet = struct {
         self.active = @intCast(@mod(@as(i32, @intCast(self.active)) + delta, n));
     }
 
+    /// Move `pane` into a new tab when its current tab has another pane.
+    /// The new tab is selected. A pane that is already alone stays put.
+    pub fn detachPane(self: *TabSet, pane: PaneId) !bool {
+        const src = self.tabOf(pane) orelse return false;
+        if (src.layout.leafCount() < 2) return false;
+        const focus = src.layout.remove(pane);
+        if (focus) |f| src.focused = f;
+        if (src.layout.leafCount() == 0) {
+            const idx = self.indexOf(src.id) orelse return false;
+            self.remove(idx);
+        }
+        _ = try self.add(pane, true);
+        return true;
+    }
+
+    /// Move `pane` into the tab `delta` steps from its current tab, splitting
+    /// to the right of that tab's focused pane. An empty source tab is closed.
+    pub fn movePane(self: *TabSet, pane: PaneId, delta: i32) !bool {
+        if (delta == 0 or self.tabs.items.len < 2) return false;
+        const src = self.tabOf(pane) orelse return false;
+        const src_index = self.indexOf(src.id) orelse return false;
+        const n: i32 = @intCast(self.tabs.items.len);
+        const dest_index: usize = @intCast(@mod(@as(i32, @intCast(src_index)) + delta, n));
+        const dest_id = self.tabs.items[dest_index].id;
+        if (dest_id == src.id) return false;
+        const focus = src.layout.remove(pane);
+        if (focus) |f| src.focused = f;
+        if (src.layout.leafCount() == 0) {
+            const idx = self.indexOf(src.id) orelse return false;
+            self.remove(idx);
+        }
+        const dest = self.tabById(dest_id) orelse return false;
+        try dest.layout.split(dest.focused, .right, pane, 0.5);
+        dest.focused = pane;
+        if (self.indexOf(dest_id)) |i| self.active = i;
+        return true;
+    }
+
+    fn tabById(self: *TabSet, id: TabId) ?*Tab {
+        const i = self.indexOf(id) orelse return null;
+        return self.tabs.items[i];
+    }
+
     /// Move tab `from` to position `to` (the active tab follows its tab).
     pub fn move(self: *TabSet, from: usize, to_in: usize) void {
         const n = self.tabs.items.len;
@@ -218,6 +261,24 @@ test "tabs: add, cycle, move, remove keeps a sensible active tab" {
     ts.remove(0);
     ts.remove(0);
     try t.expect(ts.current() == null);
+}
+
+test "detach moves a split pane into its own tab; move joins another tab" {
+    var ts = TabSet.init(t.allocator);
+    defer ts.deinit();
+    const a = ts.newPaneId();
+    const b = ts.newPaneId();
+    const tab = try ts.add(a, true);
+    try tab.layout.split(a, .right, b, 0.5);
+    try t.expect(try ts.detachPane(b));
+    try t.expectEqual(@as(usize, 2), ts.tabs.items.len);
+    try t.expect(ts.tabOf(b).?.id != ts.tabOf(a).?.id);
+    try t.expectEqual(@as(usize, 1), ts.tabOf(a).?.layout.leafCount());
+    // b is already alone, so detach refuses.
+    try t.expect(!try ts.detachPane(b));
+    try t.expect(try ts.movePane(b, -1));
+    try t.expectEqual(@as(usize, 1), ts.tabs.items.len);
+    try t.expectEqual(@as(usize, 2), ts.current().?.layout.leafCount());
 }
 
 test "tab bar: widths, scrolling and hits" {

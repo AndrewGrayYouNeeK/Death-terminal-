@@ -118,6 +118,14 @@ pub const Layout = struct {
     }
 
     /// Panes in reading order (left to right, top to bottom in the tree).
+    pub fn leafCount(self: *const Layout) usize {
+        var n: usize = 0;
+        for (self.nodes.items) |item| {
+            if (item.kind == .leaf) n += 1;
+        }
+        return n;
+    }
+
     pub fn panes(self: *const Layout, out: *std.ArrayList(PaneId)) !void {
         out.clearRetainingCapacity();
         if (self.root != none) try self.collect(self.root, out);
