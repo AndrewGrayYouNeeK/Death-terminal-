@@ -40,12 +40,42 @@ fn addPlatform(b: *std.Build, step: *std.Build.Step.Compile, target: std.Build.R
     }
 }
 
-/// FreeType 2.13.3 + HarfBuzz 10.1.0 built from source (Windows, macOS).
+/// FreeType 2.13.3 + HarfBuzz 10.1.0 built from source (Windows, macOS),
+/// with zlib and libpng so sbix/CBDT colour bitmaps decode.
 /// Lazy dependencies: fetched on the first build for these targets.
 fn addFontLibs(b: *std.Build, step: *std.Build.Step.Compile, target: std.Build.ResolvedTarget) void {
-    _ = target;
     const ft = b.lazyDependency("freetype", .{}) orelse return;
     const hb = b.lazyDependency("harfbuzz", .{}) orelse return;
+    const zlib = b.lazyDependency("zlib", .{}) orelse return;
+    const png = b.lazyDependency("libpng", .{}) orelse return;
+    const png_conf = b.addWriteFiles();
+    _ = png_conf.addCopyFile(png.path("scripts/pnglibconf.h.prebuilt"), "pnglibconf.h");
+    step.addIncludePath(png_conf.getDirectory());
+    step.step.dependOn(&png_conf.step);
+    const zlib_flags: []const []const u8 = if (target.result.os.tag == .windows)
+        &.{ "-std=c99", "-fno-sanitize=undefined" }
+    else
+        &.{ "-std=c99", "-fno-sanitize=undefined", "-DHAVE_UNISTD_H" };
+    const zlib_srcs = [_][]const u8{
+        "adler32.c", "crc32.c", "deflate.c", "infback.c", "inffast.c", "inflate.c", "inftrees.c", "trees.c", "zutil.c", "compress.c", "uncompr.c",
+    };
+    step.addIncludePath(zlib.path(""));
+    step.addCSourceFiles(.{ .root = zlib.path(""), .files = &zlib_srcs, .flags = zlib_flags });
+    const png_flags = [_][]const u8{
+        "-std=c99",
+        "-fno-sanitize=undefined",
+        "-DPNG_ARM_NEON_OPT=0",
+        "-DPNG_INTEL_SSE_OPT=0",
+        "-DPNG_MIPS_MSA_OPT=0",
+        "-DPNG_POWERPC_VSX_OPT=0",
+    };
+    const png_srcs = [_][]const u8{
+        "png.c",     "pngerror.c", "pngget.c",   "pngmem.c",   "pngpread.c", "pngread.c",
+        "pngrio.c",  "pngrtran.c", "pngrutil.c", "pngset.c",   "pngtrans.c", "pngwio.c",
+        "pngwrite.c", "pngwtran.c", "pngwutil.c",
+    };
+    step.addIncludePath(png.path(""));
+    step.addCSourceFiles(.{ .root = png.path(""), .files = &png_srcs, .flags = &png_flags });
     const ft_srcs = [_][]const u8{
         "src/autofit/autofit.c", "src/base/ftbase.c",       "src/base/ftbbox.c",       "src/base/ftbdf.c",
         "src/base/ftbitmap.c",   "src/base/ftcid.c",        "src/base/ftfstype.c",     "src/base/ftgasp.c",
@@ -63,7 +93,7 @@ fn addFontLibs(b: *std.Build, step: *std.Build.Step.Compile, target: std.Build.R
     step.addCSourceFiles(.{
         .root = ft.path(""),
         .files = &ft_srcs,
-        .flags = &.{ "-std=c99", "-DFT2_BUILD_LIBRARY", "-fno-sanitize=undefined" },
+        .flags = &.{ "-std=c99", "-DFT2_BUILD_LIBRARY", "-DFT_CONFIG_OPTION_USE_PNG", "-fno-sanitize=undefined" },
     });
     step.addIncludePath(hb.path("src"));
     step.addCSourceFile(.{
