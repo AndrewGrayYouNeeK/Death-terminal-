@@ -80,6 +80,8 @@ zig build release -Dtarget=aarch64-macos -Dpackages=true
 # and DeathTerminal-<ver>-<arch>.dmg (zip and dmg filenames stay DeathTerminal-*)
 ```
 
+Finder starts `Contents/MacOS/deathterminal-gui` with the working directory `/`. The launcher (the shell script, and the Mach-O stub the signing job compiles over it) does `cd "$HOME"` only in that case, then execs `deathterminal --gui`. Typing `deathterminal` with no arguments, when that binary is inside a `.app`, runs `open -n` on the enclosing bundle and exits, so the session is the app rather than a drawing inside iTerm or Terminal.app. `--tui` (and any other argument, including `--gui`) stays in the current process. Linux and Windows do not do this.
+
 The `.dmg` is an `hdiutil` UDZO image when built on a Mac, and an HFS hybrid
 wrapped as UDIF when built on Linux. `make-app.sh` ad-hoc signs with
 `codesign -` when that tool exists. The release workflow downloads MoltenVK

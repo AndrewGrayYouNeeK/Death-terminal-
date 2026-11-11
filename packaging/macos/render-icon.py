@@ -17,6 +17,9 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[2]
 LOGO = ROOT / "site" / "logo.png"
+# 1024 source for the Dock icon. CFBundleIconFile is "deathterminal".
+DOCK = ROOT / "packaging" / "macos" / "AppIcon-1024.png"
+DOCK_ICNS = ROOT / "packaging" / "macos" / "deathterminal.icns"
 ICONSET = ROOT / "packaging" / "macos" / "DeathTerminal.iconset"
 ICNS = ROOT / "packaging" / "macos" / "DeathTerminal.icns"
 FLATPAK_ICONS = ROOT / "packaging" / "flatpak" / "icons" / "hicolor"
@@ -122,7 +125,24 @@ def check_icns(path, pngs_by_size):
             raise SystemExit(f"cached png {size} has the wrong size")
 
 
+def write_dock_icns():
+    """Dock icon from the 1024 PNG. Every size is a downsample, not an upscale."""
+    if not DOCK.is_file():
+        raise SystemExit(f"missing {DOCK}")
+    master = Image.open(DOCK).convert("RGBA")
+    if master.size != (1024, 1024):
+        raise SystemExit(f"expected AppIcon-1024.png to be 1024x1024, got {master.size}")
+    assert_green_skull(master)
+    pngs_by_size = {}
+    for size in sorted({size for _, size in ICNS_TYPES}):
+        pngs_by_size[size] = png_bytes(resized(master, size))
+    write_icns(DOCK_ICNS, pngs_by_size)
+    check_icns(DOCK_ICNS, pngs_by_size)
+    print(f"wrote {DOCK_ICNS}")
+
+
 def main():
+    write_dock_icns()
     if not LOGO.is_file():
         raise SystemExit(f"missing {LOGO}")
     master = Image.open(LOGO).convert("RGBA")

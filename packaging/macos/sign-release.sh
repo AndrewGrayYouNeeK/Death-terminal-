@@ -195,6 +195,10 @@ sign_one() {
     chmod +x "$app/Contents/MacOS/deathterminal-gui"
   fi
 
+  if [ ! -s "$app/Contents/Resources/deathterminal.icns" ]; then
+    echo "YouNeeK Death Terminal.app is missing Contents/Resources/deathterminal.icns" >&2
+    exit 1
+  fi
   molten="$app/Contents/Frameworks/libMoltenVK.dylib"
   if [ ! -f "$molten" ]; then
     echo "YouNeeK Death Terminal.app is missing Contents/Frameworks/libMoltenVK.dylib" >&2

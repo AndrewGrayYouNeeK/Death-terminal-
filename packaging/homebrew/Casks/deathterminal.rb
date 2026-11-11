@@ -17,6 +17,8 @@ cask "deathterminal" do
   # Homebrew's current floor is macOS 11 (Big Sur), same as LSMinimumSystemVersion.
   depends_on :macos
 
+  # Dock icon is Contents/Resources/deathterminal.icns inside this app
+  # (CFBundleIconFile = deathterminal). The cask does not build the bundle.
   app "YouNeeK Death Terminal.app"
   binary "#{appdir}/YouNeeK Death Terminal.app/Contents/MacOS/deathterminal"
   manpage "#{appdir}/YouNeeK Death Terminal.app/Contents/Resources/share/man/man1/deathterminal.1"

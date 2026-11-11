@@ -15,9 +15,9 @@
 # resolves that directory from the executable (`../Frameworks`); dlopen does
 # not expand @executable_path. Without them the app uses Homebrew's
 # /opt/homebrew/lib, or falls back to the software renderer. The signing job
-# signs that dylib when the Apple secrets are set. The .icns is the
-# green-skull logo from site/logo.png (DeathTerminal.icns). iconutil
-# rebuilds it from DeathTerminal.iconset when that tool exists.
+# signs that dylib when the Apple secrets are set. The Dock icon is
+# packaging/macos/deathterminal.icns (from AppIcon-1024.png), copied into
+# Contents/Resources. iconutil is not used.
 set -euo pipefail
 STAGE=$(cd "${1:?stage dir}" && pwd)
 OUT=$(mkdir -p "${2:?out dir}" && cd "$2" && pwd)
@@ -64,10 +64,13 @@ if "deathterminal" not in schemes:
     raise SystemExit("CFBundleURLTypes is missing the deathterminal scheme")
 PY
 cp "$STAGE/bin/deathterminal" "$APP/Contents/MacOS/deathterminal"
-# Finder launches without arguments; open a window.
+# Finder launches without arguments and with cwd /. Leave any other
+# directory alone, then open a window.
 cat > "$APP/Contents/MacOS/deathterminal-gui" <<'SH'
 #!/bin/sh
-exec "$(dirname "$0")/deathterminal" --gui "$@"
+here=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+[ "$(pwd)" = "/" ] && cd "$HOME"
+exec "$here/deathterminal" --gui "$@"
 SH
 chmod +x "$APP/Contents/MacOS/deathterminal-gui" "$APP/Contents/MacOS/deathterminal"
 cp -R "$STAGE/share" "$APP/Contents/Resources/"
@@ -80,20 +83,18 @@ if [ -n "${MOLTENVK_DIR:-}" ]; then
   fi
 fi
 
-# Green-skull .icns rendered from site/logo.png. Do not substitute
-# packaging/icons (a separate export; older art was a white skull).
-ICONSET="$HERE/DeathTerminal.iconset"
-ICNS="$HERE/DeathTerminal.icns"
-if [ ! -f "$ICNS" ]; then
+# Committed green-skull Dock icon (AppIcon-1024.png → deathterminal.icns).
+# CFBundleIconFile is "deathterminal", so the file must be
+# Contents/Resources/deathterminal.icns. Copy the file itself. iconutil is
+# not used: a Mac without the iconset used to leave Resources empty of an
+# icns, and Finder then shows a generic Dock icon.
+ICNS="$HERE/deathterminal.icns"
+if [ ! -s "$ICNS" ]; then
   echo "missing $ICNS; run python3 packaging/macos/render-icon.py" >&2
   exit 1
 fi
-if command -v iconutil >/dev/null && [ -d "$ICONSET" ]; then
-  iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/deathterminal.icns"
-else
-  cp "$ICNS" "$APP/Contents/Resources/deathterminal.icns"
-fi
-python3 -c 'import sys; assert open(sys.argv[1], "rb").read(4) == b"icns", sys.argv[1]' \
+cp "$ICNS" "$APP/Contents/Resources/deathterminal.icns"
+python3 -c 'import sys; b=open(sys.argv[1],"rb").read(4); assert b==b"icns", b' \
   "$APP/Contents/Resources/deathterminal.icns"
 
 # Ad-hoc signature only, and only when codesign exists (a local Mac).

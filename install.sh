@@ -444,12 +444,32 @@ macos_copy_icons() {
   cp "$stage/deathterminal-256.png" "$iconset/icon_256x256.png"
   cp "$stage/deathterminal-512.png" "$iconset/icon_256x256@2x.png"
   cp "$stage/deathterminal-512.png" "$iconset/icon_512x512.png"
-  if command -v iconutil >/dev/null 2>&1; then
-    iconutil -c icns "$iconset" -o "$resources/deathterminal.icns" || die "iconutil could not build deathterminal.icns"
-    say "Built $resources/deathterminal.icns"
+  install_bundle_icns "$resources"
+}
+
+# CFBundleIconFile is "deathterminal". Finder only shows that icon when
+# Contents/Resources/deathterminal.icns exists. The committed file is
+# packaging/macos/deathterminal.icns (green skull, AppIcon-1024.png).
+install_bundle_icns() {
+  resources=$1
+  dest="$resources/deathterminal.icns"
+  if [ -n "${DEATHTERMINAL_ICNS:-}" ]; then
+    cp "$DEATHTERMINAL_ICNS" "$dest" || die "cannot copy $DEATHTERMINAL_ICNS"
   else
-    say "iconutil is not available; the png icons are in the app bundle but Finder may not show them until iconutil can run"
+    src=$0
+    if [ -n "${BASH_SOURCE:-}" ]; then
+      src=${BASH_SOURCE[0]}
+    fi
+    dir=$(CDPATH= cd -- "$(dirname "$src")" 2>/dev/null && pwd || true)
+    if [ -n "$dir" ] && [ -f "$dir/packaging/macos/deathterminal.icns" ]; then
+      cp "$dir/packaging/macos/deathterminal.icns" "$dest" || die "cannot copy the repo icns"
+    else
+      download "https://raw.githubusercontent.com/${REPO}/${DT_REF}/packaging/macos/deathterminal.icns" "$dest"
+    fi
   fi
+  sig=$(dd if="$dest" bs=1 count=4 2>/dev/null || true)
+  [ "$sig" = "icns" ] || die "$dest is missing or is not an icns file"
+  say "Installed $dest"
 }
 
 macos_make_app() {
@@ -463,6 +483,7 @@ macos_make_app() {
   cat > "$APP_PATH/Contents/MacOS/deathterminal-gui" <<'SH'
 #!/bin/sh
 here=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+[ "$(pwd)" = "/" ] && cd "$HOME"
 exec "$here/deathterminal" --gui "$@"
 SH
   chmod 755 "$APP_PATH/Contents/MacOS/deathterminal-gui"
@@ -538,6 +559,8 @@ print_macos_instructions() {
   printf 'Add ~/.local/bin to PATH if it is not already there:\n\n'
   # shellcheck disable=SC2016
   printf '  export PATH="$HOME/.local/bin:$PATH"\n\n'
+  printf 'Typing deathterminal with no arguments opens this app (its own window and Dock icon).\n'
+  printf 'deathterminal --tui runs inside the current terminal.\n\n'
   printf 'Next: it works as-is. No config file is required. AI suggestions are optional.\n'
   printf 'To turn on local AI:\n\n'
   printf '  ollama pull qwen2.5-coder:0.5b\n\n'

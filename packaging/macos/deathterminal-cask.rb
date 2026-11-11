@@ -15,6 +15,8 @@ cask "deathterminal" do
   depends_on macos: ">= :big_sur"
   depends_on formula: "molten-vk"
 
+  # Dock icon is Contents/Resources/deathterminal.icns inside this app
+  # (CFBundleIconFile = deathterminal). The cask does not build the bundle.
   app "YouNeeK Death Terminal.app"
   binary "#{appdir}/YouNeeK Death Terminal.app/Contents/MacOS/deathterminal"
   manpage "#{appdir}/YouNeeK Death Terminal.app/Contents/Resources/share/man/man1/deathterminal.1"

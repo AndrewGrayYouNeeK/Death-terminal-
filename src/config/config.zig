@@ -457,7 +457,7 @@ pub const Config = struct {
                 self.ai_voice_enabled = false;
             } else if (std.mem.eql(u8, arg, "--no-plugins")) {
                 self.plugins_enabled = false;
-            } else if (std.mem.eql(u8, arg, "--headless")) {
+            } else if (std.mem.eql(u8, arg, "--headless") or std.mem.eql(u8, arg, "--tui")) {
                 self.headless = true;
             } else if (std.mem.eql(u8, arg, "--gui")) {
                 self.headless = false;
@@ -702,6 +702,21 @@ test "Config defaults" {
     try testing.expectEqual(@as(u16, 24), config.rows);
     try testing.expectEqualStrings(themes.default_name, config.theme);
     try testing.expectEqual(themes.defaultTheme().palette().hash(), config.palette().hash());
+}
+
+test "--tui forces this terminal; the last of --tui and --gui wins" {
+    const testing = std.testing;
+    var config = Config.init(testing.allocator);
+    defer config.deinit();
+    const tui = [_][]const u8{ "deathterminal", "--tui" };
+    try config.loadFromArgs(&tui);
+    try testing.expect(config.headless);
+    const gui_then_tui = [_][]const u8{ "deathterminal", "--gui", "--tui" };
+    try config.loadFromArgs(&gui_then_tui);
+    try testing.expect(config.headless);
+    const tui_then_gui = [_][]const u8{ "deathterminal", "--tui", "--gui" };
+    try config.loadFromArgs(&tui_then_gui);
+    try testing.expect(!config.headless);
 }
 
 test "Config arg parsing" {
