@@ -46,6 +46,11 @@ pub const Request = struct {
     reasoning: []const u8 = "",
     /// null = pick from the endpoint host. Tests set this to force a path.
     api: ?Api = null,
+    /// When set, the connection goes back into this client's pool
+    /// (`Connection: keep-alive`) so the next call can reuse it. Null
+    /// opens a client for this call only. Windows uses a relay thread
+    /// per dial, so the pool is not used there.
+    http: ?*std.http.Client = null,
 };
 
 /// Grok's current API. Chat completions stays the path for every other host.
@@ -154,8 +159,10 @@ pub fn chatStream(allocator: std.mem.Allocator, req: Request, cancel: *Cancel, s
     const body = try buildBody(allocator, req);
     defer allocator.free(body);
 
-    var client = std.http.Client{ .allocator = allocator };
-    defer client.deinit();
+    var owned = std.http.Client{ .allocator = allocator };
+    const client: *std.http.Client = req.http orelse &owned;
+    defer if (req.http == null) owned.deinit();
+    const persistent = req.http != null and !use_relay;
     var header_buf: [16 * 1024]u8 = undefined;
     var auth_buf: [512]u8 = undefined;
     var auth: std.http.Client.Request.Headers.Value = .omit;
@@ -169,12 +176,12 @@ pub fn chatStream(allocator: std.mem.Allocator, req: Request, cancel: *Cancel, s
     // (std.http would block in tcpConnectToHost).
     var relay: ?*Relay = null;
     defer if (relay) |rl| rl.finish();
-    const conn = try openConnection(&client, uri, timeout_ms, deadline, cancel, &relay);
+    const conn = try openConnection(client, uri, timeout_ms, deadline, cancel, &relay);
 
     var r = client.open(.POST, uri, .{
         .connection = conn,
         .server_header_buffer = &header_buf,
-        .keep_alive = false,
+        .keep_alive = persistent,
         .redirect_behavior = .not_allowed,
         .headers = .{
             .content_type = .{ .override = "application/json" },
@@ -184,7 +191,15 @@ pub fn chatStream(allocator: std.mem.Allocator, req: Request, cancel: *Cancel, s
         },
         .extra_headers = &.{.{ .name = "accept", .value = "text/event-stream, application/json" }},
     }) catch |err| return mapErr(err, cancel, deadline);
-    defer r.deinit();
+    var reuse = false;
+    defer {
+        if (!reuse) {
+            if (r.connection) |c| {
+                c.closing = true;
+            }
+        }
+        r.deinit();
+    }
     const fd = r.connection.?.stream.handle;
     if (!cancel.attach(fd)) return error.Cancelled;
     defer cancel.detach();
@@ -238,7 +253,10 @@ pub fn chatStream(allocator: std.mem.Allocator, req: Request, cancel: *Cancel, s
                 _ = try parser.feed(whole.items, sink);
                 whole.clearRetainingCapacity();
             }
-            if (!try parser.feed(buf[0..n], sink)) return;
+            if (!try parser.feed(buf[0..n], sink)) {
+                reuse = persistent;
+                return;
+            }
         } else {
             if (whole.items.len + n > 1024 * 1024) return error.BadResponse;
             try whole.appendSlice(buf[0..n]);
@@ -247,10 +265,12 @@ pub fn chatStream(allocator: std.mem.Allocator, req: Request, cancel: *Cancel, s
     if (cancel.isCancelled()) return error.Cancelled;
     if (sse == true) {
         _ = try parser.feed("\n", sink);
+        reuse = persistent;
         return;
     }
     // Non-streaming reply.
     try handlePayload(allocator, whole.items, sink);
+    reuse = persistent;
 }
 
 /// null while `data` is only whitespace; true for an SSE body ("data:",
@@ -284,6 +304,12 @@ fn openConnection(client: *std.http.Client, uri: std.Uri, timeout_ms: u32, deadl
     // "[::1]" -> "::1"
     if (host.len > 2 and host[0] == '[' and host[host.len - 1] == ']') host = host[1 .. host.len - 1];
     const port: u16 = uri.port orelse if (protocol == .tls) 443 else 80;
+
+    if (!use_relay) {
+        if (client.connection_pool.findConnection(.{ .host = host, .port = port, .protocol = protocol })) |existing| {
+            return existing;
+        }
+    }
 
     const left = deadline - std.time.milliTimestamp();
     if (left <= 0) return error.Timeout;
