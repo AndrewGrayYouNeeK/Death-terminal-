@@ -39,7 +39,7 @@ config.ssh.profiles = {
     jump = "me@bastion.example.com", -- ProxyJump syntax, comma-separated hops; "none" disables
     env = { LANG = "en_US.UTF-8" },  -- sent as SSH env requests (the server's AcceptEnv decides)
     command = "tmux new -A -s main", -- typed into the remote shell once it starts
-    theme = "dracula",               -- theme for windows opened on this profile
+    theme = "dracula",               -- theme for panes opened on this profile
     forwards = {
       "L 8080:localhost:80",         -- OpenSSH syntax: L/R [bind:]port:host:hostport, D [bind:]port
       "D 1080",                      -- SOCKS4/4a/5 proxy

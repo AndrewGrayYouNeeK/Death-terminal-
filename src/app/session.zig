@@ -47,6 +47,8 @@ pub const Pane = struct {
     track: plugin_bridge.Track,
     /// "user@host:port" when the pane runs the SSH client (owned).
     ssh_display: []u8 = &.{},
+    /// Profile theme for this pane ("" = the window theme). Owned.
+    theme_name: []u8 = &.{},
     /// The last read stopped at the budget: more output is waiting.
     backlog: bool = false,
     /// Output / bell since the pane was last looked at.
@@ -94,6 +96,7 @@ pub const Pane = struct {
         self.marks.deinit();
         self.track.deinit(a);
         a.free(self.ssh_display);
+        a.free(self.theme_name);
         var pid: ?posix.pid_t = null;
         if (self.owned) {
             // Windows: the process handle is closed with the pty, nothing to reap.

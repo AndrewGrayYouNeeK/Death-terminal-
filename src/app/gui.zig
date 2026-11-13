@@ -616,8 +616,19 @@ const Gui = struct {
         errdefer _ = p.destroy(self.a);
         try self.ws.addPane(p);
         self.setupPane(p);
+        if (req.ssh) |name| self.applyProfileTheme(p, name);
         self.plugins.addTrack(&p.track);
         return p;
+    }
+
+    /// An SSH profile theme colours this pane only. Other panes keep the window theme.
+    fn applyProfileTheme(self: *Gui, p: *Pane, name: []const u8) void {
+        const theme_name = ssh_target.profileTheme(self.cfg.ssh_profiles.items, name) orelse return;
+        const theme = config.themes.find(theme_name) orelse return;
+        const owned = self.a.dupe(u8, theme_name) catch return;
+        self.a.free(p.theme_name);
+        p.theme_name = owned;
+        p.term.palette = theme.palette();
     }
 
     /// Directory for a new pane: the focused one's (OSC 7), if enabled.
@@ -1692,7 +1703,9 @@ const Gui = struct {
             },
             .theme => |t| {
                 self.palette.* = t.palette;
-                for (self.ws.panes.items) |p| p.term.palette = t.palette;
+                for (self.ws.panes.items) |p| {
+                    if (p.theme_name.len == 0) p.term.palette = t.palette;
+                }
                 if (self.cfg.dupe(t.name)) |name| self.cfg.theme = name else |_| {}
                 h.setInfo(.theme, t.name);
                 self.frame.invalidate();
@@ -1834,7 +1847,9 @@ const Gui = struct {
         const old = self.cfg;
         self.palette.* = next.palette();
         for (self.ws.panes.items) |p| {
-            p.term.palette = self.palette.*;
+            if (p.theme_name.len > 0) {
+                if (config.themes.find(p.theme_name)) |t| p.term.palette = t.palette();
+            } else p.term.palette = self.palette.*;
             el.applyCursorShape(p.term, next.cursor_shape);
             el.applyColumnSwitch(p.term, next.allow_column_switch, false);
         }
