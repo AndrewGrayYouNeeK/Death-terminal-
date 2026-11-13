@@ -493,6 +493,7 @@ test {
     _ = @import("app/tabs.zig");
     _ = @import("app/spawn.zig");
     _ = @import("app/session.zig");
+    _ = @import("app/layout_state.zig");
     _ = @import("muscle/session.zig");
     _ = @import("plugins/permissions.zig");
     _ = @import("plugins/value.zig");
