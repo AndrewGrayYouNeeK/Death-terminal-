@@ -72,7 +72,7 @@ pub const Found = struct {
     manifest: ?manifest.Manifest = null,
     /// Why it can't run (bad manifest, no init.lua), if anything.
     problem: ?[]const u8 = null,
-    /// init.lua + manifest.lua modification times, for "did it change?".
+    /// Sum of mtimes of every .lua file in the plugin directory.
     mtime: i128 = 0,
     /// Shipped inside the binary, not installed under `plugins_dir`.
     bundled: bool = false,
@@ -96,7 +96,7 @@ pub fn discover(a: std.mem.Allocator, dir_path: []const u8) ![]Found {
             try list.append(f);
             continue;
         }
-        var sub = dir.openDir(e.name, .{}) catch {
+        var sub = dir.openDir(e.name, .{ .iterate = true }) catch {
             continue; // a symlink to a file, or unreadable
         };
         defer sub.close();
@@ -119,10 +119,10 @@ pub fn discover(a: std.mem.Allocator, dir_path: []const u8) ![]Found {
             error.Invalid => f.problem = try a.dupe(u8, manifest.message(&eb)),
             error.OutOfMemory => return error.OutOfMemory,
         }
-        if (init_stat) |st| {
-            f.mtime = st.mtime;
-        } else if (f.problem == null) f.problem = "missing init.lua";
-        if (sub.statFile("manifest.lua")) |st| f.mtime +%= st.mtime else |_| {}
+        if (init_stat == null and f.problem == null) f.problem = "missing init.lua";
+        // Every .lua file, including ones init.lua require()s. A change to
+        // any of them changes the plan hash and restarts the plugin.
+        f.mtime = luaTreeMtime(sub);
         try list.append(f);
     }
     std.mem.sort(Found, list.items, {}, struct {
@@ -131,6 +131,41 @@ pub fn discover(a: std.mem.Allocator, dir_path: []const u8) ![]Found {
         }
     }.lt);
     return list.items;
+}
+
+fn luaTreeMtime(dir: std.fs.Dir) i128 {
+    var sum: i128 = 0;
+    addLuaMtime(dir, &sum);
+    return sum;
+}
+
+fn addLuaMtime(dir: std.fs.Dir, sum: *i128) void {
+    var it = dir.iterate();
+    while (it.next() catch null) |e| {
+        if (e.name.len == 0 or e.name[0] == '.') continue;
+        if (e.kind == .directory) {
+            var sub = dir.openDir(e.name, .{ .iterate = true }) catch continue;
+            defer sub.close();
+            addLuaMtime(sub, sum);
+        } else if (std.mem.endsWith(u8, e.name, ".lua")) {
+            if (dir.statFile(e.name)) |st| sum.* +%= st.mtime else |_| {}
+        }
+    }
+}
+
+/// First non-flag argument of a local `ssh` command, or null.
+pub fn localSshTarget(cmd: []const u8) ?[]const u8 {
+    var it = std.mem.tokenizeAny(u8, cmd, " \t");
+    const bin = it.next() orelse return null;
+    if (!std.mem.eql(u8, std.fs.path.basename(bin), "ssh")) return null;
+    while (it.next()) |arg| {
+        if (arg.len == 0) continue;
+        if (arg[0] != '-') return arg;
+        if (arg.len == 2 and std.mem.indexOfScalar(u8, "pilJoWbceFELRDSw", arg[1]) != null) {
+            _ = it.next();
+        }
+    }
+    return null;
 }
 
 // ---------------------------------------------------------------- state file
@@ -416,6 +451,19 @@ test "discover, decide and plan" {
     try std.testing.expect(std.mem.indexOf(u8, text, "not granted: screen") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "off 1  disabled in config.lua") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "BROKEN: missing init.lua") != null);
+
+    const before = p.hash;
+    try d.makePath("plugins/good/lib");
+    try d.writeFile(.{ .sub_path = "plugins/good/lib/util.lua", .data = "return {}\n" });
+    const p4 = try planAt(a, paths, &configs);
+    try std.testing.expect(p4.hash != before);
+}
+
+test "local ssh command yields a target" {
+    try std.testing.expectEqualStrings("host.example", localSshTarget("ssh host.example").?);
+    try std.testing.expectEqualStrings("me@box", localSshTarget("/usr/bin/ssh -p 22 -i ~/.ssh/id me@box").?);
+    try std.testing.expect(localSshTarget("git status") == null);
+    try std.testing.expect(localSshTarget("ssh -V") == null);
 }
 
 test "paths follow XDG" {
