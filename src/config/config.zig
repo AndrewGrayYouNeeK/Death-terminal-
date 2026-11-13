@@ -31,11 +31,15 @@ pub const LayoutNode = struct {
     ssh: []const u8 = "",
     /// This pane gets the focus.
     focus: bool = false,
+    /// OSC title to restore. Empty keeps the default.
+    title: []const u8 = "",
 };
 
 pub const LayoutTab = struct {
     title: []const u8 = "",
     root: LayoutNode,
+    /// This tab was active when the layout was saved.
+    focused: bool = false,
 };
 
 pub const CursorShape = enum { block, underline, bar };

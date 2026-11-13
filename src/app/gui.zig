@@ -596,9 +596,12 @@ const Gui = struct {
         defer self.a.free(path);
         var buf = std.ArrayList(u8).init(self.a);
         defer buf.deinit();
+        const active_id = if (self.ws.tabs.current()) |t| t.id else 0;
         for (self.ws.tabs.tabs.items) |tab| {
-            buf.appendSlice("tab\n") catch return;
-            self.writeLayoutNode(tab.layout, tab.layout.root, &buf) catch return;
+            const name = tab.name orelse "";
+            const mark = if (tab.id == active_id) "focus=1 " else "";
+            buf.writer().print("tab {s}name={s}\n", .{ mark, name }) catch return;
+            self.writeLayoutNode(tab.layout, tab.layout.root, tab.focused, &buf) catch return;
         }
         if (std.fs.path.dirname(path)) |d| std.fs.cwd().makePath(d) catch return;
         var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -612,7 +615,7 @@ const Gui = struct {
         std.fs.cwd().rename(tmp, path) catch {};
     }
 
-    fn writeLayoutNode(self: *Gui, tree: layout.Layout, id: layout.NodeId, buf: *std.ArrayList(u8)) !void {
+    fn writeLayoutNode(self: *Gui, tree: layout.Layout, id: layout.NodeId, focused: layout.PaneId, buf: *std.ArrayList(u8)) !void {
         const n = tree.node(id);
         switch (n.kind) {
             .leaf => |pid| {
@@ -620,13 +623,15 @@ const Gui = struct {
                 const ssh = if (p) |pane| pane.ssh_display else "";
                 var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
                 const cwd = if (p) |pane| spawn.inheritedCwd(pane.term, &cwd_buf) else "";
-                try buf.writer().print("leaf ssh={s} cwd={s}\n", .{ ssh, cwd });
+                const title = if (p) |pane| pane.term.title else "";
+                const mark = if (pid == focused) "focus=1 " else "";
+                try buf.writer().print("leaf {s}ssh={s} cwd={s} title={s}\n", .{ mark, ssh, cwd, title });
             },
             .split => |s| {
                 const dir = if (s.dir == .down) "down" else "right";
                 try buf.writer().print("split {s} {d:.2}\n", .{ dir, s.ratio });
-                try self.writeLayoutNode(tree, s.a, buf);
-                try self.writeLayoutNode(tree, s.b, buf);
+                try self.writeLayoutNode(tree, s.a, focused, buf);
+                try self.writeLayoutNode(tree, s.b, focused, buf);
             },
             .free => {},
         }
@@ -895,7 +900,11 @@ const Gui = struct {
             if (focus) |f| tab.focused = f;
             self.ws.full = true;
         }
-        if (specs.len > 0) self.ws.tabs.select(0);
+        var focus_tab: usize = 0;
+        for (specs, 0..) |spec, i| if (spec.focused) {
+            focus_tab = i;
+        };
+        if (specs.len > 0) self.ws.tabs.select(focus_tab);
         self.relayout();
     }
 
@@ -904,6 +913,9 @@ const Gui = struct {
         const dir_opt = node.split;
         if (dir_opt == null) {
             if (node.focus) focus.* = pane_id;
+            if (self.ws.pane(pane_id)) |p| {
+                if (node.title.len > 0) p.term.setTitle(node.title) catch {};
+            }
             if (node.command.len > 0) if (self.ws.pane(pane_id)) |p| {
                 // Typed ahead: the shell reads it once it is ready.
                 p.term.write(node.command) catch {};
