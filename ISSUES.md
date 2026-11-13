@@ -154,7 +154,7 @@
 - [x] Font selection and management (real fonts + optional retro 8x8 bitmap font)
 - [x] Fonts on macOS/Windows (FreeType + HarfBuzz from source, font-folder scan instead of fontconfig)
 - [x] Bundled FreeType on macOS/Windows is built with libpng, so sbix/CBDT colour bitmaps can decode
-- [ ] Emoji ZWJ sequences / flags composed into one glyph
+- [x] Emoji ZWJ sequences and flag pairs share one cell (shaped as one cluster)
 - [x] Color scheme support
 - [x] Terminal size configuration
 - [ ] Preferences persistence
@@ -225,7 +225,7 @@ The old "~40%, no UTF-8 / full-screen apps / AI / SSH / Lua" line is out of date
 - DECCOLM side effects still owed: left/right margins (DECSLRM) and double-size lines; blinking text (SGR 5)
 - AI: multi-line suggestions and HTTP keep-alive
 - SSH: X11 forwarding and macOS/Windows builds (libssh2 is Linux-only)
-- Colour emoji: ZWJ sequences and flags as one glyph, preferences persistence (sbix/CBDT decode is linked via libpng on macOS/Windows)
+- Colour emoji: preferences persistence (ZWJ sequences and flags share one cell; sbix/CBDT decode is linked via libpng on macOS/Windows)
 - Tabs: SSH profile themes inside tabs/splits, detach/move panes, session restore of layouts
 - Optional image protocol, notifications, session persistence
 - Extra docs (generated API docs, wiki, troubleshooting, video demos, community chat)

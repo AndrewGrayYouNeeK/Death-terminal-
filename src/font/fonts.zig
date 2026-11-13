@@ -10,6 +10,7 @@ const box = @import("box.zig");
 const retro = @import("retro.zig");
 const face_set = @import("face_set.zig");
 const terminal = @import("../terminal/terminal.zig");
+const unicode = @import("../terminal/unicode.zig");
 const Cell = terminal.Cell;
 
 pub const Atlas = atlas_mod.Atlas;
@@ -287,7 +288,13 @@ pub const Fonts = struct {
         for (cell.combining) |m| {
             if (m == 0xFE0F) vs16 = true;
         }
-        const emoji = FaceSet.wantsEmoji(cell.char, vs16) and !(cell.combining[0] == 0xFE0E);
+        var emoji = FaceSet.wantsEmoji(cell.char, vs16) and !(cell.combining[0] == 0xFE0E);
+        if (!emoji) {
+            for (cell.combining) |m| {
+                if (m == 0) break;
+                if (unicode.isZwj(m) or unicode.isRegionalIndicator(m)) emoji = true;
+            }
+        }
         return fs.resolve(cell.char, Style.of(cell.bold, cell.italic), emoji);
     }
 

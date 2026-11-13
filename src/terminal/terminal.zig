@@ -48,7 +48,9 @@ pub const Cell = struct {
     /// row, so selection/search/URLs can join the two rows.
     soft_wrap: bool = false,
 
-    pub const max_combining = 2;
+    /// Room for a flag pair or a ZWJ sequence (base plus ZWJ, emoji, modifiers).
+    /// Longer sequences drop the extra codepoints.
+    pub const max_combining = 8;
 
     pub fn init() Cell {
         return Cell{
@@ -620,6 +622,7 @@ pub const Terminal = struct {
 
     pub fn putChar(self: *Terminal, ch: u21) !void {
         var cp = self.translateCharset(ch);
+        if (self.absorbCluster(cp)) return;
         var w: u16 = unicode.width(cp);
         if (w == 0) return self.attachCombining(cp);
         if (w == 2 and self.cols < 2) {
@@ -695,6 +698,74 @@ pub const Terminal = struct {
         out.width = 1;
         out.combining = .{0} ** Cell.max_combining;
         return out;
+    }
+
+    /// Fold a flag half, a ZWJ follower, or a skin-tone modifier into the
+    /// previous cell so HarfBuzz shapes one glyph. Returns true when `cp`
+    /// was absorbed and the cursor must not advance.
+    fn absorbCluster(self: *Terminal, cp: u21) bool {
+        if (self.wrap_pending) return false;
+        const cell = self.previousCell() orelse return false;
+        if (unicode.isRegionalIndicator(cp) and unicode.isRegionalIndicator(cell.char) and clusterLen(cell) == 1) {
+            if (!appendCluster(cell, cp)) return false;
+            self.widenFlag(cell);
+            return true;
+        }
+        if (endsWithZwj(cell) or (unicode.isEmojiModifier(cp) and unicode.width(cell.char) == 2)) {
+            return appendCluster(cell, cp);
+        }
+        return false;
+    }
+
+    fn previousCell(self: *Terminal) ?*Cell {
+        if (self.cursor_col == 0) return null;
+        var col = self.cursor_col - 1;
+        if (self.buffer[self.cellIndex(self.cursor_row, col)].width == 0 and col > 0) col -= 1;
+        return &self.buffer[self.cellIndex(self.cursor_row, col)];
+    }
+
+    fn clusterLen(cell: *const Cell) usize {
+        var n: usize = 1;
+        for (cell.combining) |m| {
+            if (m == 0) break;
+            n += 1;
+        }
+        return n;
+    }
+
+    fn endsWithZwj(cell: *const Cell) bool {
+        var last: u21 = 0;
+        for (cell.combining) |m| {
+            if (m == 0) break;
+            last = m;
+        }
+        return last == 0x200D;
+    }
+
+    fn appendCluster(cell: *Cell, cp: u21) bool {
+        for (&cell.combining) |*slot| {
+            if (slot.* == 0) {
+                slot.* = cp;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// A completed flag is one wide glyph. A lone indicator that was one
+    /// column wide grows into the next column when that column is empty.
+    fn widenFlag(self: *Terminal, cell: *Cell) void {
+        if (cell.width == 2) return;
+        if (self.cursor_col == 0) return;
+        var col = self.cursor_col - 1;
+        if (self.buffer[self.cellIndex(self.cursor_row, col)].width == 0 and col > 0) col -= 1;
+        if (col + 1 >= self.cols) return;
+        const next = &self.buffer[self.cellIndex(self.cursor_row, col + 1)];
+        if (!(next.char == ' ' or next.char == 0 or next.width == 0)) return;
+        cell.width = 2;
+        next.* = self.penCell(' ');
+        next.width = 0;
+        if (self.cursor_col == col + 1) self.cursor_col = col + 2;
     }
 
     /// Attach a zero-width codepoint to the previously written cell.

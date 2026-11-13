@@ -21,6 +21,20 @@ fn inTable(cp: u21, table: []const tables.Range) bool {
     return false;
 }
 
+/// Regional indicator (flag half). A pair is one flag glyph.
+pub fn isRegionalIndicator(cp: u21) bool {
+    return cp >= 0x1F1E6 and cp <= 0x1F1FF;
+}
+
+/// Fitzpatrick modifier (emoji skin tone).
+pub fn isEmojiModifier(cp: u21) bool {
+    return cp >= 0x1F3FB and cp <= 0x1F3FF;
+}
+
+pub fn isZwj(cp: u21) bool {
+    return cp == 0x200D;
+}
+
 /// Number of terminal columns a codepoint occupies: 0 (combining/format),
 /// 1, or 2 (East Asian wide/fullwidth, emoji presentation).
 pub fn width(cp: u21) u2 {

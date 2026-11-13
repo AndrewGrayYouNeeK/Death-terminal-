@@ -604,6 +604,44 @@ test "UTF-8 lands in the grid as codepoints with wide cells" {
     try expectRow(&term, 0, "h\u{e9}llo \u{65e5}\u{672c} \u{1f642}");
 }
 
+test "a flag is one wide cell holding both regional indicators" {
+    var term = try mk(1, 8);
+    defer term.deinit();
+    // U+1F1FA U+1F1F8 = flag of the United States.
+    try term.processOutput("\xf0\x9f\x87\xba\xf0\x9f\x87\xb8");
+    const cell = term.getCell(0, 0).?;
+    try t.expectEqual(@as(u21, 0x1F1FA), cell.char);
+    try t.expectEqual(@as(u21, 0x1F1F8), cell.combining[0]);
+    try t.expectEqual(@as(u2, 2), cell.width);
+    try t.expect(term.getCell(0, 1).?.isSpacer());
+    try t.expectEqual(@as(u21, ' '), ch(&term, 0, 2));
+}
+
+test "ZWJ joins the following emoji onto the same cell" {
+    var term = try mk(1, 8);
+    defer term.deinit();
+    // U+1F468 ZWJ U+1F469 (man, ZWJ, woman).
+    try term.processOutput("\xf0\x9f\x91\xa8\xe2\x80\x8d\xf0\x9f\x91\xa9");
+    const cell = term.getCell(0, 0).?;
+    try t.expectEqual(@as(u21, 0x1F468), cell.char);
+    try t.expectEqual(@as(u21, 0x200D), cell.combining[0]);
+    try t.expectEqual(@as(u21, 0x1F469), cell.combining[1]);
+    try t.expectEqual(@as(u2, 2), cell.width);
+    try t.expect(term.getCell(0, 1).?.isSpacer());
+    try t.expectEqual(@as(u21, ' '), ch(&term, 0, 2));
+}
+
+test "a skin-tone modifier stays on the emoji cell" {
+    var term = try mk(1, 6);
+    defer term.deinit();
+    // U+1F44D U+1F3FD
+    try term.processOutput("\xf0\x9f\x91\x8d\xf0\x9f\x8f\xbd");
+    const cell = term.getCell(0, 0).?;
+    try t.expectEqual(@as(u21, 0x1F44D), cell.char);
+    try t.expectEqual(@as(u21, 0x1F3FD), cell.combining[0]);
+    try t.expect(term.getCell(0, 1).?.isSpacer() or term.getCell(0, 1).?.char == ' ');
+}
+
 test "combining marks attach to the previous cell" {
     var term = try mk(1, 10);
     defer term.deinit();
