@@ -16,6 +16,18 @@
             .hash = "1220d4d0df4d68fe8d5f8282520314459de8abe5a141b5d05bb510eec0bd16692201",
             .lazy = true,
         },
+        // zlib + libpng are compiled into the macOS/Windows FreeType so
+        // sbix/CBDT colour bitmaps can be decoded. Lazy, like FreeType.
+        .zlib = .{
+            .url = "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz",
+            .hash = "1220c1854d7b4c2b5cbdd8ce6593c37e4bf1ac4032664735e1537c3848becb3b5834",
+            .lazy = true,
+        },
+        .libpng = .{
+            .url = "https://github.com/pnggroup/libpng/archive/refs/tags/v1.6.44.tar.gz",
+            .hash = "12204e1bef45962fb03e45710df5f561593cdcd0b6f64e36d4f7d4d34ed5bac7563e",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",
