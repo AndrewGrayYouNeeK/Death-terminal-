@@ -528,6 +528,7 @@ test {
         _ = @import("ssh/cert.zig");
         _ = @import("ssh/bridge.zig");
         _ = @import("ssh/session.zig");
+        _ = @import("ssh/sftp.zig");
         _ = @import("ssh/control.zig");
         _ = @import("ssh/client.zig");
     }

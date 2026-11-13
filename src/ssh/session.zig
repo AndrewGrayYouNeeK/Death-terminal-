@@ -404,8 +404,13 @@ fn hasMethod(list: []const u8, m: []const u8) bool {
     return false;
 }
 
+fn chainNotice(buf: []u8, done: []const u8, next: []const u8) []const u8 {
+    return std.fmt.bufPrint(buf, "ssh: {s} did not finish sign-in. Continuing with {s}.", .{ done, next }) catch "ssh: continuing authentication.";
+}
+
 fn authenticate(s: *c.LIBSSH2_SESSION, ep: Endpoint, ctx: *AuthCtx, opts: Options) Error!void {
     const tty = opts.tty;
+    var chain_buf: [160]u8 = undefined;
     var ub: [256]u8 = undefined;
     const user = std.fmt.bufPrintZ(&ub, "{s}", .{ep.user}) catch return error.AuthFailed;
     const ulen: c_uint = @intCast(user.len);
@@ -418,13 +423,16 @@ fn authenticate(s: *c.LIBSSH2_SESSION, ep: Endpoint, ctx: *AuthCtx, opts: Option
     var lb: [256]u8 = undefined;
     const methods = std.fmt.bufPrint(&lb, "{s}", .{std.mem.span(list_p)}) catch "";
 
+    var pubkey_tried = false;
     if (hasMethod(methods, "publickey")) {
+        pubkey_tried = true;
         if (opts.use_agent and tryAgent(s, user)) return;
         for (ep.identity_files) |path| {
             if (try tryKeyFile(s, user, path, opts)) return;
         }
     }
     if (hasMethod(methods, "keyboard-interactive")) {
+        if (pubkey_tried) tty.print("{s}\n", .{chainNotice(&chain_buf, "publickey", "keyboard-interactive")});
         var tries: usize = 0;
         while (tries < 3) : (tries += 1) {
             const rc = c.libssh2_userauth_keyboard_interactive_ex(s, user.ptr, ulen, kbdCallback);
@@ -435,6 +443,8 @@ fn authenticate(s: *c.LIBSSH2_SESSION, ep: Endpoint, ctx: *AuthCtx, opts: Option
         }
     }
     if (hasMethod(methods, "password")) {
+        if (pubkey_tried or hasMethod(methods, "keyboard-interactive"))
+            tty.print("{s}\n", .{chainNotice(&chain_buf, if (hasMethod(methods, "keyboard-interactive")) "keyboard-interactive" else "publickey", "password")});
         var tries: usize = 0;
         while (tries < 3) : (tries += 1) {
             var pw: [1024]u8 = undefined;
@@ -533,6 +543,14 @@ fn kbdCallback(
             responses[i].length = @intCast(got.len);
         }
     }
+}
+
+test "chain notice names the method that did not finish" {
+    var buf: [160]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "ssh: publickey did not finish sign-in. Continuing with keyboard-interactive.",
+        chainNotice(&buf, "publickey", "keyboard-interactive"),
+    );
 }
 
 test "hasMethod" {

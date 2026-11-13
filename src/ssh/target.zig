@@ -29,6 +29,10 @@ pub const Profile = struct {
     /// null = config.ssh.keepalive_s.
     keepalive_s: ?u16 = null,
     reconnect: bool = false,
+    /// null = ~/.ssh/config ForwardAgent, else this value.
+    forward_agent: ?bool = null,
+    /// When set, list this remote directory over SFTP and exit. No shell.
+    sftp: []const u8 = "",
 };
 
 pub const Hop = struct {
@@ -53,6 +57,8 @@ pub const Target = struct {
     forwards: []const forward.Forward = &.{},
     keepalive_s: u16 = 30,
     reconnect: bool = false,
+    forward_agent: bool = false,
+    sftp: []const u8 = "",
 
     /// "user@host" or "user@host:port".
     pub fn display(self: *const Target, buf: []u8) []const u8 {
@@ -150,6 +156,11 @@ pub fn resolve(a: std.mem.Allocator, name: []const u8, profiles: []const Profile
         t.forwards = p.forwards;
         if (p.keepalive_s) |k| t.keepalive_s = k;
         t.reconnect = p.reconnect;
+        if (p.forward_agent) |on| t.forward_agent = on;
+        t.sftp = p.sftp;
+    }
+    if (t.forward_agent == false) {
+        if (prof == null or prof.?.forward_agent == null) t.forward_agent = sc.forward_agent orelse false;
     }
     return t;
 }
