@@ -16,6 +16,7 @@ const share = @import("share.zig");
 const changelog = @import("changelog");
 const doctor = @import("ai/doctor.zig");
 const env_mod = @import("platform/env.zig");
+const prefs_mod = @import("app/prefs.zig");
 
 const VERSION = @import("build_options").version;
 
@@ -104,6 +105,14 @@ pub fn main() !void {
     const src = config.locate(&path_buf, config_arg);
     var cfg = try config.load(allocator, src, args, load_opts, &diags);
     defer cfg.deinit();
+    if (prefs_mod.statePath(allocator)) |prefs_path| {
+        defer allocator.free(prefs_path);
+        if (prefs_mod.load(allocator, prefs_path) catch null) |saved| {
+            var owned = saved;
+            defer owned.deinit(allocator);
+            prefs_mod.apply(&cfg, owned, hasFlag(args, "--font-size") or hasFontSizeEq(args)) catch {};
+        }
+    } else |_| {}
     if (src) |s| std.debug.print("Config: {s}{s}\n", .{ s.path, if (load_opts.lua_unsafe) " (unsafe Lua)" else "" });
     diags.print();
     if (diags.hasErrors()) std.debug.print("config: {d} error(s); using the defaults\n", .{diags.errorCount()});
@@ -338,6 +347,11 @@ fn sshArg(args: []const []const u8) ?[]const u8 {
     return null;
 }
 
+fn hasFontSizeEq(args: []const []const u8) bool {
+    for (args[1..]) |a| if (std.mem.startsWith(u8, a, "--font-size=")) return true;
+    return false;
+}
+
 fn hasFlag(args: []const []const u8, flag: []const u8) bool {
     for (args[1..]) |a| if (std.mem.eql(u8, a, flag)) return true;
     return false;
@@ -472,6 +486,7 @@ test {
     _ = @import("terminal/selection.zig");
     _ = @import("terminal/search.zig");
     _ = @import("terminal/urls.zig");
+    _ = @import("app/prefs.zig");
     _ = @import("app/ui.zig");
     _ = @import("app/palette.zig");
     _ = @import("app/layout.zig");
