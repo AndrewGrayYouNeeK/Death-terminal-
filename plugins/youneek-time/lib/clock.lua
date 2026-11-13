@@ -8,9 +8,10 @@
 -- At a whole second that is floor(seconds_into_hour / 36): one YouNeeK
 -- minute is 36 real seconds, so the minute runs 00-99
 -- (14:30:00 real = 14:50, 14:59:59 real = 14:99). The native army clock
--- prints HH:MM:SS; this segment prints HH:MM. 12/24h applies to the hour
--- only (`hours12` / AM / PM in that repo). `mode = "regular"` shows the
--- civil minute instead.
+-- prints HH:MM:SS. YouNeeK mode prints a 12-hour clock (12 AM at hour 0,
+-- 12 PM at hour 12) and the 24-hour clock in parentheses, both on 100-minute
+-- hours: `6:62 PM (18:62)`. `hours` 12/24 applies only to `mode = "regular"`,
+-- which shows the civil minute.
 
 local M = {}
 
@@ -70,7 +71,8 @@ function M.normalize_hours(hours, hour12)
   return 24
 end
 
--- HH:MM, or HH:MM AM/PM when hours is 12. `minute`/`second` are civil.
+-- YouNeeK mode: `H:MM AM/PM (HH:MM)` with 100-minute hours in both parts.
+-- Regular mode: civil `HH:MM`, or `HH:MM AM/PM` when hours is 12.
 function M.format_time(hour, minute, second, opts)
   local o = opts or {}
   local mode = M.normalize_mode(o.mode)
@@ -81,6 +83,12 @@ function M.format_time(hour, minute, second, opts)
   end
   if mm < 0 then mm = 0 end
   if mm > 99 then mm = 99 end
+  if mode ~= "regular" then
+    local h12 = hour % 12
+    if h12 == 0 then h12 = 12 end
+    local suffix = (hour >= 12) and "PM" or "AM"
+    return string.format("%d:%02d %s (%02d:%02d)", h12, mm, suffix, hour, mm)
+  end
   local h = hour
   local suffix = ""
   if hours == 12 then

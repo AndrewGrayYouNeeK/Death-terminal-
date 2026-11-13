@@ -30,7 +30,7 @@ deathterminal --plugins list
 | `git_branch` | Branch of the shell's cwd (and `*` when dirty) in the status bar | `allow = { "exec" }, exec = { "git" }`, OSC 7 cwd (bundled shell integration) |
 | `long_command` | Toast (and a desktop notification while unfocused) when a command that ran longer than `threshold_s` (default 10) finishes, with its exit code; a running timer in the status bar | OSC 133 shell integration; `screen` to include the command line |
 | `theme_cycle` | Registers a `crimson` theme, palette commands "Theme: next/previous/crimson" and Ctrl+Alt+T; the theme name in the status bar | nothing |
-| `youneek-time` | YouNeeK Time in the status bar: civil hour with 100 YouNeeK minutes (`HH:MM`, one minute = 36 real seconds), `#7CFF6B`, and the moon phase (suncalc math, local). Updates every second. `settings.chime` toasts on the hour (off by default; plugins cannot play a sound) | nothing |
+| `youneek-time` | YouNeeK Time in the status bar: 12-hour time with the 24-hour clock in parentheses, both on 100-minute hours (`6:62 PM (18:62)`, one minute = 36 real seconds), `#7CFF6B`, and the moon phase (suncalc math, local). Updates every second. `settings.chime` toasts on the hour (off by default; plugins cannot play a sound) | nothing |
 
 ## Configuration
 
@@ -45,7 +45,7 @@ config.plugins = {
     enabled = true,                       -- false turns it off (config beats --plugins)
     settings = {
       mode = "youneek",                   -- "youneek" or "regular" (civil HH:MM)
-      hours = 24,                         -- 12 or 24; applies to the hour in either mode
+      hours = 24,                         -- 12 or 24; regular mode only. YouNeeK mode is always 12-hour plus (HH:MM)
       timezone = "",                      -- "" = local, "UTC", or "-05:00" / "+5"
       chime = false,                      -- toast when the civil hour changes
     },
@@ -53,7 +53,7 @@ config.plugins = {
 }
 ```
 
-YouNeeK minutes follow YouNeeK Time's army clock (`armyHours` / `armyMinutes` in that app): the hour is the civil hour, and `MM = floor(seconds_into_the_hour / 36)` runs `00`–`99`. `14:30:00` real is `14:50` YNK; `14:59:59` real is `14:99`. `mode = "regular"` shows the civil minute instead. The phase name and glyph come from the same cutoffs as YouNeeK Time's live moon card (`New Moon` below `0.03`, through the quarters, and `New Moon` again at `0.97`). The accent is `#7CFF6B`.
+YouNeeK minutes follow YouNeeK Time's army clock (`armyHours` / `armyMinutes` in that app): the hour is the civil hour, and `MM = floor(seconds_into_the_hour / 36)` runs `00`–`99`. YouNeeK mode shows that minute on a 12-hour clock and again on the 24-hour clock: `14:30:00` real is `2:50 PM (14:50)`; `14:59:59` real is `2:99 PM (14:99)`; `18:37:12` real is `6:62 PM (18:62)`. Hour 0 is `12 AM` and hour 12 is `12 PM`. `mode = "regular"` shows the civil minute instead. The phase name and glyph come from the same cutoffs as YouNeeK Time's live moon card (`New Moon` below `0.03`, through the quarters, and `New Moon` again at `0.97`). The accent is `#7CFF6B`.
 
 | Key | Default | |
 |---|---|---|
