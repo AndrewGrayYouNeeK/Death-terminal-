@@ -22,8 +22,8 @@ A target is resolved in this order. The first source that sets a field wins:
 1. A `config.ssh.profiles` entry with that name.
 2. `~/.ssh/config` (`config.ssh.config_file`). Supported: `Host` (patterns, `!negation`),
    `HostName`, `User`, `Port`, `IdentityFile` (several allowed; `~`, `%h %u %r %d %p %%`),
-   `ProxyJump` (comma-separated hops, `none`), and `Include` (globs, relative to `~/.ssh`).
-   `Match` blocks are skipped. As in OpenSSH, the first value wins.
+   `ProxyJump` (comma-separated hops, `none`), `Include` (globs, relative to `~/.ssh`),
+   and `Match` (`all`, `host`, `user`, `localuser`). As in OpenSSH, the first value wins.
 3. The spec itself, `[user@]host[:port]` (also `ssh://…` and `[v6]:port`). Otherwise
    `$USER`, port 22, and `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`.
 
@@ -66,8 +66,8 @@ shared with OpenSSH, including hashed entries).
   a 0700 directory.
 - **Changed key:** a red warning, the new fingerprint, and the `ssh-keygen -R` command to
   run. The connection is refused and there is no override.
-- **`@revoked`** keys are refused. `@cert-authority` lines are ignored (no certificate
-  support).
+- **`@revoked`** keys are refused. `@cert-authority` lines trust Ed25519 host
+  certificates (see Limits).
 
 ## Authentication
 
@@ -151,7 +151,10 @@ a different host key. It covers the following (71 checks):
 
 ## Limits
 
-- No SSH certificates (`@cert-authority`), no X11/agent forwarding, no SFTP.
+- `@cert-authority` trusts `ssh-ed25519` host certificates when the CA key matches,
+  the signature checks, the time window is open, principals allow the host (empty
+  means any), and there are no critical options. Other certificate types are refused.
+- No X11/agent forwarding, no SFTP.
 - `Match` applies `all`, `host`, `user`, and `localuser`. `exec` and other criteria do not.
 - A hop's own `ProxyJump` is expanded, first jump first, up to 8 hops. A repeated host
   in that expansion is `error.JumpCycle`. Each hop uses its own `~/.ssh/config` identity,

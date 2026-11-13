@@ -14,6 +14,7 @@ const c = @import("c.zig").c;
 const dial = @import("../net/dial.zig");
 const target_mod = @import("target.zig");
 const known_hosts = @import("known_hosts.zig");
+const cert = @import("cert.zig");
 const keyfile = @import("keyfile.zig");
 const bridge = @import("bridge.zig");
 const tty_mod = @import("tty.zig");
@@ -321,6 +322,19 @@ fn verifyHostKey(s: *c.LIBSSH2_SESSION, kh: *known_hosts.KnownHosts, ep: Endpoin
         return error.Handshake;
     };
     const key = kp[0..len];
+    if (cert.inspect(key).kind != .not_cert) {
+        var pb_ca: [std.fs.max_path_bytes]u8 = undefined;
+        switch (kh.checkCert(ep.host, key, std.time.timestamp())) {
+            .trusted => {
+                tty.print("ssh: host certificate for {s} is signed by a trusted CA in {s}.\n", .{ ep.host, homeShort(&pb_ca, kh.path, opts.home) });
+                return;
+            },
+            .rejected, .no_ca => {
+                tty.print("ssh: {s} offered a host certificate that no @cert-authority line accepts.\nConnection refused.\n", .{ep.host});
+                return error.HostKeyRejected;
+            },
+        }
+    }
     var nb: [300]u8 = undefined;
     const name = known_hosts.hostName(&nb, ep.host, ep.port);
     var fb: [64]u8 = undefined;
