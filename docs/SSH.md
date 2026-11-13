@@ -159,9 +159,10 @@ a different host key. It covers the following (71 checks):
   forwarding and bridges `auth-agent@openssh.com` to `SSH_AUTH_SOCK`.
 - `sftp = "/remote/dir"` lists that directory and exits. `get` and `put` are
   in `src/ssh/sftp.zig`.
-- When publickey does not finish sign-in, the next method is announced
-  (`Continuing with keyboard-interactive` / `password`). There is no separate
-  multi-factor prompt; each step still uses the existing prompt.
+- When publickey does not finish sign-in, the next method's prompt waits for
+  yes or no. The prompt names the method just tried and the one that follows.
+  libssh2 does not report OpenSSH's partial-success bit, so a rejected key and
+  a key accepted as only one factor look the same here.
 - `Match` applies `all`, `host`, `user`, and `localuser`. `exec` and other criteria do not.
 - A hop's own `ProxyJump` is expanded, first jump first, up to 8 hops. A repeated host
   in that expansion is `error.JumpCycle`. Each hop uses its own `~/.ssh/config` identity,
