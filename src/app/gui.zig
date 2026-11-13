@@ -1015,7 +1015,13 @@ const Gui = struct {
                 if (!is_focus or !self.window_focused) {
                     p.bell = true;
                     self.ws.full = true;
+                    if (!self.window_focused) el.desktopNotify("Bell", if (p.term.title.len > 0) p.term.title else "The terminal rang");
                 }
+            }
+            var notes: [4]terminal.UserNotice = undefined;
+            const nn = p.term.takeNotices(&notes);
+            if (!self.window_focused) {
+                for (notes[0..nn]) |note| el.desktopNotify(note.titleSlice(), note.bodySlice());
             }
             // The bar shows the focused pane's exit status / running state.
             const st = p.term.shell.started *% 31 +% p.term.shell.finished;

@@ -426,6 +426,21 @@ test "DA1, DA2, DSR, CPR, XTVERSION and window size replies" {
     try t.expectEqualStrings("\x1b[8;24;80t\x1bP>|YouNeeK Death Terminal 0.1.0\x1b\\", term.replies.items);
 }
 
+test "OSC 9 and OSC 777 queue a notification" {
+    var term = try mk(1, 8);
+    defer term.deinit();
+    try term.processOutput("\x1b]9;build finished\x1b\\");
+    try term.processOutput("\x1b]777;notify;Job;done\x07");
+    var got: [4]terminal.UserNotice = undefined;
+    const n = term.takeNotices(&got);
+    try t.expectEqual(@as(u8, 2), n);
+    try t.expectEqualStrings("Notification", got[0].titleSlice());
+    try t.expectEqualStrings("build finished", got[0].bodySlice());
+    try t.expectEqualStrings("Job", got[1].titleSlice());
+    try t.expectEqualStrings("done", got[1].bodySlice());
+    try t.expectEqual(@as(u8, 0), term.takeNotices(&got));
+}
+
 test "OSC 10/11 color queries" {
     var term = try mk(1, 4);
     defer term.deinit();

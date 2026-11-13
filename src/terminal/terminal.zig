@@ -13,6 +13,22 @@ const io = @import("../platform/io.zig");
 pub const shell_integration = @import("shell_integration.zig");
 
 pub const PTY = pty_mod.PTY;
+
+/// A desktop notification requested by the guest (OSC 9 or OSC 777).
+pub const UserNotice = struct {
+    title: [80]u8 = [_]u8{0} ** 80,
+    title_len: u8 = 0,
+    body: [200]u8 = [_]u8{0} ** 200,
+    body_len: u8 = 0,
+
+    pub fn titleSlice(self: *const UserNotice) []const u8 {
+        return self.title[0..self.title_len];
+    }
+
+    pub fn bodySlice(self: *const UserNotice) []const u8 {
+        return self.body[0..self.body_len];
+    }
+};
 const CSIParams = ansi_parser.CSIParams;
 
 /// Cell represents a single character cell in the terminal
@@ -283,6 +299,9 @@ pub const Terminal = struct {
     bell: bool = false,
     /// Bumped on every BEL (the front end diffs it).
     bell_count: u32 = 0,
+    /// OSC 9 / OSC 777 notifications waiting for the front end.
+    notices: [4]UserNotice = .{ .{}, .{}, .{}, .{} },
+    notice_count: u8 = 0,
     /// Secret the built-in SSH client puts in its OSC 7799 connect /
     /// disconnect reports (DT_SSH_NONCE), so remote output can't fake them.
     /// Empty = reports are ignored.
@@ -1950,7 +1969,9 @@ pub const Terminal = struct {
                 self.cwd_uri = copy;
             },
             8 => try self.setHyperlink(arg),
+            9 => self.pushNotice("Notification", arg),
             133 => self.shellMark(arg),
+            777 => self.notifyOsc(arg),
             7799 => self.sshEventOsc(arg),
             52 => try self.clipboardOsc(arg),
             10, 11 => if (std.mem.eql(u8, arg, "?")) {
@@ -1962,6 +1983,42 @@ pub const Terminal = struct {
             },
             else => {},
         }
+    }
+
+    /// OSC 777 ; notify ; title ; body (urxvt). Other 777 commands are ignored.
+    fn notifyOsc(self: *Terminal, arg: []const u8) void {
+        var it = std.mem.splitScalar(u8, arg, ';');
+        const kind = it.next() orelse return;
+        if (!std.mem.eql(u8, kind, "notify")) return;
+        const title = it.next() orelse "Notification";
+        const body = it.rest();
+        self.pushNotice(if (title.len > 0) title else "Notification", body);
+    }
+
+    fn pushNotice(self: *Terminal, title: []const u8, body: []const u8) void {
+        if (self.notice_count >= self.notices.len) return;
+        var n = UserNotice{};
+        n.title_len = @intCast(copyPlain(&n.title, title));
+        n.body_len = @intCast(copyPlain(&n.body, body));
+        self.notices[self.notice_count] = n;
+        self.notice_count += 1;
+    }
+
+    pub fn takeNotices(self: *Terminal, out: []UserNotice) u8 {
+        const n: u8 = @intCast(@min(out.len, self.notice_count));
+        @memcpy(out[0..n], self.notices[0..n]);
+        self.notice_count = 0;
+        return n;
+    }
+
+    fn copyPlain(dst: []u8, src: []const u8) usize {
+        var n: usize = 0;
+        for (src) |ch| {
+            if (n == dst.len) break;
+            dst[n] = if (ch < 0x20 or ch == 0x7f) ' ' else ch;
+            n += 1;
+        }
+        return n;
     }
 
     /// OSC 7799 ; <nonce> ; connect|disconnect ; <user@host:port> from the
