@@ -6,7 +6,7 @@
 --     enabled = true,                         -- false hides the clock
 --     settings = {
 --       mode = "youneek",                     -- "youneek" or "regular" (civil minutes)
---       hours = 24,                           -- 12 or 24; applies to the hour either way
+--       hours = 24,                           -- 12 or 24; regular mode only. YouNeeK mode is 12-hour plus (HH:MM)
 --       timezone = "",                        -- "" = local, "UTC", or "-05:00"
 --       chime = false,                        -- toast when the civil hour changes
 --     },

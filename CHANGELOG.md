@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 New work stays under Unreleased. A date is the day that change landed on main. 0.1.0, further down, is the version the build already reports.
 
+### 2026-11-13
+
+- The YouNeeK Time status clock shows 12-hour YouNeeK time first, then the 24-hour YouNeeK clock in parentheses. Both parts use 100-minute hours (`6:62 PM (18:62)`). `mode = "regular"` is unchanged.
+
 ### 2026-11-10
 
 - A missing config file is fine. If Ollama is down or the default model is missing, one hint names the next command (`ollama pull …`). `deathterminal --ai-setup` (same as `--doctor`) prints that status and does not write a config file or print the voice key. (#64)
