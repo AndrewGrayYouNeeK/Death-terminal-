@@ -1379,6 +1379,8 @@ const Gui = struct {
             },
             .zoom_pane => if (ws.toggleZoom()) self.relayout(),
             .equalize_panes => if (ws.equalize()) self.relayout(),
+            .detach_pane => if (self.ws.tabs.detachPane(self.focusedPane().id) catch false) self.relayout(),
+            .move_pane_next => if (self.ws.tabs.movePane(self.focusedPane().id, 1) catch false) self.relayout(),
             .share_pane => {
                 std.debug.print("gui: share_pane\n", .{});
                 self.share.startHost(fp.id);

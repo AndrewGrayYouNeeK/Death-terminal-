@@ -165,7 +165,7 @@
 - [x] Scrollback navigation (Shift+PageUp/PageDown, wheel, Shift+Home/End, scrollbar)
 - [x] Tabs and splits (milestone 11, docs/TABS.md)
 - [x] Tabs: SSH profile themes colour that pane in a tab or split (other panes keep the window theme)
-- [ ] Tabs: detach a pane into its own window / move panes between tabs
+- [x] Tabs: detach a pane into its own tab (one OS window) / move a pane into the next tab
 - [ ] Tabs: session restore of layouts on restart
 - [x] Hyperlink detection and handling (Ctrl+click URLs and OSC 8)
 - [ ] Image protocol support (optional)
@@ -226,7 +226,7 @@ The old "~40%, no UTF-8 / full-screen apps / AI / SSH / Lua" line is out of date
 - AI: multi-line suggestions and HTTP keep-alive
 - SSH: X11 forwarding and macOS/Windows builds (libssh2 is Linux-only)
 - Colour emoji: ZWJ sequences and flags share one cell; sbix/CBDT decode is linked via libpng on macOS/Windows
-- Tabs: detach/move panes, session restore of layouts
+- Tabs: session restore of layouts
 - Optional image protocol, notifications, session persistence
 - Extra docs (generated API docs, wiki, troubleshooting, video demos, community chat)
 
