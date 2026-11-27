@@ -1,0 +1,83 @@
+name: iOS
+
+on:
+  push:
+    branches: [main]
+    paths: ["ios/**", ".github/workflows/ios.yml"]
+  pull_request:
+    branches: [main]
+    paths: ["ios/**", ".github/workflows/ios.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  simulator-build:
+    name: Build for iOS Simulator (no signing)
+    runs-on: macos-15
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: ios/.spm
+          key: spm-${{ hashFiles('ios/project.yml') }}
+
+      - name: Build
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project DeathTerminal.xcodeproj \
+            -scheme DeathTerminal \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -clonedSourcePackagesDirPath .spm \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee build.log | grep -E "error:|warning: .*DeathTerminal/|BUILD (SUCCEEDED|FAILED)" || true
+          grep -q "BUILD SUCCEEDED" build.log
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: ios/build.log
+
+  core-smoke:
+    name: SSH core smoke test (Linux, real sshd)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install sshd
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q openssh-server
+          sudo mkdir -p /run/sshd
+      - name: Swift version
+        run: swift --version
+      - name: Run smoke test
+        run: ios/smoke/run.sh
