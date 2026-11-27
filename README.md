@@ -44,6 +44,12 @@ Context-aware, not just history-based.
 - What's new: the command palette entry "What's new", or `deathterminal --whats-new`, prints [CHANGELOG.md](CHANGELOG.md)
 - bash/zsh/fish OSC 133 shell integration, injected automatically (see [docs/AI.md](docs/AI.md))
 
+### 🌌 Nous setup assistant
+- `deathterminal --nous` opens Nous (*The architecture of understanding.*), a chat that gets Death Terminal connected and then shows you the rest of it
+- Stage 1 is offline: local Ollama only, models found automatically, nothing leaves the machine. If Ollama is down it says what to run
+- Stage 2 is online: once you're connected and `/signin` with your own Nous account, the live Nous at nous.youneek.dev guides you through every other feature. If it's unreachable or you're signed out, Nous falls back to offline. No token ships with the app
+- Suggested commands never run by themselves: `/run N` asks first, and destructive ones need `run it` typed out (see [docs/NOUS.md](docs/NOUS.md))
+
 ### 👻 Ghost Run
 - Enter on a risky command (`rm -r` / `-rf`, `git reset --hard`, `git clean`, `git push --force`, `dd`, `mkfs`, `chmod -R`, `chown -R`, `mv` over an existing path, `find -delete`, truncating redirects, `curl | sh`, and the rest of the built-in list) is held back
 - A local read-only preview estimates the impact (directory walks, `git diff` / `git clean -n`) and can add a plain-English AI note. The command is not executed to build that preview
