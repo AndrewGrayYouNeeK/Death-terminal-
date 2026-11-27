@@ -13,7 +13,7 @@ If nothing is listening on that port, the first suggestion attempt shows the sma
 
 If Ollama is running but `qwen2.5-coder:0.5b` is not pulled, the hint names that model and the same pull command, instead of a bare HTTP status. `deathterminal --ai-setup` (or `--doctor`) prints the same facts without opening a window: config found or not, Ollama reachable or not, model present or not, and whether `ELEVENLABS_API_KEY` is set. The key's value is never printed.
 
-`deathterminal --nous` is a chat on top of the same check: Nous, the setup assistant, explains what is wrong and suggests the next command, offline on local Ollama and online (your own Nous account) once you are connected. See [NOUS.md](NOUS.md).
+`deathterminal --henad` is a chat on top of the same check: Henad, the setup assistant, explains what is wrong and suggests the next command, offline on local Ollama and online (your own Henad account) once you are connected. See [HENAD.md](HENAD.md).
 
 > **Why HTTP and not gRPC.** The original README planned a gRPC AI
 > service. That plan is dropped: the OpenAI-style HTTP/JSON API is what

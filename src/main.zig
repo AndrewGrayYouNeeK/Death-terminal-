@@ -16,8 +16,8 @@ const share = @import("share.zig");
 const changelog = @import("changelog");
 const doctor = @import("ai/doctor.zig");
 const env_mod = @import("platform/env.zig");
-const nous = @import("ai/nous.zig");
-const nous_cli = @import("ai/nous_cli.zig");
+const henad = @import("ai/henad.zig");
+const henad_cli = @import("ai/henad_cli.zig");
 const prefs_mod = @import("app/prefs.zig");
 
 const VERSION = @import("build_options").version;
@@ -90,7 +90,8 @@ pub fn main() !void {
         if (std.mem.eql(u8, a, "--plugins")) std.process.exit(pluginsCli(allocator, args, args[i + 1 ..]));
     }
     if (hasFlag(args, "--ai-setup") or hasFlag(args, "--doctor")) std.process.exit(aiSetup(allocator, args));
-    if (hasFlag(args, "--nous") or hasFlag(args, "--nous-offline")) std.process.exit(nousCli(allocator, args));
+    // --nous / --nous-offline are the pre-rename spellings and keep working.
+    if (hasFlag(args, "--henad") or hasFlag(args, "--henad-offline") or hasFlag(args, "--nous") or hasFlag(args, "--nous-offline")) std.process.exit(henadCli(allocator, args));
 
     // macOS: a bare `deathterminal` (the ~/.local/bin symlink into the .app)
     // opens that bundle and exits, so it is not drawn inside iTerm.
@@ -218,10 +219,10 @@ fn aiSetup(allocator: std.mem.Allocator, args: []const []const u8) u8 {
     return 0;
 }
 
-/// `deathterminal --nous [question]`: the Nous setup assistant. Offline
+/// `deathterminal --henad [question]`: the Henad setup assistant. Offline
 /// (local Ollama) until the machine is online and the user signs in with
-/// their own Nous account. See src/ai/nous.zig and docs/NOUS.md.
-fn nousCli(allocator: std.mem.Allocator, args: []const []const u8) u8 {
+/// their own Henad account. See src/ai/henad.zig and docs/HENAD.md.
+fn henadCli(allocator: std.mem.Allocator, args: []const []const u8) u8 {
     var diags = config.Diagnostics.init(allocator);
     defer diags.deinit();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -231,7 +232,7 @@ fn nousCli(allocator: std.mem.Allocator, args: []const []const u8) u8 {
         return 1;
     };
     defer cfg.deinit();
-    const endpoint = nous.offlineEndpoint(cfg.ai_endpoint);
+    const endpoint = henad.offlineEndpoint(cfg.ai_endpoint);
     var report = std.ArrayList(u8).init(allocator);
     defer report.deinit();
     {
@@ -249,52 +250,54 @@ fn nousCli(allocator: std.mem.Allocator, args: []const []const u8) u8 {
             .voice_key_set = key != null and key.?.len > 0,
         }) catch return 1;
     }
-    const session_path = nous.sessionPath(allocator, null) catch {
-        std.debug.print("nous: no home folder for the session file\n", .{});
+    const session_path = henad.sessionPath(allocator, null) catch {
+        std.debug.print("henad: no home folder for the session file\n", .{});
         return 1;
     };
     defer allocator.free(session_path);
 
-    // The question is every word after --nous that is not a flag.
+    // The question is every word after --henad that is not a flag.
     var question = std.ArrayList(u8).init(allocator);
     defer question.deinit();
     var model_override: ?[]const u8 = null;
-    var online_url: []const u8 = env_mod.get("NOUS_URL") orelse nous.default_online_url;
+    var online_url: []const u8 = env_mod.get("HENAD_URL") orelse env_mod.get("NOUS_URL") orelse henad.default_online_url;
     var i: usize = 1;
-    var after_nous = false;
+    var after_henad = false;
     while (i < args.len) : (i += 1) {
         const a = args[i];
-        if (std.mem.eql(u8, a, "--nous-model") and i + 1 < args.len) {
+        if ((std.mem.eql(u8, a, "--henad-model") or std.mem.eql(u8, a, "--nous-model")) and i + 1 < args.len) {
             i += 1;
             model_override = args[i];
-        } else if (std.mem.eql(u8, a, "--nous-url") and i + 1 < args.len) {
+        } else if ((std.mem.eql(u8, a, "--henad-url") or std.mem.eql(u8, a, "--nous-url")) and i + 1 < args.len) {
             i += 1;
             online_url = args[i];
         } else if (std.mem.eql(u8, a, "--config") and i + 1 < args.len) {
             i += 1;
-        } else if (std.mem.eql(u8, a, "--nous") or std.mem.eql(u8, a, "--nous-offline")) {
-            after_nous = true;
+        } else if (std.mem.eql(u8, a, "--henad") or std.mem.eql(u8, a, "--henad-offline") or
+            std.mem.eql(u8, a, "--nous") or std.mem.eql(u8, a, "--nous-offline"))
+        {
+            after_henad = true;
         } else if (std.mem.startsWith(u8, a, "--")) {
             continue;
-        } else if (after_nous) {
+        } else if (after_henad) {
             if (question.items.len > 0) question.append(' ') catch {};
             question.appendSlice(a) catch {};
         }
     }
     const stdout = std.io.getStdOut();
-    var s = nous_cli.Session.init(allocator, .{
+    var s = henad_cli.Session.init(allocator, .{
         .report = report.items,
         .endpoint = endpoint,
         .model = cfg.ai_model,
         .model_override = model_override,
-        .force_offline = hasFlag(args, "--nous-offline"),
+        .force_offline = hasFlag(args, "--henad-offline") or hasFlag(args, "--nous-offline"),
         .online_url = online_url,
         .session_path = session_path,
         .question = if (question.items.len > 0) question.items else null,
     }, .{ .in = std.io.getStdIn().reader().any(), .out = stdout.writer().any() });
     defer s.deinit();
     return s.run() catch |err| {
-        std.debug.print("nous: {s}\n", .{@errorName(err)});
+        std.debug.print("henad: {s}\n", .{@errorName(err)});
         return 1;
     };
 }
@@ -503,11 +506,12 @@ fn printHelp() !void {
         \\    --no-voice       Do not speak AI answers. The key stays in ELEVENLABS_API_KEY, never in config
         \\    --ai-setup       Print whether config, Ollama, the model, and the voice key are ready.
         \\                     --doctor is the same command. No config file is required.
-        \\    --nous [question]  Nous, the setup assistant. Offline on local Ollama (nothing leaves
-        \\                     the machine) until you are online and /signin to your own Nous
-        \\                     account; then the online Nous (nous.youneek.dev) guides the rest.
-        \\                     --nous-offline stays offline. --nous-model <name> picks an Ollama
-        \\                     model. See docs/NOUS.md
+        \\    --henad [question] Henad, the setup assistant. Offline on local Ollama (nothing leaves
+        \\                     the machine) until you are online and /signin to your own Henad
+        \\                     account; then the online Henad (henad.youneek.dev) guides the rest.
+        \\                     --henad-offline stays offline. --henad-model <name> picks an Ollama
+        \\                     model. Henad was called Nous: --nous and the other --nous-*
+        \\                     flags still work. See docs/HENAD.md
         \\    --headless       Run in this terminal, without a GUI window (default)
         \\    --tui            Same as --headless. On macOS this keeps the session in the current terminal
         \\    --gui            Open a native window in this process (Wayland/X11/Win32/Cocoa; falls back to headless)
@@ -614,8 +618,8 @@ test {
     _ = @import("ai/engine.zig");
     _ = @import("ai/voice.zig");
     _ = @import("ai/doctor.zig");
-    _ = @import("ai/nous.zig");
-    _ = @import("ai/nous_cli.zig");
+    _ = @import("ai/henad.zig");
+    _ = @import("ai/henad_cli.zig");
     _ = @import("app/ai_controller.zig");
     _ = @import("app/shell_inject.zig");
     _ = @import("ghost/match.zig");
