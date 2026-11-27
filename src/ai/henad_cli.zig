@@ -1,10 +1,10 @@
-//! `deathterminal --nous`: the Nous chat loop. See nous.zig for the two
+//! `deathterminal --henad`: the Henad chat loop. See henad.zig for the two
 //! stages. Input and output are injected so the loop is tested without a
 //! terminal, Ollama, or the network.
 
 const std = @import("std");
 const builtin = @import("builtin");
-const nous = @import("nous.zig");
+const henad = @import("henad.zig");
 const doctor = @import("doctor.zig");
 const openai = @import("openai.zig");
 
@@ -12,17 +12,17 @@ pub const Options = struct {
     /// Output of the built-in check (doctor.writeReport).
     report: []const u8,
     /// config.ai.endpoint and config.ai.model.
-    endpoint: []const u8 = nous.ollama_endpoint,
+    endpoint: []const u8 = henad.ollama_endpoint,
     model: []const u8 = doctor.default_model,
-    /// `--nous-model`.
+    /// `--henad-model`.
     model_override: ?[]const u8 = null,
-    /// `--nous-offline`.
+    /// `--henad-offline`.
     force_offline: bool = false,
-    /// `--nous-url` or NOUS_URL. Default https://nous.youneek.dev.
-    online_url: []const u8 = nous.default_online_url,
-    /// Session file (nous.sessionPath).
+    /// `--henad-url` or HENAD_URL. Default https://henad.youneek.dev.
+    online_url: []const u8 = henad.default_online_url,
+    /// Session file (henad.sessionPath).
     session_path: []const u8,
-    /// One-shot question (`deathterminal --nous "..."`). Null = chat loop.
+    /// One-shot question (`deathterminal --henad "..."`). Null = chat loop.
     question: ?[]const u8 = null,
     connect_ms: u32 = 2500,
 };
@@ -48,7 +48,7 @@ pub const Session = struct {
     ollama_up: bool = false,
     token: ?[]u8 = null,
     email: ?[]u8 = null,
-    online: nous.OnlineState = .signed_out,
+    online: henad.OnlineState = .signed_out,
     force_offline: bool = false,
     history: std.ArrayList(openai.Message),
     last_answer: ?[]u8 = null,
@@ -59,7 +59,7 @@ pub const Session = struct {
     }
 
     pub fn deinit(self: *Session) void {
-        nous.freeModels(self.a, self.models);
+        henad.freeModels(self.a, self.models);
         if (self.token) |tk| self.a.free(tk);
         if (self.email) |e| self.a.free(e);
         self.clearHistory();
@@ -73,17 +73,17 @@ pub const Session = struct {
         self.history.clearRetainingCapacity();
     }
 
-    pub fn mode(self: *const Session) nous.Mode {
-        return nous.chooseMode(self.force_offline, self.online);
+    pub fn mode(self: *const Session) henad.Mode {
+        return henad.chooseMode(self.force_offline, self.online);
     }
 
     fn endpoint(self: *const Session) []const u8 {
-        return nous.offlineEndpoint(self.opts.endpoint);
+        return henad.offlineEndpoint(self.opts.endpoint);
     }
 
     /// Ollama models, the session file, and the online check.
     pub fn detect(self: *Session) void {
-        nous.freeModels(self.a, self.models);
+        henad.freeModels(self.a, self.models);
         self.models = &.{};
         self.model = null;
         self.ollama_up = false;
@@ -93,11 +93,11 @@ pub const Session = struct {
             defer got.deinit(self.a);
             if (got.status == 200) {
                 self.ollama_up = true;
-                self.models = nous.parseModels(self.a, got.body) catch &.{};
-                self.model = nous.pickModel(self.models, self.opts.model_override orelse self.opts.model);
+                self.models = henad.parseModels(self.a, got.body) catch &.{};
+                self.model = henad.pickModel(self.models, self.opts.model_override orelse self.opts.model);
             }
         } else |_| {}
-        if (self.token == null) self.token = nous.loadToken(self.a, self.opts.session_path);
+        if (self.token == null) self.token = henad.loadToken(self.a, self.opts.session_path);
         self.checkOnline();
     }
 
@@ -106,19 +106,19 @@ pub const Session = struct {
             self.online = .disabled;
             return;
         }
-        self.online = nous.probeOnline(self.a, self.opts.online_url, self.token, self.opts.connect_ms);
+        self.online = henad.probeOnline(self.a, self.opts.online_url, self.token, self.opts.connect_ms);
         if (self.online == .ready and self.email == null and self.token != null) {
-            const r = nous.httpCall(self.a, .GET, self.opts.online_url, "/auth/me", self.token, null) catch return;
+            const r = henad.httpCall(self.a, .GET, self.opts.online_url, "/auth/me", self.token, null) catch return;
             defer r.deinit(self.a);
-            self.email = nous.emailFrom(self.a, r.body);
+            self.email = henad.emailFrom(self.a, r.body);
         }
     }
 
     pub fn writeStatus(self: *Session) !void {
         const w = self.io.out;
-        try w.print("{s} · {s}\n", .{ nous.name, nous.slogan });
+        try w.print("{s} · {s}\n", .{ henad.name, henad.slogan });
         switch (self.mode()) {
-            .online => try w.print("Mode: ONLINE · Nous at {s}{s}{s}. Questions go to your Nous account.\n", .{
+            .online => try w.print("Mode: ONLINE · Henad at {s}{s}{s}. Questions go to your Henad account.\n", .{
                 hostOf(self.opts.online_url),
                 if (self.email != null) ", signed in as " else "",
                 self.email orelse "",
@@ -129,7 +129,7 @@ pub const Session = struct {
                 } else {
                     try w.writeAll("Mode: OFFLINE · local Ollama is not ready.\n");
                 }
-                try w.print("Online Nous: {s}.\n", .{nous.onlineReason(self.online)});
+                try w.print("Online Henad: {s}.\n", .{henad.onlineReason(self.online)});
             },
         }
     }
@@ -140,7 +140,7 @@ pub const Session = struct {
             \\  /run N     run suggested command N (asks first; destructive ones need "run it")
             \\  /status    show the mode and re-check Ollama and the network
             \\  /models    list local Ollama models
-            \\  /signin    sign in to your own Nous account (online mode)
+            \\  /signin    sign in to your own Henad account (online mode)
             \\  /signout   sign out and delete the saved session
             \\  /offline   stay offline   /online   allow online again
             \\  /doctor    print the built-in check
@@ -155,34 +155,34 @@ pub const Session = struct {
         const w = self.io.out;
         var answer: ?[]u8 = null;
         if (self.mode() == .online) {
-            if (nous.askOnline(self.a, self.opts.online_url, self.token.?, question, self.history.items)) |text| {
-                try w.writeAll("Nous (online): ");
+            if (henad.askOnline(self.a, self.opts.online_url, self.token.?, question, self.history.items)) |text| {
+                try w.writeAll("Henad (online): ");
                 try w.writeAll(text);
                 try w.writeAll("\n");
                 answer = text;
             } else |err| {
                 self.online = if (err == error.SignedOut) .signed_out else .no_network;
-                try w.print("[Online Nous is unavailable ({s}). Switching to offline.]\n", .{nous.onlineReason(self.online)});
+                try w.print("[Online Henad is unavailable ({s}). Switching to offline.]\n", .{henad.onlineReason(self.online)});
             }
         }
         if (answer == null) {
             const model = self.model orelse {
-                try nous.writeOfflineHelp(w, self.ollama_up, self.opts.report);
+                try henad.writeOfflineHelp(w, self.ollama_up, self.opts.report);
                 return;
             };
-            const sys = try nous.systemPrompt(self.a, self.opts.report);
+            const sys = try henad.systemPrompt(self.a, self.opts.report);
             defer self.a.free(sys);
             var msgs = std.ArrayList(openai.Message).init(self.a);
             defer msgs.deinit();
             try msgs.append(.{ .role = "system", .content = sys });
             try msgs.appendSlice(self.history.items);
             try msgs.append(.{ .role = "user", .content = question });
-            try w.writeAll("Nous (offline): ");
-            answer = nous.askOffline(self.a, self.endpoint(), model, msgs.items, w) catch |err| {
+            try w.writeAll("Henad (offline): ");
+            answer = henad.askOffline(self.a, self.endpoint(), model, msgs.items, w) catch |err| {
                 try w.print("\n[Local Ollama did not answer ({s}).]\n", .{@errorName(err)});
                 self.ollama_up = false;
                 self.model = null;
-                try nous.writeOfflineHelp(w, false, self.opts.report);
+                try henad.writeOfflineHelp(w, false, self.opts.report);
                 return;
             };
             try w.writeAll("\n");
@@ -193,11 +193,11 @@ pub const Session = struct {
         if (self.last_answer) |old| self.a.free(old);
         self.last_answer = text;
         self.a.free(self.commands);
-        self.commands = try nous.extractCommands(self.a, text);
+        self.commands = try henad.extractCommands(self.a, text);
         if (self.commands.len > 0) {
             try w.writeAll("\nSuggested commands (nothing runs until you type /run N and confirm):\n");
             for (self.commands, 1..) |c, i| {
-                const risk = nous.classifyCommand(self.a, c);
+                const risk = henad.classifyCommand(self.a, c);
                 try w.print("  {d}. {s}{s}\n", .{ i, c, if (risk == .destructive) "   [destructive]" else "" });
             }
         }
@@ -220,16 +220,16 @@ pub const Session = struct {
             return;
         }
         const cmd = self.commands[n - 1];
-        const risk = nous.classifyCommand(self.a, cmd);
+        const risk = henad.classifyCommand(self.a, cmd);
         try w.print("Command: {s}\n", .{cmd});
         if (risk == .destructive) {
-            try w.print("WARNING: this command can delete or change things that are hard to undo.\nType \"{s}\" to run it, anything else cancels: ", .{nous.destructive_phrase});
+            try w.print("WARNING: this command can delete or change things that are hard to undo.\nType \"{s}\" to run it, anything else cancels: ", .{henad.destructive_phrase});
         } else {
             try w.writeAll("Run it? [y/N] ");
         }
         var buf: [256]u8 = undefined;
         const reply = (try readLine(self.io.in, &buf)) orelse "";
-        if (!nous.confirmed(risk, reply)) {
+        if (!henad.confirmed(risk, reply)) {
             try w.writeAll("Cancelled. Nothing ran.\n");
             return;
         }
@@ -239,11 +239,11 @@ pub const Session = struct {
 
     pub fn signIn(self: *Session) !void {
         const w = self.io.out;
-        if (!nous.reachable(self.opts.online_url, self.opts.connect_ms)) {
+        if (!henad.reachable(self.opts.online_url, self.opts.connect_ms)) {
             try w.print("Cannot reach {s}. Stay offline until the network is up.\n", .{hostOf(self.opts.online_url)});
             return;
         }
-        try w.print("Sign in to your Nous account at {s}. No account yet? Sign up at {s}\nEmail: ", .{ hostOf(self.opts.online_url), self.opts.online_url });
+        try w.print("Sign in to your Henad account at {s}. No account yet? Sign up at {s}\nEmail: ", .{ hostOf(self.opts.online_url), self.opts.online_url });
         var ebuf: [320]u8 = undefined;
         const email_raw = (try readLine(self.io.in, &ebuf)) orelse return;
         const email = std.mem.trim(u8, email_raw, " \t\r");
@@ -253,7 +253,7 @@ pub const Session = struct {
             std.crypto.utils.secureZero(u8, password);
             self.a.free(password);
         }
-        const res = nous.login(self.a, self.opts.online_url, email, password) catch |err| {
+        const res = henad.login(self.a, self.opts.online_url, email, password) catch |err| {
             try w.print("Sign-in failed: {s}. Still offline.\n", .{@errorName(err)});
             return;
         };
@@ -264,7 +264,7 @@ pub const Session = struct {
             .ok => |tok| {
                 if (self.token) |old| self.a.free(old);
                 self.token = tok;
-                nous.saveToken(self.opts.session_path, tok) catch |err| {
+                henad.saveToken(self.opts.session_path, tok) catch |err| {
                     try w.print("Signed in, but the session could not be saved ({s}); you will need /signin next time.\n", .{@errorName(err)});
                 };
                 if (self.email) |e| self.a.free(e);
@@ -278,15 +278,15 @@ pub const Session = struct {
 
     pub fn signOut(self: *Session) !void {
         if (self.token) |tk| {
-            if (nous.httpCall(self.a, .POST, self.opts.online_url, "/auth/logout", tk, "{}")) |r| r.deinit(self.a) else |_| {}
+            if (henad.httpCall(self.a, .POST, self.opts.online_url, "/auth/logout", tk, "{}")) |r| r.deinit(self.a) else |_| {}
             self.a.free(tk);
             self.token = null;
         }
         if (self.email) |e| self.a.free(e);
         self.email = null;
-        nous.deleteToken(self.opts.session_path);
+        henad.deleteToken(self.opts.session_path);
         self.online = .signed_out;
-        try self.io.out.writeAll("Signed out. The saved session is deleted. Nous is offline.\n");
+        try self.io.out.writeAll("Signed out. The saved session is deleted. Henad is offline.\n");
     }
 
     /// Handle one input line. Returns false to quit.
@@ -345,13 +345,13 @@ pub const Session = struct {
         }
         if (self.mode() == .offline and self.model == null) {
             try self.io.out.writeAll("\n");
-            try nous.writeOfflineHelp(self.io.out, self.ollama_up, self.opts.report);
+            try henad.writeOfflineHelp(self.io.out, self.ollama_up, self.opts.report);
             try self.io.out.writeAll("\nYou can still type /signin, /status or /quit.\n");
         }
         try self.io.out.writeAll("Type a question, or /help.\n");
         var buf: [4096]u8 = undefined;
         while (true) {
-            try self.io.out.print("\n{s}> ", .{if (self.mode() == .online) "nous·online" else "nous·offline"});
+            try self.io.out.print("\n{s}> ", .{if (self.mode() == .online) "henad·online" else "henad·offline"});
             const line = (try readLine(self.io.in, &buf)) orelse break;
             if (!try self.handle(line)) break;
         }
@@ -445,14 +445,14 @@ fn testSession(a: std.mem.Allocator, in: std.io.AnyReader, out: std.io.AnyWriter
     }, .{ .in = in, .out = out, .run = fakeRun, .secret = fakeSecret });
 }
 
-test "nous cli: /run asks first and needs the phrase for destructive commands" {
+test "henad cli: /run asks first and needs the phrase for destructive commands" {
     var input = std.io.fixedBufferStream("n\nyes\nrun it\ny\n");
     var out = std.ArrayList(u8).init(t.allocator);
     defer out.deinit();
-    var s = testSession(t.allocator, input.reader().any(), out.writer().any(), "/nonexistent/nous-session");
+    var s = testSession(t.allocator, input.reader().any(), out.writer().any(), "/nonexistent/henad-session");
     defer s.deinit();
     s.last_answer = try t.allocator.dupe(u8, "```sh\nrm -rf ~/.config/death-terminal\nollama pull qwen2.5-coder:0.5b\n```");
-    s.commands = try nous.extractCommands(t.allocator, s.last_answer.?);
+    s.commands = try henad.extractCommands(t.allocator, s.last_answer.?);
     ran_count = 0;
     _ = try s.handle("/run 1"); // "n" → cancelled
     try t.expectEqual(@as(usize, 0), ran_count);
@@ -468,11 +468,11 @@ test "nous cli: /run asks first and needs the phrase for destructive commands" {
     try t.expect(std.mem.indexOf(u8, out.items, "Cancelled. Nothing ran.") != null);
 }
 
-test "nous cli: offline with no Ollama prints the fallback, never crashes" {
+test "henad cli: offline with no Ollama prints the fallback, never crashes" {
     var input = std.io.fixedBufferStream("");
     var out = std.ArrayList(u8).init(t.allocator);
     defer out.deinit();
-    var s = testSession(t.allocator, input.reader().any(), out.writer().any(), "/nonexistent/nous-session");
+    var s = testSession(t.allocator, input.reader().any(), out.writer().any(), "/nonexistent/henad-session");
     defer s.deinit();
     s.online = .no_network;
     try s.writeStatus();
@@ -483,7 +483,7 @@ test "nous cli: offline with no Ollama prints the fallback, never crashes" {
     try t.expect(!try s.handle("/quit"));
 }
 
-test "nous cli: online answer, then fallback to offline when the session expires" {
+test "henad cli: online answer, then fallback to offline when the session expires" {
     const mock = @import("mock_server.zig");
     const replies = [_]mock.Reply{
         .{ .content_type = "application/json", .chunks = &.{"{\"text\":\"Plugins:\\n```sh\\ndeathterminal --plugins list\\n```\"}"} },
@@ -497,31 +497,31 @@ test "nous cli: online answer, then fallback to offline when the session expires
     var input = std.io.fixedBufferStream("");
     var out = std.ArrayList(u8).init(t.allocator);
     defer out.deinit();
-    var s = testSession(t.allocator, input.reader().any(), out.writer().any(), "/nonexistent/nous-session");
+    var s = testSession(t.allocator, input.reader().any(), out.writer().any(), "/nonexistent/henad-session");
     defer s.deinit();
     s.opts.online_url = base;
     s.token = try t.allocator.dupe(u8, "sess-abc");
     s.online = .ready;
-    try t.expectEqual(nous.Mode.online, s.mode());
+    try t.expectEqual(henad.Mode.online, s.mode());
     try s.writeStatus();
     try s.ask("what are plugins?");
     try t.expect(std.mem.indexOf(u8, out.items, "Mode: ONLINE") != null);
-    try t.expect(std.mem.indexOf(u8, out.items, "Nous (online): Plugins:") != null);
+    try t.expect(std.mem.indexOf(u8, out.items, "Henad (online): Plugins:") != null);
     try t.expectEqualStrings("deathterminal --plugins list", s.commands[0]);
     try s.ask("and themes?");
-    try t.expectEqual(nous.Mode.offline, s.mode());
+    try t.expectEqual(henad.Mode.offline, s.mode());
     try t.expect(std.mem.indexOf(u8, out.items, "Switching to offline") != null);
     try t.expect(std.mem.indexOf(u8, out.items, "ollama serve") != null);
 }
 
-test "nous cli: /offline forces offline even when signed in" {
+test "henad cli: /offline forces offline even when signed in" {
     var input = std.io.fixedBufferStream("");
     var out = std.ArrayList(u8).init(t.allocator);
     defer out.deinit();
-    var s = testSession(t.allocator, input.reader().any(), out.writer().any(), "/nonexistent/nous-session");
+    var s = testSession(t.allocator, input.reader().any(), out.writer().any(), "/nonexistent/henad-session");
     defer s.deinit();
     s.online = .ready;
     _ = try s.handle("/offline");
-    try t.expectEqual(nous.Mode.offline, s.mode());
+    try t.expectEqual(henad.Mode.offline, s.mode());
     try t.expect(std.mem.indexOf(u8, out.items, "turned off") != null);
 }

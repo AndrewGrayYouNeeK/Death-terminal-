@@ -1,20 +1,20 @@
-//! Nous: the setup assistant behind `deathterminal --nous`.
+//! Henad: the setup assistant behind `deathterminal --henad`.
 //!
 //! Two stages:
-//!   1. Offline Nous talks only to local Ollama (http://localhost:11434). It
+//!   1. Offline Henad talks only to local Ollama (http://localhost:11434). It
 //!      helps get Death Terminal installed, configured, and connected.
 //!      Nothing leaves the machine.
-//!   2. Online Nous. Once the machine is online and the user has signed in
-//!      with their own Nous account, questions go to the live Nous API
-//!      (https://nous.youneek.dev, POST /agent/chat) for help with every
+//!   2. Online Henad. Once the machine is online and the user has signed in
+//!      with their own Henad account, questions go to the live Henad API
+//!      (https://henad.youneek.dev, POST /agent/chat) for help with every
 //!      other feature. When the API is unreachable or the user is signed
-//!      out, Nous falls back to offline.
+//!      out, Henad falls back to offline.
 //!
 //! No token ships with Death Terminal. `/signin` asks for the user's own
 //! email and password, keeps the session token in a 0600 file under the
 //! config folder, and `/signout` deletes it.
 //!
-//! Commands Nous suggests are never run on their own. `/run N` asks first,
+//! Commands Henad suggests are never run on their own. `/run N` asks first,
 //! and a destructive command (the Ghost Run list plus a few extras) needs
 //! the phrase "run it" typed out.
 
@@ -28,25 +28,28 @@ const env_mod = @import("../platform/env.zig");
 const paths = @import("../muscle/paths.zig");
 const dial = @import("../net/dial.zig");
 
-pub const name = "Nous";
+pub const name = "Henad";
 pub const slogan = "The architecture of understanding.";
-pub const default_online_url = "https://nous.youneek.dev";
+pub const default_online_url = "https://henad.youneek.dev";
 pub const ollama_endpoint = doctor.default_endpoint;
-pub const session_file = "nous-session";
+pub const session_file = "henad-session";
+/// Session file name from before the rename (Henad was called Nous). Read as a
+/// fallback so an existing sign-in keeps working.
+pub const legacy_session_file = "nous-session";
 pub const session_cookie = "nf_session";
 pub const destructive_phrase = "run it";
 pub const max_commands = 9;
 
 pub const Mode = enum { offline, online };
 
-/// Whether online Nous can be used right now.
+/// Whether online Henad can be used right now.
 pub const OnlineState = enum {
     ready,
-    /// No network, or nous.youneek.dev did not answer.
+    /// No network, or henad.youneek.dev did not answer.
     no_network,
     /// Reachable, and there is no valid session for this user.
     signed_out,
-    /// `--nous-offline` or `/offline`.
+    /// `--henad-offline` or `/offline`.
     disabled,
 };
 
@@ -60,8 +63,8 @@ pub fn chooseMode(force_offline: bool, online: OnlineState) Mode {
 pub fn onlineReason(s: OnlineState) []const u8 {
     return switch (s) {
         .ready => "signed in",
-        .no_network => "the online Nous service is not reachable (no network, or it is down)",
-        .signed_out => "not signed in. Type /signin to use your own Nous account",
+        .no_network => "the online Henad service is not reachable (no network, or it is down)",
+        .signed_out => "not signed in. Type /signin to use your own Henad account",
         .disabled => "turned off (/online turns it back on)",
     };
 }
@@ -175,7 +178,7 @@ pub fn confirmed(risk: Risk, reply: []const u8) bool {
 
 pub fn systemPrompt(a: std.mem.Allocator, report: []const u8) ![]u8 {
     return std.fmt.allocPrint(a,
-        \\You are Nous, the offline setup assistant built into YouNeeK Death Terminal (the `deathterminal` command). Slogan: "The architecture of understanding."
+        \\You are Henad, the offline setup assistant built into YouNeeK Death Terminal (the `deathterminal` command). Slogan: "The architecture of understanding."
         \\You run on the user's own computer through local Ollama. Nothing they type leaves the machine.
         \\Your job: get Death Terminal installed, configured and connected. Diagnose config, Ollama, model, shell integration, SSH and network problems. Explain errors in plain words and suggest the next command.
         \\Facts:
@@ -184,14 +187,14 @@ pub fn systemPrompt(a: std.mem.Allocator, report: []const u8) ![]u8 {
         \\- AI suggestions use local Ollama at http://localhost:11434/v1 with qwen2.5-coder:0.5b by default: `ollama pull qwen2.5-coder:0.5b`. Start Ollama with the Ollama app or `ollama serve`.
         \\- `deathterminal --gui` opens a window. `deathterminal --ssh <host>` connects with the built-in SSH client (profiles in config.lua or ~/.ssh/config).
         \\- Shell integration for bash/zsh/fish is injected automatically; `deathterminal --print-shell-integration zsh` prints it.
-        \\- `deathterminal --plugins list` shows plugins. `deathterminal --share` shares a pane. `deathterminal --nous` is you; once the user is online and signs in with /signin, the online Nous at nous.youneek.dev takes over for everything else.
+        \\- `deathterminal --plugins list` shows plugins. `deathterminal --share` shares a pane. `deathterminal --henad` is you; once the user is online and signs in with /signin, the online Henad at henad.youneek.dev takes over for everything else.
         \\Rules: answer in a few short sentences. Put every command on its own line inside a ```sh fence so the user can pick it with /run. Never suggest deleting files, force pushes, sudo, or anything destructive unless the user asks, and then say plainly what it destroys. Never ask for passwords or API keys.
         \\Current check of this machine:
         \\{s}
     , .{report});
 }
 
-/// One-line context added in front of a question sent to online Nous.
+/// One-line context added in front of a question sent to online Henad.
 pub fn onlineQuestion(a: std.mem.Allocator, question: []const u8) ![]u8 {
     const clean = try redact_mod.redact(a, question);
     defer a.free(clean);
@@ -201,17 +204,17 @@ pub fn onlineQuestion(a: std.mem.Allocator, question: []const u8) ![]u8 {
 pub fn writeOfflineHelp(w: anytype, model_missing: bool, report: []const u8) !void {
     if (model_missing) {
         try w.writeAll(
-            \\Nous (offline) needs a local model. Ollama is running but has no chat model.
+            \\Henad (offline) needs a local model. Ollama is running but has no chat model.
             \\  1. Get one:   ollama pull qwen2.5-coder:0.5b
-            \\  2. Try again: deathterminal --nous
+            \\  2. Try again: deathterminal --henad
             \\
         );
     } else {
         try w.writeAll(
-            \\Nous (offline) needs Ollama, and nothing is answering at http://localhost:11434.
+            \\Henad (offline) needs Ollama, and nothing is answering at http://localhost:11434.
             \\  1. Start it:  open the Ollama app, or run `ollama serve`
             \\  2. Get a model: ollama pull qwen2.5-coder:0.5b
-            \\  3. Try again: deathterminal --nous
+            \\  3. Try again: deathterminal --henad
             \\  No Ollama yet? https://ollama.com/download
             \\
         );
@@ -222,7 +225,7 @@ pub fn writeOfflineHelp(w: anytype, model_missing: bool, report: []const u8) !vo
 
 // ------------------------------------------------------------ offline (Ollama)
 
-/// The Ollama endpoint Nous may use: config.ai.endpoint when it is local
+/// The Ollama endpoint Henad may use: config.ai.endpoint when it is local
 /// Ollama, otherwise http://localhost:11434/v1. Never a remote host.
 pub fn offlineEndpoint(configured: []const u8) []const u8 {
     return if (doctor.isLocalOllama(configured)) configured else ollama_endpoint;
@@ -256,7 +259,7 @@ pub fn askOffline(a: std.mem.Allocator, endpoint: []const u8, model: []const u8,
     return out.toOwnedSlice();
 }
 
-// ------------------------------------------------------------ online (nous.youneek.dev)
+// ------------------------------------------------------------ online (henad.youneek.dev)
 
 pub const HttpResult = struct {
     status: u16 = 0,
@@ -298,7 +301,7 @@ fn joinUrl(buf: []u8, base: []const u8, path: []const u8) ![]const u8 {
     return std.fmt.bufPrint(buf, "{s}{s}", .{ std.mem.trimRight(u8, base, "/"), path });
 }
 
-/// One HTTP call to online Nous. `token` goes in `Authorization: Bearer`.
+/// One HTTP call to online Henad. `token` goes in `Authorization: Bearer`.
 pub fn httpCall(a: std.mem.Allocator, method: std.http.Method, base: []const u8, path: []const u8, token: ?[]const u8, body: ?[]const u8) !HttpResult {
     var url_buf: [1024]u8 = undefined;
     const url = try joinUrl(&url_buf, base, path);
@@ -318,7 +321,7 @@ pub fn httpCall(a: std.mem.Allocator, method: std.http.Method, base: []const u8,
         .keep_alive = false,
         .redirect_behavior = .unhandled,
         .headers = .{
-            .user_agent = .{ .override = "deathterminal-nous" },
+            .user_agent = .{ .override = "deathterminal-henad" },
             .content_type = if (body != null) .{ .override = "application/json" } else .default,
         },
         .extra_headers = extra[0..n_extra],
@@ -377,7 +380,7 @@ pub fn parseChatAnswer(a: std.mem.Allocator, body: []const u8) ![]u8 {
 
 pub const OnlineError = error{ SignedOut, Unavailable, BadResponse };
 
-/// Ask online Nous. SignedOut on 401/403, Unavailable on anything else
+/// Ask online Henad. SignedOut on 401/403, Unavailable on anything else
 /// that is not an answer, so the caller can fall back to offline.
 pub fn askOnline(a: std.mem.Allocator, base: []const u8, token: []const u8, question: []const u8, history: []const openai.Message) ![]u8 {
     const q = try onlineQuestion(a, question);
@@ -413,7 +416,7 @@ pub fn login(a: std.mem.Allocator, base: []const u8, email: []const u8, password
 
 // ------------------------------------------------------------ session file
 
-/// `<config dir>/death-terminal/nous-session` (XDG_CONFIG_HOME or
+/// `<config dir>/death-terminal/henad-session` (XDG_CONFIG_HOME or
 /// ~/.config; %APPDATA% on Windows). `override_dir` is for tests.
 pub fn sessionPath(a: std.mem.Allocator, override_dir: ?[]const u8) ![]u8 {
     if (override_dir) |d| return std.fs.path.join(a, &.{ d, session_file });
@@ -423,13 +426,14 @@ pub fn sessionPath(a: std.mem.Allocator, override_dir: ?[]const u8) ![]u8 {
     return std.fs.path.join(a, &.{ dir, session_file });
 }
 
-/// NOUS_SESSION wins (for CI and scripts), then the session file.
+/// HENAD_SESSION (or the old NOUS_SESSION) wins (for CI and scripts), then the
+/// session file, then the pre-rename `nous-session` file next to it.
 pub fn loadToken(a: std.mem.Allocator, path: []const u8) ?[]u8 {
-    if (env_mod.get("NOUS_SESSION")) |v| {
+    if (env_mod.get("HENAD_SESSION") orelse env_mod.get("NOUS_SESSION")) |v| {
         const tok = std.mem.trim(u8, v, " \r\n\t");
         if (tok.len > 0) return a.dupe(u8, tok) catch null;
     }
-    const data = (paths.readFile(a, path, 4096) catch return null) orelse return null;
+    const data = readSessionFile(a, path) orelse return null;
     const tok = std.mem.trim(u8, data, " \r\n\t");
     if (tok.len == 0) {
         a.free(data);
@@ -438,6 +442,15 @@ pub fn loadToken(a: std.mem.Allocator, path: []const u8) ?[]u8 {
     const owned = a.dupe(u8, tok) catch null;
     a.free(data);
     return owned;
+}
+
+fn readSessionFile(a: std.mem.Allocator, path: []const u8) ?[]u8 {
+    if (paths.readFile(a, path, 4096) catch null) |data| return data;
+    if (!std.mem.eql(u8, std.fs.path.basename(path), session_file)) return null;
+    const dir = std.fs.path.dirname(path) orelse return null;
+    const old = std.fs.path.join(a, &.{ dir, legacy_session_file }) catch return null;
+    defer a.free(old);
+    return paths.readFile(a, old, 4096) catch null;
 }
 
 pub fn saveToken(path: []const u8, token: []const u8) !void {
@@ -452,7 +465,7 @@ pub fn deleteToken(path: []const u8) void {
 
 const t = std.testing;
 
-test "nous: mode follows connectivity and sign-in" {
+test "henad: mode follows connectivity and sign-in" {
     try t.expectEqual(Mode.online, chooseMode(false, .ready));
     try t.expectEqual(Mode.offline, chooseMode(false, .no_network));
     try t.expectEqual(Mode.offline, chooseMode(false, .signed_out));
@@ -461,7 +474,7 @@ test "nous: mode follows connectivity and sign-in" {
     try t.expect(std.mem.indexOf(u8, onlineReason(.signed_out), "/signin") != null);
 }
 
-test "nous: parse and pick installed models" {
+test "henad: parse and pick installed models" {
     const body = "{\"models\":[{\"name\":\"nomic-embed-text:latest\",\"size\":1},{\"name\":\"llama3.2:latest\"},{\"name\":\"qwen2.5-coder:0.5b\"}]}";
     const models = try parseModels(t.allocator, body);
     defer freeModels(t.allocator, models);
@@ -477,7 +490,7 @@ test "nous: parse and pick installed models" {
     try t.expectEqual(@as(usize, 0), junk.len);
 }
 
-test "nous: commands come from fences only" {
+test "henad: commands come from fences only" {
     const answer =
         \\Start Ollama, then pull the model:
         \\```sh
@@ -498,7 +511,7 @@ test "nous: commands come from fences only" {
     try t.expectEqualStrings("deathterminal --ai-setup", cmds[2]);
 }
 
-test "nous: destructive commands need the typed phrase" {
+test "henad: destructive commands need the typed phrase" {
     const a = t.allocator;
     try t.expectEqual(Risk.normal, classifyCommand(a, "ollama pull qwen2.5-coder:0.5b"));
     try t.expectEqual(Risk.normal, classifyCommand(a, "deathterminal --ai-setup"));
@@ -517,13 +530,13 @@ test "nous: destructive commands need the typed phrase" {
     try t.expect(confirmed(.destructive, "Run it"));
 }
 
-test "nous: offline endpoint never points at a remote host" {
+test "henad: offline endpoint never points at a remote host" {
     try t.expectEqualStrings("http://127.0.0.1:11434/v1", offlineEndpoint("http://127.0.0.1:11434/v1"));
     try t.expectEqualStrings(ollama_endpoint, offlineEndpoint("https://api.x.ai/v1"));
     try t.expectError(error.NotLocal, askOffline(t.allocator, "https://api.x.ai/v1", "m", &.{}, null));
 }
 
-test "nous: fallback text when Ollama is down or has no model" {
+test "henad: fallback text when Ollama is down or has no model" {
     var buf = std.ArrayList(u8).init(t.allocator);
     defer buf.deinit();
     try writeOfflineHelp(buf.writer(), false, "Ollama: not running.\n");
@@ -535,7 +548,7 @@ test "nous: fallback text when Ollama is down or has no model" {
     try t.expect(std.mem.indexOf(u8, buf.items, "no chat model") != null);
 }
 
-test "nous: system prompt carries the check and the rules" {
+test "henad: system prompt carries the check and the rules" {
     const p = try systemPrompt(t.allocator, "Ollama: running.");
     defer t.allocator.free(p);
     try t.expect(std.mem.indexOf(u8, p, "Ollama: running.") != null);
@@ -543,13 +556,13 @@ test "nous: system prompt carries the check and the rules" {
     try t.expect(std.mem.indexOf(u8, p, slogan) != null);
 }
 
-test "nous: session cookie parsing" {
+test "henad: session cookie parsing" {
     try t.expectEqualStrings("abc123", parseSessionCookie("nf_session=abc123; Path=/; HttpOnly; Secure; SameSite=Strict").?);
     try t.expect(parseSessionCookie("other=1; Path=/") == null);
     try t.expect(parseSessionCookie("nf_session=\"\"; Max-Age=0") == null);
 }
 
-test "nous: online question is redacted and tagged" {
+test "henad: online question is redacted and tagged" {
     const q = try onlineQuestion(t.allocator, "my key is OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz0123456789 help");
     defer t.allocator.free(q);
     try t.expect(std.mem.indexOf(u8, q, "sk-abcdefghijklmnopqrstuvwxyz0123456789") == null);
@@ -559,20 +572,20 @@ test "nous: online question is redacted and tagged" {
     try t.expectEqualStrings("{\"question\":\"hi\",\"history\":[{\"role\":\"user\",\"content\":\"earlier\"}]}", body);
 }
 
-test "nous: session file round trip, 0600" {
+test "henad: session file round trip, 0600" {
     var tmp = t.tmpDir(.{});
     defer tmp.cleanup();
     const dir = try tmp.dir.realpathAlloc(t.allocator, ".");
     defer t.allocator.free(dir);
     const path = try sessionPath(t.allocator, dir);
     defer t.allocator.free(path);
-    if (env_mod.get("NOUS_SESSION") == null) try t.expect(loadToken(t.allocator, path) == null);
+    if (env_mod.get("HENAD_SESSION") == null) try t.expect(loadToken(t.allocator, path) == null);
     try saveToken(path, "tok-123\n");
     if (builtin.os.tag != .windows) {
         const st = try std.fs.cwd().statFile(path);
         try t.expectEqual(@as(u32, 0o600), @as(u32, @intCast(st.mode & 0o777)));
     }
-    if (env_mod.get("NOUS_SESSION") == null) {
+    if (env_mod.get("HENAD_SESSION") == null) {
         const got = loadToken(t.allocator, path).?;
         defer t.allocator.free(got);
         try t.expectEqualStrings("tok-123", got);
@@ -581,7 +594,7 @@ test "nous: session file round trip, 0600" {
     try t.expect((try paths.readFile(t.allocator, path, 64)) == null);
 }
 
-test "nous: offline answer streams from a mock Ollama" {
+test "henad: offline answer streams from a mock Ollama" {
     const mock = @import("mock_server.zig");
     const replies = [_]mock.Reply{.{ .chunks = &.{
         "data: {\"choices\":[{\"delta\":{\"content\":\"Start Ollama:\\n```sh\\nollama serve\\n```\"}}]}\n\n",
@@ -600,7 +613,7 @@ test "nous: offline answer streams from a mock Ollama" {
     try t.expectEqualStrings("ollama serve", cmds[0]);
 }
 
-test "nous: online sign-in, status, chat and fallback against a mock API" {
+test "henad: online sign-in, status, chat and fallback against a mock API" {
     const mock = @import("mock_server.zig");
     const json_ct = "application/json";
     const me = "{\"email\":\"user@example.com\"}";
@@ -664,7 +677,7 @@ test "nous: online sign-in, status, chat and fallback against a mock API" {
     try t.expect(saw_login and saw_me and saw_chat);
 }
 
-test "nous: unreachable API means offline" {
+test "henad: unreachable API means offline" {
     // Port 9 (discard) on loopback is closed on CI runners.
     try t.expectEqual(OnlineState.no_network, probeOnline(t.allocator, "http://127.0.0.1:9", "tok", 500));
     try t.expectEqual(Mode.offline, chooseMode(false, .no_network));
