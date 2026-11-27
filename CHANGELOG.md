@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 New work stays under Unreleased. A date is the day that change landed on main. 0.1.0, further down, is the version the build already reports.
 
+### 2026-11-26
+
+- Account sign-in is required. On first launch the window shows a Death Terminal sign-in screen (log in, create account, forgot password) before any shell or SSH session starts. Sessions are kept in the macOS Keychain (a 0600 file elsewhere), refresh themselves, and keep working offline after the first sign-in. New `--login`, `--whoami` and `--sign-out` commands. See docs/ACCOUNT.md.
+
 ### 2026-11-13
 
 - The YouNeeK Time status clock shows 12-hour YouNeeK time first, then the 24-hour YouNeeK clock in parentheses. Both parts use 100-minute hours (`6:62 PM (18:62)`). `mode = "regular"` is unchanged.

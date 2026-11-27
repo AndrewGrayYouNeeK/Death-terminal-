@@ -218,9 +218,24 @@ fn addFonts(b: *std.Build, step: *std.Build.Step.Compile) void {
 /// override it, e.g. for snapshot builds.
 const default_version = "0.1.0";
 
+/// Account sign-in (Supabase Auth). Only the public project URL and the
+/// public anon key are compiled in; they are safe to ship in a client.
+const default_supabase_url = "https://dbtygwwaouallxdtqmmc.supabase.co";
+const default_supabase_anon_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRidHlnd3dhb3VhbGx4ZHRxbW1jIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIxNDMxMDUsImV4cCI6MjEwNzcxOTEwNX0.lQ88H1sWWUyrltzYCUMAyYvsVam6QBVHltFD-uFiv9k";
+
+const AuthOptions = struct {
+    required: bool = true,
+    supabase_url: []const u8 = default_supabase_url,
+    supabase_anon_key: []const u8 = default_supabase_anon_key,
+};
+var auth_options: AuthOptions = .{};
+
 fn addVersion(b: *std.Build, step: *std.Build.Step.Compile, version: []const u8) void {
     const opts = b.addOptions();
     opts.addOption([]const u8, "version", version);
+    opts.addOption(bool, "auth_required", auth_options.required);
+    opts.addOption([]const u8, "supabase_url", auth_options.supabase_url);
+    opts.addOption([]const u8, "supabase_anon_key", auth_options.supabase_anon_key);
     step.root_module.addOptions("build_options", opts);
 }
 
@@ -411,6 +426,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const version = b.option([]const u8, "version", "Version string (default " ++ default_version ++ ")") orelse default_version;
+    auth_options = .{
+        .required = b.option(bool, "auth", "Require an account sign-in before any shell starts (default true)") orelse true,
+        .supabase_url = b.option([]const u8, "supabase-url", "Supabase project URL for sign-in") orelse default_supabase_url,
+        .supabase_anon_key = b.option([]const u8, "supabase-anon-key", "Supabase public anon key for sign-in") orelse default_supabase_anon_key,
+    };
 
     const exe = addApp(b, target, optimize, version);
     b.installArtifact(exe);
