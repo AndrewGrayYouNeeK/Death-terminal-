@@ -17,6 +17,7 @@ const changelog = @import("changelog");
 const doctor = @import("ai/doctor.zig");
 const env_mod = @import("platform/env.zig");
 const prefs_mod = @import("app/prefs.zig");
+const auth_gate = @import("auth/gate.zig");
 
 const VERSION = @import("build_options").version;
 
@@ -29,6 +30,10 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
+    // The sign-in gate every pane's child runs behind (see auth/gate.zig).
+    // First, so the wrapped command's own flags are not parsed here.
+    if (args.len > 1 and std.mem.eql(u8, args[1], auth_gate.flag)) std.process.exit(auth_gate.main(allocator, args[2..]));
+
     // The built-in SSH client (what a window runs in its PTY for --ssh).
     for (args[1..]) |a| {
         if (std.mem.eql(u8, a, "--ssh-session")) std.process.exit(ssh_client.main(allocator, args));
@@ -40,6 +45,9 @@ pub fn main() !void {
             try printVersion();
             return;
         }
+        if (std.mem.eql(u8, args[1], "--login")) std.process.exit(auth_gate.loginCli(allocator));
+        if (std.mem.eql(u8, args[1], "--whoami")) std.process.exit(auth_gate.whoamiCli(allocator));
+        if (std.mem.eql(u8, args[1], "--sign-out") or std.mem.eql(u8, args[1], "--logout")) std.process.exit(auth_gate.signOutCli(allocator));
         if (std.mem.eql(u8, args[1], "--help") or std.mem.eql(u8, args[1], "-h")) {
             try printHelp();
             return;
@@ -399,6 +407,9 @@ fn printHelp() !void {
         \\                     $XDG_CONFIG_HOME/death-terminal/config.lua (~/.config/...);
         \\                     Windows: %APPDATA%\\death-terminal\\config.lua
         \\    --print-default-config  Print a documented config.lua with every default
+        \\    --login          Sign in or create your account (required before any shell starts)
+        \\    --whoami         Show which account is signed in
+        \\    --sign-out       Sign out (alias --logout); new tabs ask you to log in again
         \\    --whats-new      Print CHANGELOG.md (also the command palette entry "What's new")
         \\    --lua-unsafe     Give config.lua the full Lua library (io, os.execute, require)
         \\    --print-shell-integration <bash|zsh|fish>  Print the OSC 133 shell snippet
@@ -549,6 +560,9 @@ test {
         _ = @import("ssh/client.zig");
     }
     _ = @import("scripting/lua_engine.zig");
+    _ = @import("auth/supabase.zig");
+    _ = @import("auth/store.zig");
+    _ = @import("auth/gate.zig");
     _ = @import("share.zig");
     _ = @import("app/share_ctrl.zig");
     _ = @import("leak_check.zig");

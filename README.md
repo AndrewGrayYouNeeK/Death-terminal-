@@ -239,6 +239,10 @@ Works with local models (offline, e.g. Ollama) or remote OpenAI-compatible serve
 `api.x.ai` and `us.api.x.ai` use the Responses API; every other host stays on chat/completions.
 The client is plain HTTP/JSON (it replaces the gRPC service planned originally); see [docs/AI.md](docs/AI.md).
 
+## 👤 Account
+
+The first time it opens, Death Terminal asks you to create a free account or log in (email and password) before any shell starts. After that you stay signed in, offline too. `deathterminal --sign-out` signs out. Details: [docs/ACCOUNT.md](docs/ACCOUNT.md).
+
 ## 🔐 Security
 
 - No credential logging

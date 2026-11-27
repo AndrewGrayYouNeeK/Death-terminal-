@@ -8,6 +8,7 @@ const terminal = @import("../terminal/terminal.zig");
 const pty = @import("../terminal/pty.zig");
 const shell_inject = @import("shell_inject.zig");
 const ssh_target = @import("../ssh/target.zig");
+const auth_gate = @import("../auth/gate.zig");
 
 /// How this process was started (re-used for every new pane).
 pub const Context = struct {
@@ -30,10 +31,27 @@ pub const Spawn = struct {
     display: []const u8 = "",
 };
 
-pub const Error = error{ SshUnsupported, SshDisabled, SshTarget, OutOfMemory };
+pub const Error = error{ SshUnsupported, SshDisabled, SshTarget, AuthGate, OutOfMemory };
 
-/// Options for the child of a pane (memory from `arena`).
+/// Options for the child of a pane (memory from `arena`). Unless built with
+/// `-Dauth=false`, the child runs behind the sign-in gate
+/// (`deathterminal --auth-gate -- <child>`), so nothing starts signed out.
 pub fn options(arena: std.mem.Allocator, cfg: *const config.Config, ctx: Context, req: Request) Error!Spawn {
+    var sp = try ungated(arena, cfg, ctx, req);
+    if (auth_gate.required) sp.opts = try gated(arena, sp.opts);
+    return sp;
+}
+
+/// `opts` wrapped in the sign-in gate (same env and cwd).
+pub fn gated(arena: std.mem.Allocator, opts: pty.ShellOptions) Error!pty.ShellOptions {
+    const exe = std.fs.selfExePathAlloc(arena) catch return error.AuthGate;
+    var args = std.ArrayList([]const u8).init(arena);
+    try args.appendSlice(&.{ auth_gate.flag, "--", opts.program });
+    try args.appendSlice(opts.args);
+    return .{ .program = exe, .args = args.items, .env = opts.env, .cwd = opts.cwd };
+}
+
+fn ungated(arena: std.mem.Allocator, cfg: *const config.Config, ctx: Context, req: Request) Error!Spawn {
     const cwd = if (req.cwd.len > 0) req.cwd else cfg.shell_cwd;
     if (req.ssh) |name| {
         if (builtin.os.tag != .linux) return error.SshUnsupported;
@@ -72,6 +90,7 @@ pub fn describe(err: anyerror) []const u8 {
     return switch (err) {
         error.SshUnsupported => "the built-in SSH client is only available on Linux builds for now",
         error.SshDisabled => "the built-in SSH client is disabled (config.ssh.enabled = false)",
+        error.AuthGate => "cannot find the deathterminal executable for the sign-in screen",
         error.SshTarget => "unknown SSH target (expected a profile from config.ssh.profiles, a ~/.ssh/config Host, or user@host[:port])",
         else => @errorName(err),
     };
@@ -88,6 +107,19 @@ pub fn terminalFor(a: std.mem.Allocator, cfg: *const config.Config, ctx: Context
     errdefer term.deinit();
     term.setSshNonce(sp.nonce);
     return .{ .term = term, .display = try a.dupe(u8, sp.display) };
+}
+
+test "gated wraps the child in --auth-gate" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const o = try gated(arena.allocator(), .{ .program = "/bin/zsh", .args = &.{"-l"}, .env = &.{"A=1"}, .cwd = "/tmp" });
+    try std.testing.expectEqual(@as(usize, 4), o.args.len);
+    try std.testing.expectEqualStrings("--auth-gate", o.args[0]);
+    try std.testing.expectEqualStrings("--", o.args[1]);
+    try std.testing.expectEqualStrings("/bin/zsh", o.args[2]);
+    try std.testing.expectEqualStrings("-l", o.args[3]);
+    try std.testing.expectEqualStrings("/tmp", o.cwd);
+    try std.testing.expectEqual(@as(usize, 1), o.env.len);
 }
 
 /// Directory a new pane should start in, taken from `term`'s OSC 7 report
