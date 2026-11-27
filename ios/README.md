@@ -56,7 +56,7 @@ ios/
 Dependencies (Swift Package Manager, pinned in `project.yml`):
 [Citadel](https://github.com/orlandos-nl/Citadel) 0.12.1 for SSH and SFTP (it's
 built on SwiftNIO SSH), and [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm)
-1.20.0 for the terminal.
+1.18.0 for the terminal.
 
 ## Build
 

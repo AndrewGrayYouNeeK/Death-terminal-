@@ -17,7 +17,7 @@ packages:
     exactVersion: 0.12.1
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
-    exactVersion: 1.20.0
+    exactVersion: 1.18.0  # 1.19+ adds a build-tool plugin that breaks iOS builds in Xcode
   swift-nio:
     url: https://github.com/apple/swift-nio
     from: 2.81.0
