@@ -1,0 +1,12 @@
+{
+  "name": "death-terminal-site",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:dry": "wrangler deploy --dry-run"
+  },
+  "devDependencies": {
+    "wrangler": "^4.168.0"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  // Marketing site for https://terminal.youneek.dev
+  // Static assets only. No secrets or bindings.
+  "name": "death-terminal-site",
+  "compatibility_date": "2025-01-01",
+  "account_id": "d74b0de637f4d9d9eb3efb9e13142784",
+  "assets": { "directory": "./public" },
+  "routes": [{ "pattern": "terminal.youneek.dev", "custom_domain": true }]
+}
