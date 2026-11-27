@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 New work stays under Unreleased. A date is the day that change landed on main. 0.1.0, further down, is the version the build already reports.
 
+### 2026-11-26
+
+- `deathterminal --nous` opens Nous, the setup assistant. Offline, it runs on local Ollama (models found automatically, nothing leaves the machine) and helps get Death Terminal connected. When the machine is online and you `/signin` with your own Nous account, the online Nous at nous.youneek.dev takes over for the other features. It falls back to offline when the service is unreachable or you're signed out. Suggested commands only run through `/run N` with confirmation, and destructive ones need `run it`. See docs/NOUS.md.
+
 ### 2026-11-13
 
 - The YouNeeK Time status clock shows 12-hour YouNeeK time first, then the 24-hour YouNeeK clock in parentheses. Both parts use 100-minute hours (`6:62 PM (18:62)`). `mode = "regular"` is unchanged.
