@@ -278,3 +278,5 @@ MIT
 YouNeeK Death Terminal isn't trying to be everything.
 
 It's trying to be the terminal you don't outgrow.
+
+YouNeeK™ · © 2026 Andrew Gray
